@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chiquipollo | Pollo frito en Cochabamba</title>
+  <meta name="description" content="Chiquipollo ofrece pollo frito y a la brasa, delivery rápido en Cochabamba, Bolivia. Promos, combos y salsas caseras." />
+  <link rel="icon" type="image/svg+xml" href="#favicon" />
+  <meta property="og:type" content="restaurant" />
+  <meta property="og:title" content="Chiquipollo: Sabor crujiente, corazón cochala" />
+  <meta property="og:description" content="Pollo frito y a la brasa, papas crocantes y salsas caseras. Delivery en Cochabamba." />
+  <meta property="og:url" content="https://chiquipollo.example.com" />
+  <meta property="og:image" content="https://images.unsplash.com/photo-1600891964599-f61ba0e24092?auto=format&fit=crop&w=1200&q=80" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Chiquipollo: Sabor crujiente" />
+  <meta name="twitter:description" content="Delivery de pollo frito y a la brasa en Cochabamba. Pide tus promos hoy." />
+  <meta name="twitter:image" content="https://images.unsplash.com/photo-1600891964599-f61ba0e24092?auto=format&fit=crop&w=1200&q=80" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#E11D48',
+            secondary: '#F59E0B',
+            slate: {
+              900: '#0f172a'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'Roboto', 'system-ui', 'sans-serif']
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
+  </style>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FastFoodRestaurant",
+    "name": "Chiquipollo",
+    "image": "https://images.unsplash.com/photo-1600891964599-f61ba0e24092?auto=format&fit=crop&w=800&q=80",
+    "address": {
+      "@type": "PostalAddress",
+      "streetAddress": "Av. (tu calle)",
+      "addressLocality": "Cochabamba",
+      "addressCountry": "BO"
+    },
+    "servesCuisine": ["Pollo", "Comida Rápida"],
+    "priceRange": "$$",
+    "telephone": "+591 XXX XXX XX",
+    "areaServed": "Cochabamba",
+    "openingHours": "Mo-Su 12:00-22:00",
+    "sameAs": [
+      "https://instagram.com/chiquipollo",
+      "https://facebook.com/chiquipollo",
+      "https://tiktok.com/@chiquipollo"
+    ],
+    "hasMenu": [
+      {"@type": "MenuItem", "name": "Pollo Broaster 1/4 + papas + ensalada", "offers": {"@type": "Offer", "price": "35", "priceCurrency": "BOB"}},
+      {"@type": "MenuItem", "name": "Pollo a la Brasa 1/2 + 2 guarniciones", "offers": {"@type": "Offer", "price": "65", "priceCurrency": "BOB"}},
+      {"@type": "MenuItem", "name": "Alitas BBQ (8 unidades)", "offers": {"@type": "Offer", "price": "38", "priceCurrency": "BOB"}},
+      {"@type": "MenuItem", "name": "Combo Chiqui (burger de pollo + papas + soda)", "offers": {"@type": "Offer", "price": "32", "priceCurrency": "BOB"}},
+      {"@type": "MenuItem", "name": "Pique de Pollo (para 2)", "offers": {"@type": "Offer", "price": "58", "priceCurrency": "BOB"}},
+      {"@type": "MenuItem", "name": "Choclos con queso", "offers": {"@type": "Offer", "price": "12", "priceCurrency": "BOB"}}
+    ]
+  }
+  </script>
+</head>
+<body class="antialiased bg-white text-slate-900">
+  <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:bg-white focus:text-primary focus:p-2 focus:rounded">Saltar al contenido principal</a>
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" id="favicon" class="hidden">
+    <circle cx="32" cy="32" r="30" fill="#F59E0B" />
+    <path d="M22 28c2-6 8-10 14-8 6 2 10 8 8 14-2 6-8 10-14 8l-5 6-3-9c-2-4-1-8 0-11z" fill="#E11D48" />
+    <text x="32" y="50" font-size="12" text-anchor="middle" fill="#fff" font-family="Inter, sans-serif">C</text>
+  </svg>
+  <header class="fixed inset-x-0 top-0 z-50 bg-white/95 backdrop-blur shadow-sm" role="banner">
+    <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+      <a href="#inicio" class="flex items-center space-x-3" aria-label="Chiquipollo inicio">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" class="h-12 w-12">
+          <circle cx="40" cy="40" r="38" fill="#F59E0B" />
+          <path d="M28 34c2-8 10-12 18-9s12 10 9 18c-2 8-10 12-18 9l-6 7-4-11c-2-5-1-10 1-14z" fill="#E11D48" />
+          <text x="40" y="55" font-size="14" text-anchor="middle" fill="#fff" font-weight="700" font-family="Inter, sans-serif">Ch</text>
+        </svg>
+        <div>
+          <span class="block text-lg font-bold text-primary">Chiquipollo</span>
+          <span class="block text-sm text-slate-600">Sabor crujiente</span>
+        </div>
+      </a>
+      <button id="nav-toggle" class="rounded-md border border-primary px-3 py-2 text-sm font-semibold text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 md:hidden" aria-expanded="false" aria-controls="primary-navigation">
+        <span class="sr-only">Abrir menú</span>
+        <svg class="h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5m-16.5 5.25h16.5m-16.5 5.25h16.5" />
+        </svg>
+      </button>
+      <nav id="primary-navigation" class="hidden flex-col gap-4 md:flex md:flex-row md:items-center" role="navigation" aria-label="Principal">
+        <a href="#inicio" class="nav-link text-sm font-semibold text-slate-700 hover:text-primary focus:text-primary">Inicio</a>
+        <a href="#menu" class="nav-link text-sm font-semibold text-slate-700 hover:text-primary focus:text-primary">Menú</a>
+        <a href="#promos" class="nav-link text-sm font-semibold text-slate-700 hover:text-primary focus:text-primary">Promos</a>
+        <a href="#ubicacion" class="nav-link text-sm font-semibold text-slate-700 hover:text-primary focus:text-primary">Ubicación</a>
+        <a href="#opiniones" class="nav-link text-sm font-semibold text-slate-700 hover:text-primary focus:text-primary">Opiniones</a>
+        <a href="#contacto" class="nav-link text-sm font-semibold text-slate-700 hover:text-primary focus:text-primary">Contacto</a>
+        <a href="https://wa.me/591XXXXXXXX?text=Hola%20Chiquipollo,%20quiero%20hacer%20un%20pedido" class="rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white shadow focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2">Pedir por WhatsApp</a>
+      </nav>
+    </div>
+  </header>
+  <main id="main" class="pt-24" role="main">
+    <section id="inicio" class="bg-gradient-to-br from-secondary/10 to-white" aria-labelledby="hero-title">
+      <div class="mx-auto flex max-w-6xl flex-col items-center gap-10 px-4 py-20 md:flex-row md:justify-between">
+        <div class="w-full md:w-1/2">
+          <p class="inline-flex items-center rounded-full bg-secondary/20 px-4 py-1 text-sm font-semibold text-secondary" aria-live="polite">Hoy abierto: 12:00–22:00</p>
+          <h1 id="hero-title" class="mt-6 text-4xl font-extrabold text-primary sm:text-5xl">Chiquipollo: Sabor crujiente, corazón cochala</h1>
+          <p class="mt-4 text-lg text-slate-700">Pollo frito y a la brasa, papas crocantes y salsas caseras. Delivery en Cochabamba.</p>
+          <div class="mt-6 flex flex-wrap gap-4">
+            <a href="#menu" class="rounded-full bg-secondary px-6 py-3 text-base font-semibold text-slate-900 shadow transition hover:bg-secondary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2">Ver Menú</a>
+            <a href="https://wa.me/591XXXXXXXX?text=Hola%20Chiquipollo,%20quiero%20hacer%20un%20pedido" class="rounded-full border border-primary px-6 py-3 text-base font-semibold text-primary transition hover:bg-primary hover:text-white focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2">Pedir por WhatsApp</a>
+          </div>
+        </div>
+        <div class="w-full md:w-1/2">
+          <figure class="relative">
+            <img src="https://images.unsplash.com/photo-1600891964599-f61ba0e24092?auto=format&fit=crop&w=900&q=80" alt="Pollo frito crujiente servido con papas" loading="lazy" class="h-full w-full rounded-3xl object-cover shadow-lg" />
+            <figcaption class="sr-only">Chiquipollo ofrece pollo frito crujiente con guarniciones.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="menu" class="bg-white py-16" aria-labelledby="menu-title">
+      <div class="mx-auto max-w-6xl px-4">
+        <div class="mb-10 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h2 id="menu-title" class="text-3xl font-bold text-primary">Menú destacado</h2>
+            <p class="mt-2 text-slate-600">Ingredientes frescos, frituras perfectas y combos listos para compartir.</p>
+          </div>
+          <div class="flex items-center gap-2 text-sm text-slate-500">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v12m6-6H6" />
+            </svg>
+            <span>Carrito dinámico, añade tus favoritos</span>
+          </div>
+        </div>
+        <div class="grid gap-8 md:grid-cols-2 lg:grid-cols-3">
+          <article class="flex flex-col rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg focus-within:-translate-y-1 focus-within:shadow-lg" tabindex="0">
+            <img src="https://images.unsplash.com/photo-1608038509085-7bb32f09d7d0?auto=format&fit=crop&w=600&q=80" alt="Pollo broaster con papas y ensalada" loading="lazy" class="h-48 w-full rounded-t-2xl object-cover" />
+            <div class="flex flex-1 flex-col justify-between p-6">
+              <div>
+                <h3 class="text-xl font-semibold text-primary">Pollo Broaster 1/4 + papas + ensalada</h3>
+                <p class="mt-2 text-sm text-slate-600">Crujiente por fuera, jugoso por dentro. Incluye llajua y ensalada fresca.</p>
+                <div class="mt-3 flex items-center gap-3 text-xs font-semibold text-slate-500">
+                  <span class="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-primary">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75l-2.25 2.25L12 11.25m0 0l2.25-2.25L12 6.75m0 0L12 17.25" />
+                    </svg>
+                    Picante opcional
+                  </span>
+                  <span class="inline-flex items-center gap-1 rounded-full bg-secondary/20 px-2 py-1 text-secondary">Familiar</span>
+                </div>
+              </div>
+              <div class="mt-4 flex items-center justify-between">
+                <span class="text-lg font-bold text-slate-900">35 BOB</span>
+                <button type="button" class="add-to-cart rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white shadow focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2" data-item='{"name":"Pollo Broaster 1/4 + papas + ensalada","price":35}'>Añadir al pedido</button>
+              </div>
+            </div>
+          </article>
+          <article class="flex flex-col rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg focus-within:-translate-y-1 focus-within:shadow-lg" tabindex="0">
+            <img src="https://images.unsplash.com/photo-1550547660-d9450f859349?auto=format&fit=crop&w=600&q=80" alt="Pollo a la brasa con guarniciones" loading="lazy" class="h-48 w-full rounded-t-2xl object-cover" />
+            <div class="flex flex-1 flex-col justify-between p-6">
+              <div>
+                <h3 class="text-xl font-semibold text-primary">Pollo a la Brasa 1/2 + 2 guarniciones</h3>
+                <p class="mt-2 text-sm text-slate-600">Asado lento con especias secretas. Incluye papas y ensalada de la casa.</p>
+                <div class="mt-3 flex items-center gap-3 text-xs font-semibold text-slate-500">
+                  <span class="inline-flex items-center gap-1 rounded-full bg-secondary/20 px-2 py-1 text-secondary">Sin gluten</span>
+                  <span class="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-primary">Ideal para compartir</span>
+                </div>
+              </div>
+              <div class="mt-4 flex items-center justify-between">
+                <span class="text-lg font-bold text-slate-900">65 BOB</span>
+                <button type="button" class="add-to-cart rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white shadow focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2" data-item='{"name":"Pollo a la Brasa 1/2 + 2 guarniciones","price":65}'>Añadir al pedido</button>
+              </div>
+            </div>
+          </article>
+          <article class="flex flex-col rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg focus-within:-translate-y-1 focus-within:shadow-lg" tabindex="0">
+            <img src="https://images.unsplash.com/photo-1515003197210-e0cd71810b5f?auto=format&fit=crop&w=600&q=80" alt="Alitas BBQ glaseadas" loading="lazy" class="h-48 w-full rounded-t-2xl object-cover" />
+            <div class="flex flex-1 flex-col justify-between p-6">
+              <div>
+                <h3 class="text-xl font-semibold text-primary">Alitas BBQ (8 unidades)</h3>
+                <p class="mt-2 text-sm text-slate-600">Glaseado casero agridulce con opción extra picante.</p>
+                <div class="mt-3 flex items-center gap-3 text-xs font-semibold text-slate-500">
+                  <span class="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-primary">¡Favoritas!</span>
+                  <span class="inline-flex items-center gap-1 rounded-full bg-secondary/20 px-2 py-1 text-secondary">Para compartir</span>
+                </div>
+              </div>
+              <div class="mt-4 flex items-center justify-between">
+                <span class="text-lg font-bold text-slate-900">38 BOB</span>
+                <button type="button" class="add-to-cart rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white shadow focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2" data-item='{"name":"Alitas BBQ (8 unidades)","price":38}'>Añadir al pedido</button>
+              </div>
+            </div>
+          </article>
+          <article class="flex flex-col rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg focus-within:-translate-y-1 focus-within:shadow-lg" tabindex="0">
+            <img src="https://images.unsplash.com/photo-1604908177086-38c0d2f2b9fc?auto=format&fit=crop&w=600&q=80" alt="Hamburguesa de pollo con papas y refresco" loading="lazy" class="h-48 w-full rounded-t-2xl object-cover" />
+            <div class="flex flex-1 flex-col justify-between p-6">
+              <div>
+                <h3 class="text-xl font-semibold text-primary">Combo Chiqui (burger de pollo + papas + soda)</h3>
+                <p class="mt-2 text-sm text-slate-600">Combo pensado para los peques con pan suave y pollo dorado.</p>
+                <div class="mt-3 flex items-center gap-3 text-xs font-semibold text-slate-500">
+                  <span class="inline-flex items-center gap-1 rounded-full bg-secondary/20 px-2 py-1 text-secondary">Para niños</span>
+                  <span class="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-primary">Suave</span>
+                </div>
+              </div>
+              <div class="mt-4 flex items-center justify-between">
+                <span class="text-lg font-bold text-slate-900">32 BOB</span>
+                <button type="button" class="add-to-cart rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white shadow focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2" data-item='{"name":"Combo Chiqui (burger de pollo + papas + soda)","price":32}'>Añadir al pedido</button>
+              </div>
+            </div>
+          </article>
+          <article class="flex flex-col rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg focus-within:-translate-y-1 focus-within:shadow-lg" tabindex="0">
+            <img src="https://images.unsplash.com/photo-1525755662778-989d0524087e?auto=format&fit=crop&w=600&q=80" alt="Pique de pollo para compartir" loading="lazy" class="h-48 w-full rounded-t-2xl object-cover" />
+            <div class="flex flex-1 flex-col justify-between p-6">
+              <div>
+                <h3 class="text-xl font-semibold text-primary">Pique de Pollo (para 2)</h3>
+                <p class="mt-2 text-sm text-slate-600">Trozos crujientes, papas, chorizo criollo y salsas especiales.</p>
+                <div class="mt-3 flex items-center gap-3 text-xs font-semibold text-slate-500">
+                  <span class="inline-flex items-center gap-1 rounded-full bg-secondary/20 px-2 py-1 text-secondary">Compartible</span>
+                  <span class="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-primary">Salsas variadas</span>
+                </div>
+              </div>
+              <div class="mt-4 flex items-center justify-between">
+                <span class="text-lg font-bold text-slate-900">58 BOB</span>
+                <button type="button" class="add-to-cart rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white shadow focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2" data-item='{"name":"Pique de Pollo (para 2)","price":58}'>Añadir al pedido</button>
+              </div>
+            </div>
+          </article>
+          <article class="flex flex-col rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg focus-within:-translate-y-1 focus-within:shadow-lg" tabindex="0">
+            <img src="https://images.unsplash.com/photo-1625937286645-3d7e736d9193?auto=format&fit=crop&w=600&q=80" alt="Choclos con queso" loading="lazy" class="h-48 w-full rounded-t-2xl object-cover" />
+            <div class="flex flex-1 flex-col justify-between p-6">
+              <div>
+                <h3 class="text-xl font-semibold text-primary">Choclos con queso</h3>
+                <p class="mt-2 text-sm text-slate-600">Maíz dulce cocido al vapor con queso criollo fundido.</p>
+                <div class="mt-3 flex items-center gap-3 text-xs font-semibold text-slate-500">
+                  <span class="inline-flex items-center gap-1 rounded-full bg-secondary/20 px-2 py-1 text-secondary">Sin picante</span>
+                  <span class="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-primary">Vegetariano</span>
+                </div>
+              </div>
+              <div class="mt-4 flex items-center justify-between">
+                <span class="text-lg font-bold text-slate-900">12 BOB</span>
+                <button type="button" class="add-to-cart rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white shadow focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2" data-item='{"name":"Choclos con queso","price":12}'>Añadir al pedido</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="promos" class="bg-secondary/10 py-16" aria-labelledby="promos-title">
+      <div class="mx-auto max-w-6xl px-4">
+        <div class="mb-10 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h2 id="promos-title" class="text-3xl font-bold text-primary">Promociones</h2>
+            <p class="mt-2 text-slate-600">Aprovecha nuestros descuentos semanales y arma tu pedido.</p>
+          </div>
+        </div>
+        <div class="grid gap-6 md:grid-cols-2">
+          <article class="relative rounded-2xl border border-primary/20 bg-white p-6 shadow-lg">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xl font-semibold text-primary">Martes 2x1 en Alitas</h3>
+              <span class="promo-tag hidden rounded-full bg-primary px-3 py-1 text-xs font-bold uppercase text-white" data-day="2">¡Hoy!</span>
+            </div>
+            <p class="mt-2 text-slate-600">Válido de 12:00 a 16:00. Aplica para Alitas BBQ o picantes.</p>
+          </article>
+          <article class="relative rounded-2xl border border-primary/20 bg-white p-6 shadow-lg">
+            <div class="flex items-center justify-between">
+              <h3 class="text-xl font-semibold text-primary">Combo Familiar</h3>
+              <span class="promo-tag hidden rounded-full bg-primary px-3 py-1 text-xs font-bold uppercase text-white" data-day="6">¡Hoy!</span>
+            </div>
+            <p class="mt-2 text-slate-600">Pollo entero + 4 salsas + 2 guarniciones a solo 120 BOB.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="bg-white py-16" aria-labelledby="salsas-title">
+      <div class="mx-auto max-w-6xl px-4">
+        <h2 id="salsas-title" class="text-3xl font-bold text-primary">Salsas &amp; Diferenciadores</h2>
+        <div class="mt-8 grid gap-8 md:grid-cols-2">
+          <div>
+            <h3 class="text-2xl font-semibold text-slate-900">Salsas caseras</h3>
+            <ul class="mt-4 space-y-3 text-slate-600">
+              <li class="flex items-start gap-3">
+                <svg class="mt-1 h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+                Llajua fresca con locoto seleccionado.
+              </li>
+              <li class="flex items-start gap-3">
+                <svg class="mt-1 h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+                Tártara con toque de limón y pepinillos crujientes.
+              </li>
+              <li class="flex items-start gap-3">
+                <svg class="mt-1 h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+                Ajo-parmesano cremoso perfecto para papas.
+              </li>
+              <li class="flex items-start gap-3">
+                <svg class="mt-1 h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+                Maracuyá-picante con dulzor tropical.
+              </li>
+            </ul>
+          </div>
+          <div>
+            <h3 class="text-2xl font-semibold text-slate-900">¿Por qué elegirnos?</h3>
+            <ul class="mt-4 space-y-3 text-slate-600">
+              <li class="flex items-start gap-3">
+                <svg class="mt-1 h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75l-3-3m0 0l3-3m-3 3h12.75" />
+                </svg>
+                Aceite renovado a diario para un dorado perfecto.
+              </li>
+              <li class="flex items-start gap-3">
+                <svg class="mt-1 h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+                Proveedores locales para apoyar a productores cochabambinos.
+              </li>
+              <li class="flex items-start gap-3">
+                <svg class="mt-1 h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+                Empaques eco-friendly y biodegradables.
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="opiniones" class="bg-secondary/10 py-16" aria-labelledby="opiniones-title">
+      <div class="mx-auto max-w-6xl px-4">
+        <h2 id="opiniones-title" class="text-3xl font-bold text-primary">Opiniones que nos inspiran</h2>
+        <div class="mt-10 grid gap-8 md:grid-cols-3">
+          <article class="rounded-2xl bg-white p-6 shadow-lg">
+            <p class="flex items-center gap-1 text-secondary" aria-label="5 de 5 estrellas">
+              <span aria-hidden="true">★★★★★</span>
+            </p>
+            <p class="mt-4 text-sm text-slate-600">“El pollo broaster es una maravilla. Llegó caliente y crujiente, y las salsas son adictivas.”</p>
+            <p class="mt-4 text-sm font-semibold text-slate-900">— Valeria M.</p>
+          </article>
+          <article class="rounded-2xl bg-white p-6 shadow-lg">
+            <p class="flex items-center gap-1 text-secondary" aria-label="4 de 5 estrellas">
+              <span aria-hidden="true">★★★★☆</span>
+            </p>
+            <p class="mt-4 text-sm text-slate-600">“Nos encanta el combo familiar para los domingos. El delivery fue puntual y amable.”</p>
+            <p class="mt-4 text-sm font-semibold text-slate-900">— Luis y Carla</p>
+          </article>
+          <article class="rounded-2xl bg-white p-6 shadow-lg">
+            <p class="flex items-center gap-1 text-secondary" aria-label="5 de 5 estrellas">
+              <span aria-hidden="true">★★★★★</span>
+            </p>
+            <p class="mt-4 text-sm text-slate-600">“Las alitas BBQ tienen la mezcla perfecta de dulce y picante. ¡Recomendadas!”</p>
+            <p class="mt-4 text-sm font-semibold text-slate-900">— Diego R.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="ubicacion" class="bg-white py-16" aria-labelledby="ubicacion-title">
+      <div class="mx-auto max-w-6xl px-4">
+        <div class="grid gap-10 lg:grid-cols-2">
+          <div>
+            <h2 id="ubicacion-title" class="text-3xl font-bold text-primary">Ubicación &amp; Cobertura</h2>
+            <p class="mt-4 text-slate-600">Visítanos o solicita delivery en tus zonas favoritas.</p>
+            <dl class="mt-6 space-y-4 text-slate-600">
+              <div>
+                <dt class="font-semibold text-slate-900">Dirección</dt>
+                <dd>Av. (tu calle), Cochabamba</dd>
+              </div>
+              <div>
+                <dt class="font-semibold text-slate-900">Zonas de delivery</dt>
+                <dd>Cercado, Cala Cala, Muyurina, Queru Queru, Sarco, La Recoleta y más.</dd>
+              </div>
+              <div>
+                <dt class="font-semibold text-slate-900">Tiempo estimado</dt>
+                <dd>30–50 minutos según zona y horario.</dd>
+              </div>
+            </dl>
+          </div>
+          <div>
+            <div class="overflow-hidden rounded-2xl shadow-lg" role="img" aria-label="Mapa de Cochabamba mostrando la ubicación de Chiquipollo">
+              <iframe src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3806.543850199984!2d-66.15680322587517!3d-17.3895009834852!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x93e373d92fa0b7cf%3A0xf405b5d51f9cdbc!2sCochabamba!5e0!3m2!1ses!2sbo!4v1700000000000" width="100%" height="360" loading="lazy" referrerpolicy="no-referrer-when-downgrade" class="w-full"></iframe>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="bg-secondary/10 py-16" aria-labelledby="faq-title">
+      <div class="mx-auto max-w-6xl px-4">
+        <h2 id="faq-title" class="text-3xl font-bold text-primary">Preguntas frecuentes</h2>
+        <div class="mt-8 grid gap-6 md:grid-cols-2">
+          <article class="rounded-2xl bg-white p-6 shadow">
+            <h3 class="text-lg font-semibold text-slate-900">¿Qué métodos de pago aceptan?</h3>
+            <p class="mt-2 text-sm text-slate-600">Aceptamos efectivo, QR Simple, transferencias y tarjetas de débito o crédito.</p>
+          </article>
+          <article class="rounded-2xl bg-white p-6 shadow">
+            <h3 class="text-lg font-semibold text-slate-900">¿Se puede programar pedidos?</h3>
+            <p class="mt-2 text-sm text-slate-600">Sí, agenda tu pedido con mínimo 2 horas de anticipación para entregas puntuales.</p>
+          </article>
+          <article class="rounded-2xl bg-white p-6 shadow">
+            <h3 class="text-lg font-semibold text-slate-900">¿Opciones para niños?</h3>
+            <p class="mt-2 text-sm text-slate-600">El Combo Chiqui está diseñado con porción especial, papas al horno y soda pequeña.</p>
+          </article>
+          <article class="rounded-2xl bg-white p-6 shadow">
+            <h3 class="text-lg font-semibold text-slate-900">¿Promos vigentes?</h3>
+            <p class="mt-2 text-sm text-slate-600">Consulta la sección Promos y nuestras redes sociales para sorpresas del día.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="contacto" class="bg-white py-16" aria-labelledby="contacto-title">
+      <div class="mx-auto max-w-6xl px-4">
+        <div class="grid gap-10 lg:grid-cols-2">
+          <div>
+            <h2 id="contacto-title" class="text-3xl font-bold text-primary">Contacto directo</h2>
+            <p class="mt-4 text-slate-600">Estamos listos para atenderte. Escríbenos por WhatsApp o redes sociales.</p>
+            <ul class="mt-6 space-y-3 text-slate-600">
+              <li><strong class="text-slate-900">Teléfono:</strong> <a href="tel:+591XXXXXXXXX" class="text-primary underline">(+591) XXX XXX XX</a></li>
+              <li><strong class="text-slate-900">WhatsApp:</strong> <a href="https://wa.me/591XXXXXXXX?text=Hola%20Chiquipollo,%20quiero%20hacer%20un%20pedido" class="text-primary underline">Pedir ahora</a></li>
+              <li><strong class="text-slate-900">Instagram:</strong> <a href="https://instagram.com/chiquipollo" class="text-primary underline">@chiquipollo</a></li>
+              <li><strong class="text-slate-900">Facebook:</strong> <a href="https://facebook.com/chiquipollo" class="text-primary underline">/chiquipollo</a></li>
+              <li><strong class="text-slate-900">TikTok:</strong> <a href="https://tiktok.com/@chiquipollo" class="text-primary underline">@chiquipollo</a></li>
+              <li><strong class="text-slate-900">Horarios:</strong> Lun–Dom 12:00–22:00</li>
+            </ul>
+          </div>
+          <div>
+            <h3 class="text-2xl font-semibold text-slate-900">Escríbenos</h3>
+            <form id="contact-form" class="mt-6 space-y-4" novalidate>
+              <div>
+                <label for="nombre" class="block text-sm font-semibold text-slate-700">Nombre</label>
+                <input id="nombre" name="nombre" type="text" required class="mt-1 w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary" placeholder="Tu nombre" />
+                <p class="mt-1 hidden text-sm text-primary" id="nombre-error">Por favor ingresa tu nombre.</p>
+              </div>
+              <div>
+                <label for="mensaje" class="block text-sm font-semibold text-slate-700">Mensaje</label>
+                <textarea id="mensaje" name="mensaje" rows="4" required class="mt-1 w-full rounded-lg border border-slate-300 px-4 py-2 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary" placeholder="Cuéntanos qué deseas pedir"></textarea>
+                <p class="mt-1 hidden text-sm text-primary" id="mensaje-error">Cuéntanos cómo podemos ayudarte.</p>
+              </div>
+              <button type="submit" class="w-full rounded-full bg-primary px-6 py-3 text-base font-semibold text-white shadow focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2">Enviar mensaje</button>
+              <div aria-live="polite" class="text-sm font-semibold text-primary" id="form-feedback"></div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <aside class="fixed bottom-24 right-4 z-40 w-full max-w-xs rounded-2xl border border-primary/30 bg-white p-4 shadow-2xl" aria-label="Carrito de pedidos">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-bold text-primary">Tu pedido</h2>
+      <button id="clear-cart" class="text-xs font-semibold text-primary underline focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2">Vaciar</button>
+    </div>
+    <p id="cart-status" class="sr-only" aria-live="polite"></p>
+    <ul id="cart-items" class="mt-3 space-y-2 text-sm text-slate-600" aria-live="polite" aria-label="Items en el carrito"></ul>
+    <div class="mt-3 flex items-center justify-between text-base font-semibold text-slate-900">
+      <span>Total</span>
+      <span id="cart-total">0 BOB</span>
+    </div>
+    <button id="checkout" class="mt-4 w-full rounded-full bg-secondary px-4 py-2 text-sm font-semibold text-slate-900 shadow focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2">Enviar pedido por WhatsApp</button>
+  </aside>
+
+  <a href="https://wa.me/591XXXXXXXX?text=Hola%20Chiquipollo,%20quiero%20hacer%20un%20pedido" class="fixed bottom-4 right-4 z-50 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-semibold text-white shadow-lg transition hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2 md:hidden" aria-label="Abrir WhatsApp Chiquipollo">
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+      <path d="M12 2C6.48 2 2 6.02 2 11.24c0 1.78.49 3.46 1.34 4.92L2 22l5.03-1.6A10.34 10.34 0 0 0 12 20.48c5.52 0 10-4.52 10-10.24C22 6.02 17.52 2 12 2Zm0 16.8c-1.58 0-3.05-.48-4.28-1.3l-.3-.2-2.99.95.98-2.84-.2-.3a7.6 7.6 0 0 1-1.2-4.1C4.01 7.1 7.6 3.6 12 3.6s7.99 3.5 7.99 7.72-3.59 7.48-7.99 7.48Z" />
+      <path d="M17.02 14.74c-.27-.14-1.6-.81-1.84-.9-.25-.09-.43-.14-.6.14-.17.27-.69.9-.84 1.09-.15.18-.31.2-.58.07-.27-.14-1.12-.4-2.13-1.26-.79-.66-1.32-1.47-1.48-1.72-.15-.27-.02-.42.12-.56.12-.13.27-.34.4-.5.13-.18.17-.27.25-.45.09-.18.05-.34-.02-.48-.07-.14-.6-1.44-.82-1.96-.21-.5-.42-.43-.6-.43-.17 0-.37 0-.56.02-.19.01-.5.07-.76.34-.25.27-.99.97-.99 2.35s1.02 2.72 1.17 2.9c.14.18 2.01 3.08 4.86 4.19.68.27 1.2.43 1.61.55.68.22 1.3.19 1.79.11.55-.09 1.6-.66 1.84-1.3.23-.63.23-1.17.16-1.3-.07-.11-.25-.18-.52-.31Z" />
+    </svg>
+    Pedir
+  </a>
+
+  <button id="back-to-top" class="fixed bottom-24 left-4 z-40 hidden rounded-full bg-primary px-4 py-2 text-sm font-semibold text-white shadow focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2">Arriba</button>
+
+  <footer class="bg-slate-900 py-10 text-slate-200" role="contentinfo">
+    <div class="mx-auto flex max-w-6xl flex-col gap-6 px-4 md:flex-row md:items-center md:justify-between">
+      <div>
+        <p class="text-lg font-semibold text-white">© <span id="year"></span> Chiquipollo. Todos los derechos reservados.</p>
+        <p class="mt-2 text-sm text-slate-400">Fotografías cortesía de Unsplash (uso editorial).</p>
+      </div>
+      <div class="flex flex-wrap gap-4 text-sm">
+        <a href="#" class="hover:text-white focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2 focus:ring-offset-slate-900">Política de cookies</a>
+        <a href="#" class="hover:text-white focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2 focus:ring-offset-slate-900">Privacidad</a>
+        <a href="#" class="hover:text-white focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2 focus:ring-offset-slate-900">Términos</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const navToggle = document.getElementById('nav-toggle');
+    const nav = document.getElementById('primary-navigation');
+    const links = nav.querySelectorAll('.nav-link');
+    const cartItemsEl = document.getElementById('cart-items');
+    const cartTotalEl = document.getElementById('cart-total');
+    const clearCartBtn = document.getElementById('clear-cart');
+    const checkoutBtn = document.getElementById('checkout');
+    const backToTopBtn = document.getElementById('back-to-top');
+    const yearEl = document.getElementById('year');
+    const form = document.getElementById('contact-form');
+    const formFeedback = document.getElementById('form-feedback');
+    const nombreInput = document.getElementById('nombre');
+    const mensajeInput = document.getElementById('mensaje');
+    const promoTags = document.querySelectorAll('.promo-tag');
+    const cartStatus = document.getElementById('cart-status');
+
+    yearEl.textContent = new Date().getFullYear();
+
+    navToggle?.addEventListener('click', () => {
+      const expanded = navToggle.getAttribute('aria-expanded') === 'true' || false;
+      navToggle.setAttribute('aria-expanded', !expanded);
+      nav.classList.toggle('hidden');
+    });
+
+    links.forEach(link => {
+      link.addEventListener('click', () => {
+        nav.classList.add('hidden');
+        navToggle?.setAttribute('aria-expanded', 'false');
+      });
+    });
+
+    const sections = document.querySelectorAll('main section[id]');
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        const id = entry.target.getAttribute('id');
+        const navLink = document.querySelector(`a[href="#${id}"]`);
+        if (entry.isIntersecting) {
+          navLink?.classList.add('text-primary');
+        } else {
+          navLink?.classList.remove('text-primary');
+        }
+      });
+    }, {
+      threshold: 0.5
+    });
+
+    sections.forEach(section => observer.observe(section));
+
+    const cart = [];
+
+    function renderCart() {
+      cartItemsEl.innerHTML = '';
+      if (cart.length === 0) {
+        const empty = document.createElement('li');
+        empty.textContent = 'Tu carrito está vacío. Añade un plato del menú.';
+        empty.className = 'text-sm text-slate-500';
+        cartItemsEl.appendChild(empty);
+        cartTotalEl.textContent = '0 BOB';
+        return;
+      }
+
+      let total = 0;
+      cart.forEach((item, index) => {
+        total += item.price;
+        const li = document.createElement('li');
+        li.className = 'flex items-center justify-between gap-2';
+        li.innerHTML = `<span>${item.name}</span><button type="button" data-index="${index}" class="remove-item text-xs font-semibold text-primary underline focus:outline-none focus:ring-2 focus:ring-secondary focus:ring-offset-2">Quitar</button>`;
+        cartItemsEl.appendChild(li);
+      });
+      cartTotalEl.textContent = `${total.toFixed(2)} BOB`;
+    }
+
+    renderCart();
+
+    document.querySelectorAll('.add-to-cart').forEach(button => {
+      button.addEventListener('click', () => {
+        const item = JSON.parse(button.dataset.item);
+        cart.push(item);
+        renderCart();
+        if (cartStatus) {
+          cartStatus.textContent = `${item.name} añadido al carrito.`;
+        }
+      });
+    });
+
+    cartItemsEl.addEventListener('click', (event) => {
+      const button = event.target.closest('.remove-item');
+      if (!button) return;
+      const index = Number(button.dataset.index);
+      cart.splice(index, 1);
+      renderCart();
+    });
+
+    clearCartBtn.addEventListener('click', () => {
+      cart.length = 0;
+      renderCart();
+    });
+
+    checkoutBtn.addEventListener('click', () => {
+      if (cart.length === 0) {
+        alert('Tu carrito está vacío. Añade productos para continuar.');
+        return;
+      }
+      const itemsText = cart.map(item => `- ${item.name} (${item.price} BOB)`).join('%0A');
+      const total = cart.reduce((sum, item) => sum + item.price, 0).toFixed(2);
+      const message = `Hola Chiquipollo,%0AQuiero hacer el siguiente pedido:%0A${itemsText}%0ATotal: ${total} BOB%0AMi nombre:%0AMi dirección:`;
+      window.open(`https://wa.me/591XXXXXXXX?text=${message}`, '_blank');
+    });
+
+    const checkScroll = () => {
+      if (window.scrollY > 400) {
+        backToTopBtn.classList.remove('hidden');
+      } else {
+        backToTopBtn.classList.add('hidden');
+      }
+    };
+
+    window.addEventListener('scroll', checkScroll, { passive: true });
+
+    backToTopBtn.addEventListener('click', () => {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      let valid = true;
+      if (!nombreInput.value.trim()) {
+        document.getElementById('nombre-error').classList.remove('hidden');
+        valid = false;
+      } else {
+        document.getElementById('nombre-error').classList.add('hidden');
+      }
+      if (!mensajeInput.value.trim()) {
+        document.getElementById('mensaje-error').classList.remove('hidden');
+        valid = false;
+      } else {
+        document.getElementById('mensaje-error').classList.add('hidden');
+      }
+      if (!valid) return;
+      form.reset();
+      formFeedback.textContent = '¡Gracias! Te responderemos a la brevedad por WhatsApp.';
+    });
+
+    promoTags.forEach(tag => {
+      const today = new Date().getDay();
+      const promoDay = Number(tag.dataset.day);
+      if (promoDay === today) {
+        tag.classList.remove('hidden');
+      }
+    });
+  </script>
+</body>
+</html>
