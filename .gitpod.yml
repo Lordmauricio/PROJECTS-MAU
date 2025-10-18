@@ -1,0 +1,37 @@
+image: gitpod/workspace-full
+
+tasks:
+  - init: |
+      echo "Detectando e instalando dependencias..."
+      if [ -f package.json ]; then
+        npm install || true
+      fi
+      if [ -f requirements.txt ]; then
+        python -m venv .venv || python3 -m venv .venv || true
+        source .venv/bin/activate || true
+        pip install --upgrade pip || true
+        pip install -r requirements.txt || true
+      fi
+    command: |
+      echo "Arrancando la app (si existe) – intento automático según stack..."
+      if [ -f package.json ]; then
+        (npm run dev || npm start) || (echo "No se pudo iniciar Node: revisa package.json scripts")
+      elif [ -f requirements.txt ]; then
+        (python app.py || flask run --host=0.0.0.0 --port=8000) || echo "No se pudo iniciar Python: comprueba entrypoint"
+      else
+        echo "No se detectó package.json ni requirements.txt. Abre la terminal y arranca manualmente."
+      fi
+
+ports:
+  - port: 3000
+    onOpen: open-preview
+  - port: 5173
+    onOpen: open-preview
+  - port: 8000
+    onOpen: open-preview
+  - port: 5000
+    onOpen: open-preview
+  - port: 8080
+    onOpen: open-preview
+
+Note: ensure .devcontainer/postCreate.sh is executable (chmod +x .devcontainer/postCreate.sh) if the platform requires it.
