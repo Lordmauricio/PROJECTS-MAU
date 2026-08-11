@@ -18,19 +18,38 @@ corre de verdad.
       stack (Nest + Prisma + Next.js).
 - [x] `docs/ROADMAP.md` — este archivo.
 
-## Fase 1 — Backbone multi-tenant + Auth + RBAC (sin nada fiscal todavía)
+## Fase 1 — Backbone multi-tenant + Auth + RBAC ✅ (completa)
 
 Entregable: un usuario puede registrarse, crear su `organization`, invitar
 usuarios, asignarles roles con permisos granulares, y el aislamiento por
-tenant está probado con un test que intenta leer datos de otro tenant y
-falla.
+tenant está probado con un script (`npm run verify:tenant-isolation`) que
+crea dos organizaciones y prueba, vía API y vía SQL crudo sin WHERE, que
+ninguna ve datos de la otra.
 
-- Proyecto Nest + Prisma scaffolding real (no Express a mano).
-- Esquema: `organizations`, `users`, `organization_users`, `roles`,
-  `permissions`, `role_permissions`, `branches`.
-- RLS activo desde la primera migración, con test de aislamiento.
-- Auth: registro, login, verificación de email, recuperación de contraseña,
-  rate limiting básico.
+- [x] Proyecto NestJS + Prisma 7 (driver adapter `@prisma/adapter-pg`, no
+      Express a mano).
+- [x] Esquema: `organizations`, `users`, `organization_users`, `roles`,
+      `permissions`, `role_permissions`, `branches`, más tokens de
+      auth (`refresh_tokens`, `email_verification_tokens`,
+      `password_reset_tokens`).
+- [x] Row Level Security activo desde la primera migración (rol `app_user`
+      sin BYPASSRLS + policies por tabla tenant-scoped), verificado con
+      script automatizado.
+- [x] Auth: registro (con bootstrap atómico de organización + roles por
+      defecto), login (con selección de organización si el usuario
+      pertenece a varias), refresh con rotación, logout, recuperación de
+      contraseña, verificación de email (stub de envío — el proveedor real
+      de correo es Fase 9), rate limiting básico (`@nestjs/throttler`).
+- [x] RBAC granular: catálogo de 28 permisos, 8 roles por defecto por
+      organización, permisos verificados en vivo contra la base (no
+      embebidos en el JWT), gestión de miembros (invitar, cambiar rol,
+      suspender/reactivar).
+
+Pendiente conocido para una iteración futura (no bloquea Fase 2): flujo de
+"aceptar invitación" explícito para miembros invitados que todavía no tienen
+cuenta (hoy la membresía queda ACTIVE de inmediato, ver comentario en
+`members.service.ts`); MFA (tablas y guards existen en el diseño pero no se
+implementaron); proveedor de email real (hoy es un stub que loguea).
 
 ## Fase 2 — Catálogo, inventario, clientes/proveedores
 

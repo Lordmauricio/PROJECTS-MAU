@@ -1,0 +1,217 @@
+// Bolivia Business Cloud — schema Fase 1 (backbone multi-tenant + auth + RBAC)
+//
+// Estrategia de tenancy: base de datos compartida, aislamiento por
+// organizationId + PostgreSQL Row Level Security (RLS). Ver
+// docs/ARCHITECTURE.md. Las policies de RLS NO se declaran aquí (Prisma no
+// las modela) sino en una migración SQL manual (ver
+// prisma/migrations/*_enable_rls/migration.sql).
+//
+// Convención: toda tabla propiedad de una empresa tiene `organizationId`
+// como primera columna del índice compuesto, y esa misma columna es la que
+// referencia la policy de RLS vía current_setting('app.current_tenant').
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- Tenant raíz ----------
+
+model Organization {
+  id            String   @id @default(cuid())
+  name          String // nombre comercial
+  legalName     String // razón social
+  nit           String   @unique
+  economicActivity String?
+  address       String?
+  phone         String?
+  email         String?
+  logoUrl       String?
+  currency      String   @default("BOB")
+  timezone      String   @default("America/La_Paz")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships OrganizationUser[]
+  roles       Role[]
+  branches    Branch[]
+
+  @@map("organizations")
+}
+
+// ---------- Identidad global (un usuario puede pertenecer a varias organizaciones) ----------
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  emailVerifiedAt DateTime?
+  active          Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships           OrganizationUser[]
+  refreshTokens         RefreshToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens    PasswordResetToken[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String    @unique
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// ---------- Membresía / RBAC (tenant-scoped: RLS aplica) ----------
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+}
+
+model OrganizationUser {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId         String
+  role           Role     @relation(fields: [roleId], references: [id])
+
+  status    MembershipStatus @default(INVITED)
+  invitedAt DateTime         @default(now())
+  joinedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("organization_users")
+}
+
+// Catálogo de permisos: tabla global (no tenant-scoped), no contiene datos
+// de negocio de ninguna empresa. Ejemplos: "sales.create", "invoices.cancel".
+model Permission {
+  id          String @id @default(cuid())
+  key         String @unique
+  module      String // agrupador: "sales", "invoicing", "inventory", ...
+  description String
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+// Los roles son por organización (permite roles del sistema clonados al
+// crear la empresa, y roles custom a futuro sin cambiar el modelo).
+model Role {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  key         String // "owner", "admin", "manager", "accountant", "cashier", "inventory", "sales", "auditor", o custom
+  name        String
+  isSystem    Boolean  @default(true) // false = rol custom creado por la empresa
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships     OrganizationUser[]
+  rolePermissions RolePermission[]
+
+  @@unique([organizationId, key])
+  @@index([organizationId])
+  @@map("roles")
+}
+
+model RolePermission {
+  id             String @id @default(cuid())
+  organizationId String // denormalizado para que la policy de RLS no necesite JOIN
+  roleId         String
+  role           Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId   String
+  permission     Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([roleId, permissionId])
+  @@index([organizationId])
+  @@map("role_permissions")
+}
+
+// ---------- Sucursales ----------
+
+model Branch {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  name         String
+  address      String?
+  municipality String?
+  department   String?
+  phone        String?
+  isMainOffice Boolean  @default(false)
+  active       Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId])
+  @@map("branches")
+}

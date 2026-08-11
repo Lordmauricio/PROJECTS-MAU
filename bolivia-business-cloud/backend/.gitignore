@@ -1,0 +1,15 @@
+node_modules
+dist
+
+# Keep environment variables out of version control
+.env
+.env.local
+
+/generated/prisma
+
+# Documentacion de referencia para agentes IA generada automaticamente por
+# `prisma init` (no es codigo del proyecto; se regenera con `prisma init`).
+.agents/
+.claude/
+.windsurf/
+skills-lock.json

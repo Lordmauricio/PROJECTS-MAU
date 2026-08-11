@@ -24,5 +24,8 @@ módulos sin perder aislamiento entre módulos ni entre empresas (tenants).
 
 ## Estado actual
 
-Fase 0 completa (documentación fundacional). Código de Fase 1 (backbone
-multi-tenant + auth + RBAC) todavía no iniciado — ver `docs/ROADMAP.md`.
+Fase 0 (documentación fundacional) y Fase 1 (backbone multi-tenant + auth +
+RBAC, en `backend/`) completas. Ver `docs/ROADMAP.md` para el detalle y lo
+que sigue en Fase 2 (catálogo, inventario, clientes/proveedores).
+
+Para correr el backend: `backend/README.md`.
