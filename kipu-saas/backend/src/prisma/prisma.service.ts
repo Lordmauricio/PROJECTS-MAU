@@ -21,7 +21,33 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleInit() {
     await this.$connect();
+    await this.assertNoBypassRls();
     this.logger.log('Prisma conectado (rol app_user, RLS activo)');
+  }
+
+  /**
+   * Falla rápido en el arranque si `RUNTIME_DATABASE_URL` apunta, por error
+   * de configuración, a un rol con `BYPASSRLS` (ej. `app_superadmin`).
+   * Postgres ignora silenciosamente las policies de RLS para esos roles —
+   * sin esta verificación, un typo en las variables de entorno desactivaría
+   * el aislamiento de tenant sin ningún error visible.
+   */
+  private async assertNoBypassRls(): Promise<void> {
+    const rows = await this.$queryRaw<Array<{ rolbypassrls: boolean }>>`
+      SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user
+    `;
+    if (rows[0]?.rolbypassrls) {
+      throw new Error(
+        `El rol de Postgres conectado ("${await this.currentUser()}") tiene BYPASSRLS. ` +
+          'RUNTIME_DATABASE_URL debe apuntar a un rol sin BYPASSRLS (ej. app_user) para que ' +
+          'el aislamiento de tenant por Row Level Security se aplique. Abortando arranque.',
+      );
+    }
+  }
+
+  private async currentUser(): Promise<string> {
+    const rows = await this.$queryRaw<Array<{ current_user: string }>>`SELECT current_user`;
+    return rows[0]?.current_user ?? 'desconocido';
   }
 
   async onModuleDestroy() {

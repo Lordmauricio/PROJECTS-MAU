@@ -13,11 +13,21 @@ interface Category {
 
 export default function CategoriesPage() {
   const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    setCategories(await api<Category[]>("/product-categories"));
+    setLoading(true);
+    setLoadError(null);
+    try {
+      setCategories(await api<Category[]>("/product-categories"));
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar las categorías");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -41,6 +51,7 @@ export default function CategoriesPage() {
     <AppShell>
       <div className="p-6 max-w-2xl space-y-6">
         <h1 className="text-lg font-semibold">Categorías de producto</h1>
+        {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
         {error && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>}
         <form onSubmit={addCategory} className="flex gap-2">
           <input

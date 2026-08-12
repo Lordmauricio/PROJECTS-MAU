@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { ApiError } from "@/lib/auth-context";
 
 interface DashboardSummary {
   salesToday: { count: number; total: string | number };
@@ -17,10 +18,14 @@ interface DashboardSummary {
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     api<DashboardSummary>("/organizations/me/dashboard")
       .then(setSummary)
+      .catch((err) =>
+        setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el resumen de la empresa"),
+      )
       .finally(() => setLoading(false));
   }, []);
 
@@ -35,7 +40,9 @@ export default function DashboardPage() {
           </p>
         </div>
 
-        {loading || !summary ? (
+        {loadError ? (
+          <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>
+        ) : loading || !summary ? (
           <p className="text-sm text-zinc-500">Cargando...</p>
         ) : (
           <>

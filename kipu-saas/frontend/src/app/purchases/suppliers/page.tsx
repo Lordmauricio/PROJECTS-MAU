@@ -16,13 +16,20 @@ interface Supplier {
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", nit: "", phone: "", email: "" });
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
-    setSuppliers(await api<Supplier[]>("/suppliers"));
-    setLoading(false);
+    setLoadError(null);
+    try {
+      setSuppliers(await api<Supplier[]>("/suppliers"));
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la lista de proveedores");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -45,6 +52,7 @@ export default function SuppliersPage() {
     <AppShell>
       <div className="p-6 max-w-4xl space-y-6">
         <h1 className="text-lg font-semibold">Proveedores</h1>
+        {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
 
         <form onSubmit={addSupplier} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
           <h2 className="font-medium text-sm">Nuevo proveedor</h2>

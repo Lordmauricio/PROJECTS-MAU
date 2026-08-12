@@ -13,6 +13,7 @@ export class POSTerminalsController {
   constructor(private readonly posTerminals: POSTerminalsService) {}
 
   @Get()
+  @RequirePermissions('organization.branches.read')
   list(@CurrentAuth() auth: AccessTokenPayload) {
     return this.posTerminals.list(auth.organizationId);
   }

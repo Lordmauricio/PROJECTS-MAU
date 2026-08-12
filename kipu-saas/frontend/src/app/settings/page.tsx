@@ -38,16 +38,26 @@ interface Branch {
 export default function SettingsPage() {
   const [organization, setOrganization] = useState<Organization | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [newBranch, setNewBranch] = useState({ name: "", address: "" });
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    const [org, br] = await Promise.all([
-      api<Organization>("/organizations/me"),
-      api<Branch[]>("/branches"),
-    ]);
-    setOrganization(org);
-    setBranches(br);
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const [org, br] = await Promise.all([
+        api<Organization>("/organizations/me"),
+        api<Branch[]>("/branches"),
+      ]);
+      setOrganization(org);
+      setBranches(br);
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la configuración de la empresa");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -67,14 +77,20 @@ export default function SettingsPage() {
   }
 
   async function addPosTerminal(branchId: string, name: string, code: string) {
-    await api("/pos-terminals", { method: "POST", body: { branchId, name, code } });
-    load();
+    setError(null);
+    try {
+      await api("/pos-terminals", { method: "POST", body: { branchId, name, code } });
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo crear el punto de venta");
+    }
   }
 
   return (
     <AppShell>
       <div className="p-6 max-w-3xl space-y-6">
         <h1 className="text-lg font-semibold">Configuración</h1>
+        {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
 
         {organization && (
           <div className="bg-white rounded-lg border border-zinc-200 p-5 space-y-1 text-sm">

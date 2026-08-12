@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AUDIT_QUEUE, AuditJobPayload } from './audit.types';
@@ -29,5 +29,15 @@ export class AuditProcessor extends WorkerHost {
       }),
     );
     this.logger.debug(`Auditoría registrada: ${action} (org=${organizationId})`);
+  }
+
+  @OnWorkerEvent('failed')
+  onFailed(job: Job<AuditJobPayload> | undefined, error: Error): void {
+    this.logger.error(
+      `Job de auditoría agotó reintentos y se perdió: ` +
+        `action=${job?.data?.action} org=${job?.data?.organizationId} ` +
+        `userId=${job?.data?.userId} jobId=${job?.id} attemptsMade=${job?.attemptsMade}`,
+      error.stack,
+    );
   }
 }

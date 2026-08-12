@@ -73,6 +73,42 @@ automáticamente, no solo asumido.
       las secciones cuyo módulo de negocio todavía no existe — nunca
       botones que aparenten funcionar sin hacerlo.
 
+## Auditoría final de Fase 1 (post-construcción) ✅
+
+Antes de autorizar el push, se corrió una auditoría completa de seguridad,
+multi-tenancy, RBAC, Prisma/Postgres, Redis/BullMQ, auditoría y frontend, y
+se corrigió lo encontrado. Resumen — detalle completo en el informe
+entregado al usuario en el chat y en `docs/security.md`:
+
+- **`PermissionsGuard` pasó a ser fail-closed por defecto** (antes: una
+  ruta protegida sin `@RequirePermissions` quedaba accesible a cualquier
+  autenticado). Nuevo decorador `@NoPermissionRequired()` como opt-in
+  explícito. Los 5 endpoints GET que dependían del fail-open
+  (`branches`, `warehouses`, `pos-terminals`, `members`, `roles`) ahora
+  declaran permisos reales (`organization.branches.read`, `users.read`,
+  `organization.roles.read`, nuevos en el catálogo).
+- **Bug crítico encontrado y corregido**: el login (para cualquier usuario
+  que no fuera el flujo de registro) estaba roto por una interacción con
+  RLS en `organization_users` — ver `docs/security.md` sección
+  Autorización. Sin este fix, nadie podía volver a iniciar sesión después
+  de que expirara su sesión inicial.
+- Throttle en `POST /auth/register`, `AuthService.refresh()` preserva la
+  organización activa de la sesión (antes elegía una arbitrariamente),
+  `AuditProcessor` loguea jobs de auditoría que agotan reintentos,
+  `PrismaService` verifica en el arranque que el rol conectado no tenga
+  `BYPASSRLS`, relación `TaxConfiguration` ↔ `Branch` completada,
+  constraints de unicidad por empresa en `Supplier.nit` /
+  `Product.sku`/`barcode` (con normalización de `""` a `undefined` en los
+  DTOs para no romper filas sin esos campos opcionales).
+- Frontend: manejo de errores visible (no más "Cargando..." infinito) en
+  todas las páginas de listado y en los manejadores de mutación, limpieza
+  de un doble-redirect en el login, validación runtime de la respuesta de
+  login en vez de un cast inseguro.
+- Verificado con `npm run verify:tenant-isolation` (21 checks, incluyendo
+  6 escenarios de fail-closed), builds limpios de backend y frontend, y un
+  recorrido en navegador con Playwright (registro → dashboard → CRUD →
+  logout → login de nuevo → simulación de API caída).
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
 - **Fase 2 — Ventas / POS**: `Sale`/`SaleItem` ya modelados; falta el

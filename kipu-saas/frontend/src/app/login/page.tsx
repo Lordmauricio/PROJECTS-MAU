@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useAuth, ApiError } from "@/lib/auth-context";
 
 export default function LoginPage() {
-  const { login, setSession } = useAuth();
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -32,16 +32,10 @@ export default function LoginPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await login(email, password, organizationId);
-      if (result.accessToken && result.user && result.organization) {
-        setSession({
-          accessToken: result.accessToken,
-          refreshToken: result.refreshToken!,
-          user: result.user,
-          organization: result.organization,
-        });
-        window.location.href = "/dashboard";
-      }
+      // login() ya persiste la sesión y navega a /dashboard cuando la
+      // respuesta no vuelve a pedir selección de organización (que es
+      // siempre el caso aquí, porque ya pasamos organizationId).
+      await login(email, password, organizationId);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "No se pudo iniciar sesión");
     } finally {

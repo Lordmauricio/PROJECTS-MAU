@@ -13,6 +13,7 @@ export class MembersController {
   constructor(private readonly members: MembersService) {}
 
   @Get()
+  @RequirePermissions('users.read')
   list(@CurrentAuth() auth: AccessTokenPayload) {
     return this.members.list(auth.organizationId);
   }

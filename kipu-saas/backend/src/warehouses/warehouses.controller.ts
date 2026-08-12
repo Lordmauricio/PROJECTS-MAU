@@ -13,6 +13,7 @@ export class WarehousesController {
   constructor(private readonly warehouses: WarehousesService) {}
 
   @Get()
+  @RequirePermissions('organization.branches.read')
   list(@CurrentAuth() auth: AccessTokenPayload) {
     return this.warehouses.list(auth.organizationId);
   }

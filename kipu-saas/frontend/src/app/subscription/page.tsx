@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { ApiError } from "@/lib/auth-context";
 
 interface Subscription {
   status: string;
@@ -17,15 +18,21 @@ interface Subscription {
 
 export default function SubscriptionPage() {
   const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    api<Subscription>("/organizations/me/subscription").then(setSubscription);
+    api<Subscription>("/organizations/me/subscription")
+      .then(setSubscription)
+      .catch((err) =>
+        setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la suscripción"),
+      );
   }, []);
 
   return (
     <AppShell>
       <div className="p-6 max-w-xl space-y-4">
         <h1 className="text-lg font-semibold">Suscripción</h1>
+        {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
         {subscription ? (
           <div className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3 text-sm">
             <div className="flex items-center justify-between">
@@ -45,9 +52,9 @@ export default function SubscriptionPage() {
               La pasarela de pagos para cambiar de plan es una fase siguiente (ver docs/PROJECT_PLAN.md).
             </p>
           </div>
-        ) : (
+        ) : !loadError ? (
           <p className="text-sm text-zinc-500">Cargando...</p>
-        )}
+        ) : null}
       </div>
     </AppShell>
   );

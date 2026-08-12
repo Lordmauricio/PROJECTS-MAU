@@ -19,13 +19,20 @@ interface Customer {
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", documentNumber: "", phone: "", email: "" });
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
-    setCustomers(await api<Customer[]>("/customers"));
-    setLoading(false);
+    setLoadError(null);
+    try {
+      setCustomers(await api<Customer[]>("/customers"));
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la lista de clientes");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -48,6 +55,7 @@ export default function CustomersPage() {
     <AppShell>
       <div className="p-6 max-w-4xl space-y-6">
         <h1 className="text-lg font-semibold">Clientes</h1>
+        {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
 
         <form onSubmit={addCustomer} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
           <h2 className="font-medium text-sm">Nuevo cliente</h2>

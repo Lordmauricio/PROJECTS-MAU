@@ -11,6 +11,8 @@ import {
   RequestPasswordResetDto,
 } from './dto/refresh.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { NoPermissionRequired } from '../common/decorators/no-permission-required.decorator';
 import { CurrentAuth } from '../common/decorators/current-auth.decorator';
 import type { AccessTokenPayload } from './auth.service';
 
@@ -18,6 +20,7 @@ import type { AccessTokenPayload } from './auth.service';
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('register')
   register(@Body() dto: RegisterDto, @Req() req: Request) {
     return this.auth.register(dto, { userAgent: req.headers['user-agent'], ip: req.ip });
@@ -59,7 +62,8 @@ export class AuthController {
     return { ok: true };
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @NoPermissionRequired()
   @Get('me')
   me(@CurrentAuth() auth: AccessTokenPayload) {
     return auth;

@@ -43,9 +43,33 @@ filas de otro tenant, y que sin contexto de tenant fijado no devuelve nada
   (dentro de una transacción con RLS activo, igual que cualquier otra
   query) — revocar un permiso surte efecto inmediato, no espera a que
   expire el access token.
+- **`PermissionsGuard` es fail-closed por defecto.** Una ruta protegida por
+  este guard debe declarar explícitamente `@RequirePermissions(...)` (exige
+  el/los permiso(s) indicados) o `@NoPermissionRequired()` (opt-in
+  explícito: "cualquier autenticado, sin permiso específico"). Si no
+  declara ninguno de los dos, el guard lanza `ForbiddenException` — no
+  existe ningún camino donde olvidar el decorador deje una ruta abierta
+  por accidente. Verificado en `npm run verify:tenant-isolation`
+  (sección 3): a nivel de guard (sin HTTP ni DB) y a nivel de API HTTP con
+  un usuario de rol bajo (SALES) contra endpoints con y sin el permiso
+  requerido, más regresión del rol OWNER contra los endpoints ya
+  existentes.
 - Reglas de negocio adicionales donde aplica: por ejemplo, no se puede
   quitar el rol OWNER al último propietario de una organización
   (`MembersService.changeRole`).
+- **Resolución de membresías antes de tener contexto de tenant** (login,
+  refresh de token): `organization_users` tiene RLS por `organizationId`,
+  pero login/refresh todavía no saben con qué organización va a operar el
+  request. `UserPrismaService` fija `app.current_user_id` (análogo a
+  `TenantPrismaService` con `app.current_tenant`) y una policy adicional de
+  solo lectura (`own_memberships_readable`) permite ver las propias filas
+  de membresía por `userId` — nunca datos de negocio de otro tenant. El
+  rol y la organización de la membresía elegida se resuelven después, ya
+  con `tenantPrisma.run(organizationId, ...)`, para evitar que un `include`
+  a través de RLS sin contexto de tenant devuelva relaciones `null` en
+  silencio (bug real encontrado y corregido en la auditoría de Fase 1: el
+  login para cualquier usuario que no fuera el flujo de registro estaba
+  roto).
 
 ## Datos sensibles
 
@@ -64,6 +88,14 @@ filas de otro tenant, y que sin contexto de tenant fijado no devuelve nada
   `forbidNonWhitelisted: true`: cualquier campo no declarado en el DTO se
   rechaza, no se ignora silenciosamente — reduce superficie de mass
   assignment.
+- `@EmptyToUndefined()` (`common/decorators/empty-to-undefined.decorator.ts`)
+  normaliza `""` a `undefined` en campos opcionales antes de validar,
+  aplicado donde importa por corrección funcional: `Customer.email` /
+  `Supplier.email` (`@IsEmail()` rechaza `""`, y los formularios envían
+  inputs vacíos como `""`, no `undefined`), y `Supplier.nit` /
+  `Product.sku` / `Product.barcode` (tienen `@@unique([organizationId, …])`
+  desde la auditoría de Fase 1 — a diferencia de `NULL`, dos filas con
+  `""` sí violan un unique constraint en Postgres).
 - Prisma parametriza automáticamente toda query generada por su API;
   los únicos `$queryRaw`/`$executeRaw` del proyecto (fijar
   `app.current_tenant`, y una consulta de conteo de stock bajo en el

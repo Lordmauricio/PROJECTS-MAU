@@ -97,6 +97,14 @@ model RefreshToken {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Contexto de organización/rol con el que se emitió este refresh token.
+  // Nullable porque tokens emitidos antes de este campo no lo tienen.
+  // Se usa en el refresh para preservar la organización activa de la
+  // sesión en vez de re-elegir una arbitrariamente entre las membresías
+  // del usuario (bug corregido en la auditoría de Fase 1).
+  organizationId String?
+  roleId         String?
+
   tokenHash String    @unique
   userAgent String?
   ip        String?
@@ -244,8 +252,9 @@ model Branch {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  warehouses   Warehouse[]
-  posTerminals POSTerminal[]
+  warehouses       Warehouse[]
+  posTerminals     POSTerminal[]
+  taxConfiguration TaxConfiguration?
 
   @@index([organizationId])
   @@map("branches")
@@ -352,6 +361,7 @@ model Supplier {
   purchases Purchase[]
   payables  Payable[]
 
+  @@unique([organizationId, nit])
   @@index([organizationId])
   @@map("suppliers")
 }
@@ -423,6 +433,8 @@ model Product {
   purchaseItems      PurchaseItem[]
   invoiceItems       InvoiceItem[]
 
+  @@unique([organizationId, sku])
+  @@unique([organizationId, barcode])
   @@index([organizationId])
   @@index([categoryId])
   @@map("products")
@@ -788,6 +800,7 @@ model TaxConfiguration {
   id             String @id @default(cuid())
   organizationId String
   branchId       String @unique
+  branch         Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   nit            String?
   regime         String?

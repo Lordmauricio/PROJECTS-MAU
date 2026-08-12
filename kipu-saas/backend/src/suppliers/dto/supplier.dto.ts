@@ -1,4 +1,5 @@
 import { IsBoolean, IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import { EmptyToUndefined } from '../../common/decorators/empty-to-undefined.decorator';
 
 export class CreateSupplierDto {
   @IsString()
@@ -9,6 +10,11 @@ export class CreateSupplierDto {
   @IsString()
   businessName?: string;
 
+  // EmptyToUndefined es obligatorio acá: Supplier tiene
+  // @@unique([organizationId, nit]), y a diferencia de NULL, dos filas con
+  // nit = "" SÍ chocan entre sí en Postgres — rompería crear un segundo
+  // proveedor sin NIT en la misma empresa.
+  @EmptyToUndefined()
   @IsOptional()
   @IsString()
   nit?: string;
@@ -17,6 +23,7 @@ export class CreateSupplierDto {
   @IsString()
   phone?: string;
 
+  @EmptyToUndefined()
   @IsOptional()
   @IsEmail()
   email?: string;
@@ -36,6 +43,7 @@ export class UpdateSupplierDto {
   @IsString()
   businessName?: string;
 
+  @EmptyToUndefined()
   @IsOptional()
   @IsString()
   nit?: string;
@@ -44,6 +52,7 @@ export class UpdateSupplierDto {
   @IsString()
   phone?: string;
 
+  @EmptyToUndefined()
   @IsOptional()
   @IsEmail()
   email?: string;

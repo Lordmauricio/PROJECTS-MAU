@@ -14,8 +14,11 @@ export const PERMISSIONS_CATALOG: PermissionDef[] = [
   // Organización / configuración
   { key: 'settings.update', module: 'organization', description: 'Editar datos de la empresa y configuración general' },
   { key: 'organization.branches.manage', module: 'organization', description: 'Crear y editar sucursales, almacenes y puntos de venta' },
+  { key: 'organization.branches.read', module: 'organization', description: 'Ver sucursales, almacenes y puntos de venta' },
   { key: 'users.manage', module: 'organization', description: 'Invitar usuarios y asignar roles' },
+  { key: 'users.read', module: 'organization', description: 'Ver el listado de usuarios de la empresa' },
   { key: 'organization.roles.manage', module: 'organization', description: 'Crear/editar roles y sus permisos' },
+  { key: 'organization.roles.read', module: 'organization', description: 'Ver roles y el mapeo de permisos por rol' },
 
   // Catálogo / inventario
   { key: 'products.create', module: 'catalog', description: 'Crear productos, categorías y unidades' },
@@ -81,6 +84,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
   OWNER: ALL_PERMISSION_KEYS,
   ADMIN: ALL_PERMISSION_KEYS,
   MANAGER: [
+    'organization.branches.read',
     'products.create', 'products.update', 'products.read',
     'inventory.manage', 'inventory.read',
     'customers.manage', 'customers.read',
@@ -100,6 +104,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
     'audit.read',
   ],
   CASHIER: [
+    'organization.branches.read',
     'sales.create', 'sales.read',
     'cash.manage',
     'invoices.create', 'invoices.read',
@@ -107,6 +112,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
     'products.read',
   ],
   INVENTORY: [
+    'organization.branches.read',
     'products.create', 'products.update', 'products.read',
     'inventory.manage', 'inventory.read',
     'suppliers.read',

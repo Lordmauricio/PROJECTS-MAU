@@ -20,14 +20,24 @@ interface Warehouse {
 export default function WarehousesPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", branchId: "" });
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    const [w, b] = await Promise.all([api<Warehouse[]>("/warehouses"), api<Branch[]>("/branches")]);
-    setWarehouses(w);
-    setBranches(b);
-    if (b.length > 0) setForm((f) => ({ ...f, branchId: f.branchId || b[0].id }));
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const [w, b] = await Promise.all([api<Warehouse[]>("/warehouses"), api<Branch[]>("/branches")]);
+      setWarehouses(w);
+      setBranches(b);
+      if (b.length > 0) setForm((f) => ({ ...f, branchId: f.branchId || b[0].id }));
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar los almacenes");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -54,6 +64,7 @@ export default function WarehousesPage() {
     <AppShell>
       <div className="p-6 max-w-2xl space-y-6">
         <h1 className="text-lg font-semibold">Almacenes</h1>
+        {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
         {error && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>}
         <form onSubmit={addWarehouse} className="bg-white rounded-lg border border-zinc-200 p-5 flex gap-2 items-end">
           <div className="flex-1">

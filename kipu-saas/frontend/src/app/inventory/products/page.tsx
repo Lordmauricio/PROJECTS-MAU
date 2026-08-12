@@ -24,18 +24,25 @@ export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", price: "", sku: "", categoryId: "" });
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
-    const [p, c] = await Promise.all([
-      api<Product[]>("/products"),
-      api<Category[]>("/product-categories"),
-    ]);
-    setProducts(p);
-    setCategories(c);
-    setLoading(false);
+    setLoadError(null);
+    try {
+      const [p, c] = await Promise.all([
+        api<Product[]>("/products"),
+        api<Category[]>("/product-categories"),
+      ]);
+      setProducts(p);
+      setCategories(c);
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el catálogo de productos");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -63,19 +70,30 @@ export default function ProductsPage() {
   }
 
   async function removeProduct(id: string) {
-    await api(`/products/${id}`, { method: "DELETE" });
-    load();
+    setError(null);
+    try {
+      await api(`/products/${id}`, { method: "DELETE" });
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo eliminar el producto");
+    }
   }
 
   async function duplicateProduct(id: string) {
-    await api(`/products/${id}/duplicate`, { method: "POST" });
-    load();
+    setError(null);
+    try {
+      await api(`/products/${id}/duplicate`, { method: "POST" });
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo duplicar el producto");
+    }
   }
 
   return (
     <AppShell>
       <div className="p-6 max-w-4xl space-y-6">
         <h1 className="text-lg font-semibold">Productos</h1>
+        {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
 
         <form onSubmit={addProduct} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
           <h2 className="font-medium text-sm">Nuevo producto</h2>

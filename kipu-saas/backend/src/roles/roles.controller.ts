@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Put, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
+import { NoPermissionRequired } from '../common/decorators/no-permission-required.decorator';
 import { CurrentAuth } from '../common/decorators/current-auth.decorator';
 import type { AccessTokenPayload } from '../auth/auth.service';
 import { RolesService } from './roles.service';
@@ -13,11 +14,13 @@ export class RolesController {
   constructor(private readonly roles: RolesService) {}
 
   @Get()
+  @RequirePermissions('organization.roles.read')
   list(@CurrentAuth() auth: AccessTokenPayload) {
     return this.roles.list(auth.organizationId);
   }
 
   @Get('permissions-catalog')
+  @NoPermissionRequired()
   catalog() {
     return this.roles.listPermissionCatalog();
   }

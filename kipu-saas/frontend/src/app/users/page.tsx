@@ -21,14 +21,24 @@ interface Member {
 export default function UsersPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ email: "", name: "", roleId: "" });
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    const [m, r] = await Promise.all([api<Member[]>("/members"), api<Role[]>("/roles")]);
-    setMembers(m);
-    setRoles(r);
-    if (r.length > 0) setForm((f) => ({ ...f, roleId: f.roleId || r.find((x) => x.key === "CASHIER")?.id || r[0].id }));
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const [m, r] = await Promise.all([api<Member[]>("/members"), api<Role[]>("/roles")]);
+      setMembers(m);
+      setRoles(r);
+      if (r.length > 0) setForm((f) => ({ ...f, roleId: f.roleId || r.find((x) => x.key === "CASHIER")?.id || r[0].id }));
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el equipo");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -48,20 +58,35 @@ export default function UsersPage() {
   }
 
   async function changeRole(membershipId: string, roleId: string) {
-    await api(`/members/${membershipId}/role`, { method: "PATCH", body: { roleId } });
-    load();
+    setError(null);
+    try {
+      await api(`/members/${membershipId}/role`, { method: "PATCH", body: { roleId } });
+      load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "No se pudo cambiar el rol del usuario");
+    }
   }
 
   async function toggleStatus(member: Member) {
+    setError(null);
     const action = member.status === "SUSPENDED" ? "reactivate" : "suspend";
-    await api(`/members/${member.id}/${action}`, { method: "PATCH" });
-    load();
+    try {
+      await api(`/members/${member.id}/${action}`, { method: "PATCH" });
+      load();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : `No se pudo ${action === "suspend" ? "suspender" : "reactivar"} al usuario`,
+      );
+    }
   }
 
   return (
     <AppShell>
       <div className="p-6 max-w-3xl space-y-6">
         <h1 className="text-lg font-semibold">Usuarios y Permisos</h1>
+        {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
 
         <form onSubmit={invite} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
           <h2 className="font-medium text-sm">Invitar usuario</h2>

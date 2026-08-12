@@ -18,10 +18,15 @@
  */
 import 'dotenv/config';
 import assert from 'node:assert/strict';
-import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, INestApplication } from '@nestjs/common';
+import * as argon2 from 'argon2';
+import { NestFactory, Reflector } from '@nestjs/core';
+import { ExecutionContext, ForbiddenException, ValidationPipe, INestApplication } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { TenantPrismaService } from '../src/prisma/tenant-prisma.service';
+import { PermissionsGuard } from '../src/common/guards/permissions.guard';
+import { RequirePermissions } from '../src/common/decorators/permissions.decorator';
+import { NoPermissionRequired } from '../src/common/decorators/no-permission-required.decorator';
 
 function uniqueSuffix() {
   return `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -70,6 +75,30 @@ async function registerOrg(app: INestApplication, label: string) {
     organizationId: res.body.organization.id as string,
     branchName: `Sucursal ${label}`,
   };
+}
+
+// Portador de handlers "de mentira" para el test de PermissionsGuard a nivel
+// de guard (sin HTTP, sin DB): los decoradores reales (@RequirePermissions /
+// @NoPermissionRequired) se aplican acá para que Reflector lea metadata
+// real, exactamente como en un controlador de verdad.
+class FakeController {}
+class FakeRouteHandlers {
+  static bare() {
+    /* ruta protegida por PermissionsGuard que NO declara nada: debe denegar */
+  }
+
+  @NoPermissionRequired()
+  static noPermissionRequired() {
+    /* ruta marcada explícitamente como "solo requiere estar autenticado" */
+  }
+}
+
+function fakeExecutionContext(handler: (...args: unknown[]) => unknown, user?: unknown): ExecutionContext {
+  return {
+    getHandler: () => handler,
+    getClass: () => FakeController,
+    switchToHttp: () => ({ getRequest: () => ({ user }) }),
+  } as unknown as ExecutionContext;
 }
 
 async function main() {
@@ -157,6 +186,122 @@ async function main() {
       auditForA.every((r) => r.organizationId === orgA.organizationId),
       'todos los audit_logs visibles con contexto = A pertenecen a A',
     );
+
+    console.log(
+      '\n3) PermissionsGuard fail-closed (los 5 escenarios pedidos por el usuario + regresión de OWNER)',
+    );
+
+    // --- Escenario 3a (nivel guard, sin HTTP ni DB): ruta protegida por
+    // PermissionsGuard que NO declara @RequirePermissions ni
+    // @NoPermissionRequired debe denegar por defecto. ---
+    const reflector = new Reflector();
+    const tenantPrismaForGuard = app.get(TenantPrismaService);
+    const guard = new PermissionsGuard(reflector, tenantPrismaForGuard);
+
+    let bareThrewForbidden = false;
+    try {
+      await guard.canActivate(fakeExecutionContext(FakeRouteHandlers.bare, { organizationId: 'x', roleId: 'y' }));
+    } catch (err) {
+      bareThrewForbidden = err instanceof ForbiddenException;
+    }
+    check(
+      bareThrewForbidden,
+      'endpoint protegido SIN permiso declarado → PermissionsGuard deniega con ForbiddenException (fail-closed a nivel de guard)',
+    );
+
+    // --- @NoPermissionRequired() sí deja pasar a cualquier autenticado. ---
+    const noPermissionResult = await guard.canActivate(
+      fakeExecutionContext(FakeRouteHandlers.noPermissionRequired, { organizationId: 'x', roleId: 'y' }),
+    );
+    check(noPermissionResult === true, '@NoPermissionRequired() permite el acceso a cualquier autenticado');
+
+    // --- Escenario: endpoint público → funciona sin autenticación. ---
+    const publicRegister = await fetchViaServer(httpServer, 'POST', '/auth/register', {
+      organizationName: `Público ${uniqueSuffix()}`,
+      legalName: `Público SRL ${uniqueSuffix()}`,
+      nit: `TEST-${uniqueSuffix()}`,
+      branchName: 'Sucursal Público',
+      ownerName: 'Owner Público',
+      email: `owner-publico-${uniqueSuffix()}@example.test`,
+      password: 'Password123!',
+    });
+    check(
+      publicRegister.status === 201,
+      'endpoint público (POST /auth/register) funciona sin ningún header de Authorization',
+    );
+
+    // --- Escenario: endpoint protegido con el permiso correcto → funciona
+    // (regresión de OWNER contra los 5 endpoints recién protegidos por fix A). ---
+    const ownerChecks: Array<[string, string]> = [
+      ['GET', '/branches'],
+      ['GET', '/warehouses'],
+      ['GET', '/pos-terminals'],
+      ['GET', '/members'],
+      ['GET', '/roles'],
+    ];
+    for (const [method, path] of ownerChecks) {
+      const res = await fetchViaServer(httpServer, method, path, undefined, orgA.accessToken);
+      check(res.status === 200, `OWNER de A sigue accediendo a ${method} ${path} → 200 (no se rompió por el fail-closed)`);
+    }
+
+    // --- Crear un usuario de prueba con rol SALES directamente vía Prisma
+    // (evita depender del flujo de "aceptar invitación", que no existe
+    // todavía) para probar "autenticado SIN el permiso" y "autenticado CON
+    // el permiso" con un rol de bajo privilegio real. ---
+    const salesEmail = `sales-${uniqueSuffix()}@example.test`;
+    const salesPassword = 'Password123!';
+    await tenantPrismaForGuard.run(orgA.organizationId, async (tx) => {
+      const salesRole = await tx.role.findFirstOrThrow({
+        where: { organizationId: orgA.organizationId, key: 'SALES' },
+      });
+      const passwordHash = await argon2.hash(salesPassword);
+      const user = await prisma.user.create({
+        data: { email: salesEmail, name: 'Vendedor de prueba', passwordHash, emailVerifiedAt: new Date() },
+      });
+      await tx.organizationUser.create({
+        data: {
+          organizationId: orgA.organizationId,
+          userId: user.id,
+          roleId: salesRole.id,
+          status: 'ACTIVE',
+          joinedAt: new Date(),
+        },
+      });
+    });
+
+    const salesLogin = await fetchViaServer(httpServer, 'POST', '/auth/login', {
+      email: salesEmail,
+      password: salesPassword,
+    });
+    assert.equal(
+      salesLogin.status,
+      201,
+      `login del usuario SALES de prueba debía dar 201/200, dio ${salesLogin.status}: ${JSON.stringify(salesLogin.body)}`,
+    );
+    const salesToken = salesLogin.body.accessToken as string;
+
+    // --- Escenario: usuario autenticado SIN el permiso requerido → 403. ---
+    const salesInvite = await fetchViaServer(
+      httpServer,
+      'POST',
+      '/members/invite',
+      { email: `invitado-${uniqueSuffix()}@example.test`, roleId: 'no-importa', name: 'x' },
+      salesToken,
+    );
+    check(
+      salesInvite.status === 403,
+      'usuario SALES (sin users.manage) golpea POST /members/invite (@RequirePermissions users.manage) → 403',
+    );
+
+    // --- Escenario: usuario CON el permiso → acceso correcto. ---
+    const salesProducts = await fetchViaServer(httpServer, 'GET', '/products', undefined, salesToken);
+    check(salesProducts.status === 200, 'usuario SALES (con products.read) golpea GET /products → 200');
+
+    const salesOrgMe = await fetchViaServer(httpServer, 'GET', '/organizations/me', undefined, salesToken);
+    check(
+      salesOrgMe.status === 200,
+      'usuario SALES golpea GET /organizations/me (@NoPermissionRequired) → 200 (autenticado, sin permiso específico requerido)',
+    );
   } finally {
     await app.close();
   }
@@ -166,6 +311,10 @@ async function main() {
     process.exit(1);
   }
   console.log('\nTodas las verificaciones de aislamiento de tenant pasaron.');
+  // Salida explícita: las conexiones de BullMQ/Redis abiertas por AuditModule
+  // no siempre se cierran a tiempo con app.close(), lo que deja el proceso
+  // colgado indefinidamente después de imprimir el resultado.
+  process.exit(0);
 }
 
 main().catch((err) => {

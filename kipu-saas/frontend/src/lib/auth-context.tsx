@@ -72,10 +72,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return result;
     }
 
-    persistSession(result as Required<Pick<LoginResult, "accessToken" | "refreshToken" | "user" | "organization">>);
-    setToken(result.accessToken!);
-    setUser(result.user!);
-    setOrganization(result.organization!);
+    if (!result.accessToken || !result.refreshToken || !result.user || !result.organization) {
+      throw new Error(
+        "Respuesta de login incompleta: faltan campos de sesión (accessToken/refreshToken/user/organization).",
+      );
+    }
+
+    const session = {
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+      user: result.user,
+      organization: result.organization,
+    };
+    persistSession(session);
+    setToken(session.accessToken);
+    setUser(session.user);
+    setOrganization(session.organization);
     router.push("/dashboard");
     return result;
   }

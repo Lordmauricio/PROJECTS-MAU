@@ -13,6 +13,7 @@ export class BranchesController {
   constructor(private readonly branches: BranchesService) {}
 
   @Get()
+  @RequirePermissions('organization.branches.read')
   list(@CurrentAuth() auth: AccessTokenPayload) {
     return this.branches.list(auth.organizationId);
   }

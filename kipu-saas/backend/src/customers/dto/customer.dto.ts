@@ -1,4 +1,5 @@
 import { IsBoolean, IsEmail, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
+import { EmptyToUndefined } from '../../common/decorators/empty-to-undefined.decorator';
 
 enum PartyDocumentTypeDto {
   NIT = 'NIT',
@@ -30,6 +31,7 @@ export class CreateCustomerDto {
   @IsString()
   phone?: string;
 
+  @EmptyToUndefined()
   @IsOptional()
   @IsEmail()
   email?: string;
@@ -61,6 +63,7 @@ export class UpdateCustomerDto {
   @IsString()
   phone?: string;
 
+  @EmptyToUndefined()
   @IsOptional()
   @IsEmail()
   email?: string;

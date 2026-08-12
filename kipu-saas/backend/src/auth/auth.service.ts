@@ -8,6 +8,8 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../prisma/prisma.service';
+import { UserPrismaService } from '../prisma/user-prisma.service';
+import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { MailService } from '../mail/mail.service';
 import { AuditService } from '../audit/audit.service';
@@ -40,6 +42,8 @@ interface IssueTokensOptions {
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly userPrisma: UserPrismaService,
+    private readonly tenantPrisma: TenantPrismaService,
     private readonly organizations: OrganizationsService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
@@ -113,16 +117,26 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
-    // Las membresías (organization_users) tienen RLS: como todavía no
-    // sabemos a qué organización pertenece el request, no podemos usar
-    // tenantPrisma.run con un id de organización. Se resuelve con el rol
-    // admin (PrismaService directo) solo para esta única consulta de
-    // "¿a qué organizaciones pertenece este usuario?" — es información
-    // sobre el propio usuario autenticado, no una fuga entre tenants.
-    const memberships = await this.prisma.organizationUser.findMany({
-      where: { userId: user.id, status: 'ACTIVE' },
-      include: { organization: true, role: true },
-    });
+    // Las membresías (organization_users) tienen RLS por organizationId, y
+    // todavía no sabemos con cuál organización va a operar el request. Se
+    // resuelve vía UserPrismaService, que fija app.current_user_id — hay
+    // una policy adicional en la base (own_memberships_readable) que deja
+    // leer las propias filas de membresía por userId, sin exponer datos de
+    // negocio de ningún tenant ni requerir bypass de RLS.
+    //
+    // Importante: acá NO se usa `include: { role, organization }`. Esas
+    // tablas tienen su propia RLS por organizationId, y en esta consulta
+    // solo está fijado app.current_user_id (no app.current_tenant) — un
+    // JOIN se ejecutaría igual, pero Postgres filtraría las filas
+    // relacionadas y el include volvería `null` en vez de fallar, lo cual
+    // rompe silenciosamente más adelante. Por eso el rol y la organización
+    // de la membresía elegida se resuelven en un segundo paso, ya con
+    // tenantPrisma.run(organizationId, ...) una vez que sabemos cuál es.
+    const memberships = await this.userPrisma.run(user.id, (tx) =>
+      tx.organizationUser.findMany({
+        where: { userId: user.id, status: 'ACTIVE' },
+      }),
+    );
 
     if (memberships.length === 0) {
       throw new UnauthorizedException('El usuario no pertenece a ninguna organización activa');
@@ -131,9 +145,16 @@ export class AuthService {
     let membership = memberships[0];
     if (memberships.length > 1) {
       if (!dto.organizationId) {
+        const organizations = await Promise.all(
+          memberships.map((m) =>
+            this.tenantPrisma.run(m.organizationId, (tx) =>
+              tx.organization.findUniqueOrThrow({ where: { id: m.organizationId } }),
+            ),
+          ),
+        );
         return {
           requiresOrganizationSelection: true,
-          organizations: memberships.map((m) => ({ id: m.organization.id, name: m.organization.name })),
+          organizations: organizations.map((o) => ({ id: o.id, name: o.name })),
         };
       }
       const selected = memberships.find((m) => m.organizationId === dto.organizationId);
@@ -143,11 +164,18 @@ export class AuthService {
       membership = selected;
     }
 
+    const [role, organization] = await this.tenantPrisma.run(membership.organizationId, (tx) =>
+      Promise.all([
+        tx.role.findUniqueOrThrow({ where: { id: membership.roleId } }),
+        tx.organization.findUniqueOrThrow({ where: { id: membership.organizationId } }),
+      ]),
+    );
+
     const tokens = await this.issueTokens({
       userId: user.id,
       organizationId: membership.organizationId,
       roleId: membership.roleId,
-      roleKey: membership.role.key,
+      roleKey: role.key,
       userAgent: meta.userAgent,
       ip: meta.ip,
     });
@@ -163,7 +191,7 @@ export class AuthService {
     return {
       ...tokens,
       user: { id: user.id, name: user.name, email: user.email },
-      organization: { id: membership.organization.id, name: membership.organization.name },
+      organization: { id: organization.id, name: organization.name },
     };
   }
 
@@ -181,20 +209,44 @@ export class AuthService {
     });
 
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: stored.userId } });
-    const memberships = await this.prisma.organizationUser.findMany({
-      where: { userId: user.id, status: 'ACTIVE' },
-      include: { role: true },
-    });
-    const membership = memberships[0];
-    if (!membership) {
+    // Sin include de `role` acá por la misma razón que en login(): esta
+    // consulta solo fija app.current_user_id, y la tabla roles tiene su
+    // propia RLS por organizationId — el rol se resuelve aparte, una vez
+    // elegida la membresía, con tenantPrisma.run.
+    const memberships = await this.userPrisma.run(user.id, (tx) =>
+      tx.organizationUser.findMany({
+        where: { userId: user.id, status: 'ACTIVE' },
+      }),
+    );
+    if (memberships.length === 0) {
       throw new UnauthorizedException('El usuario ya no tiene organizaciones activas');
     }
+
+    // Preservar la organización con la que se emitió el token original en
+    // vez de re-elegir una arbitrariamente: un usuario con membresías en 2+
+    // empresas no debe "cambiar" de empresa sin darse cuenta al refrescar.
+    // El rol siempre se relee en vivo desde la membresía actual (no del
+    // valor guardado en el token), así un cambio de rol también se refleja
+    // en el próximo refresh y no solo cuando expira el access token.
+    let membership = stored.organizationId
+      ? memberships.find((m) => m.organizationId === stored.organizationId)
+      : undefined;
+    if (!membership) {
+      // Token legado sin organizationId guardado, o la membresía original
+      // ya no está activa (removido de esa organización): se cae de vuelta
+      // a la primera membresía activa disponible.
+      membership = memberships[0];
+    }
+
+    const role = await this.tenantPrisma.run(membership.organizationId, (tx) =>
+      tx.role.findUniqueOrThrow({ where: { id: membership.roleId } }),
+    );
 
     return this.issueTokens({
       userId: user.id,
       organizationId: membership.organizationId,
       roleId: membership.roleId,
-      roleKey: membership.role.key,
+      roleKey: role.key,
     });
   }
 
@@ -274,6 +326,8 @@ export class AuthService {
     await this.prisma.refreshToken.create({
       data: {
         userId: options.userId,
+        organizationId: options.organizationId,
+        roleId: options.roleId,
         tokenHash: hash,
         userAgent: options.userAgent,
         ip: options.ip,
