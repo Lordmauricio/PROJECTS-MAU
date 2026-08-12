@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: kipu_saas
+    ports:
+      - "5432:5432"
+    volumes:
+      - kipu_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - kipu_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "4200:4200"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/kipu_saas?schema=public
+      RUNTIME_DATABASE_URL: postgresql://app_user:app_user_dev_password@postgres:5432/kipu_saas?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: change-me-long-random-secret
+      JWT_REFRESH_SECRET: change-me-different-long-random-secret
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 30d
+      PORT: 4200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:4200
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  kipu_postgres_data:
+  kipu_redis_data:
