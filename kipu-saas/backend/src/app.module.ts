@@ -20,6 +20,8 @@ import { SuppliersModule } from './suppliers/suppliers.module';
 import { ProductCategoriesModule } from './product-categories/product-categories.module';
 import { ProductUnitsModule } from './product-units/product-units.module';
 import { ProductsModule } from './products/products.module';
+import { InventoryModule } from './inventory/inventory.module';
+import { SalesModule } from './sales/sales.module';
 
 @Module({
   imports: [
@@ -56,6 +58,8 @@ import { ProductsModule } from './products/products.module';
     ProductCategoriesModule,
     ProductUnitsModule,
     ProductsModule,
+    InventoryModule,
+    SalesModule,
   ],
   controllers: [AppController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

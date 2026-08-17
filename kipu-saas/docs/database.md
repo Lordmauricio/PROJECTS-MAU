@@ -60,15 +60,32 @@ Organization
   precio mayorista, stock mínimo, categoría/unidad/proveedor opcionales.
 - `inventories` — stock actual por producto y almacén (`@@unique([warehouseId, productId])`).
 - `inventory_movements` — entradas/salidas/transferencias/ajustes/
-  devoluciones, con referencia opcional al documento de origen.
+  devoluciones, con referencia opcional al documento de origen (`reference`
+  guarda el id de la venta/compra relacionada). `IN`/`OUT`/`RETURN` tienen
+  módulo de negocio real desde Fase Comercial 2
+  (`InventoryService.applyMovement`, usado por Ventas y por la entrada
+  manual `POST /inventory/movements`); `TRANSFER` y el motor de ajustes
+  avanzado quedan para la Fase Comercial 4.
 
-### Ventas / Compras / Caja (esquema listo, sin módulo de negocio en Foundation)
+### Ventas (módulo de negocio real desde Fase Comercial 2) / Compras / Caja
 - `sales` + `sale_items` — venta separada explícitamente de `invoices`
-  ("una venta puede generar una factura", no son lo mismo).
-- `purchases` + `purchase_items`.
-- `payments` — pagos asociados a una venta (efectivo/tarjeta/transferencia/QR/mixto).
-- `cash_registers` + `cash_movements` — apertura/cierre de caja, arqueo.
-- `expenses`, `receivables`, `payables` — gastos y cuentas por cobrar/pagar.
+  ("una venta puede generar una factura", no son lo mismo). `status`:
+  `DRAFT → CONFIRMED/PARTIALLY_PAID/PAID → REFUNDED`, o `DRAFT →
+  CANCELLED`. `warehouseId` (de dónde se descuenta stock al confirmar) y
+  `confirmedAt`/`cancelledAt`/`refundedAt` se agregaron en la migración
+  `20260817060253_sales_pos_core`.
+- `purchases` + `purchase_items` — esquema listo, módulo de negocio es
+  Fase Comercial 3.
+- `payments` — pagos asociados a una venta
+  (efectivo/tarjeta/transferencia/QR — "mixto" se representa como varios
+  `Payment`, uno por método, no como un único registro `MIXED`).
+  `idempotencyKey` (única, opcional) agregada en la misma migración:
+  protege contra doble cobro por doble click/retry — ver
+  `docs/architecture.md` sección 7.
+- `cash_registers` + `cash_movements` — esquema listo; apertura/cierre/
+  arqueo y el enlace de `Payment` a una caja abierta son Fase Comercial 5.
+- `expenses`, `receivables`, `payables` — gastos y cuentas por cobrar/pagar,
+  esquema listo, Fase Comercial 5/6.
 
 ### Facturación / fiscal (esquema listo, sin integración SIN)
 - `invoices` + `invoice_items` + `invoice_events` — el estado (`VALID`/

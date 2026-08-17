@@ -109,36 +109,117 @@ entregado al usuario en el chat y en `docs/security.md`:
   recorrido en navegador con Playwright (registro → dashboard → CRUD →
   logout → login de nuevo → simulación de API caída).
 
+## Fase Comercial 2 — Ventas / POS ✅
+
+Entregable: un cajero puede vender productos reales por el POS, cobrar en
+efectivo/tarjeta/transferencia/QR (completo, parcial o a crédito), y el
+inventario se descuenta atómicamente sin permitir sobreventa bajo
+concurrencia. Ver `docs/architecture.md` (sección "Fase Comercial 2") y
+`docs/database.md` para el detalle técnico completo.
+
+- [x] Máquina de estados de `Sale`: `DRAFT → CONFIRMED/PARTIALLY_PAID/PAID
+      → REFUNDED`, `DRAFT → CANCELLED`. Nunca se borra una venta para
+      representar una devolución.
+- [x] Núcleo mínimo de Inventario (`InventoryService.applyMovement`):
+      entrada manual (`IN`)/ajuste (`ADJUSTMENT`) y los movimientos `OUT`/
+      `RETURN` que dispara Ventas. El motor avanzado (transferencias,
+      kardex completo) queda para la Fase Comercial 4, tal como autorizó
+      el usuario — esto es solo lo necesario para que Ventas tenga stock
+      real que descontar, dado que Compras (Fase 3) todavía no existe.
+- [x] Confirmar una venta descuenta stock de forma atómica y todo-o-nada
+      (si un solo ítem no tiene stock suficiente, ningún ítem se
+      descuenta) y sin overselling bajo concurrencia real — verificado con
+      dos confirmaciones simultáneas por la última unidad
+      (`sales.concurrency.spec.ts`).
+- [x] Pagos completos, parciales, mixtos (múltiples métodos por venta) y
+      venta a crédito. Nunca se acepta un pago que exceda el saldo
+      pendiente. Toda la aritmética usa `Prisma.Decimal` (`common/money.ts`),
+      nunca `number` de JS, con redondeo half-up a 2 decimales.
+- [x] Idempotencia real: `Payment.idempotencyKey` (única) protege contra
+      doble click/retry — probado tanto en el caso serializado por el lock
+      de la venta como en la carrera cross-venta real (dos requests
+      concurrentes, dos ventas distintas, misma key).
+- [x] Multi-tenant: `TenantPrismaService` + RLS en todo, más `SELECT ...
+      FOR UPDATE` sobre la fila de la venta para las transiciones de
+      estado. Probado con HTTP real (tenant B nunca ve ni puede operar una
+      venta de tenant A — 404, no 403, para no filtrar existencia) y RBAC
+      (rol `SALES` sin `sales.delete` no puede cancelar/devolver).
+- [x] Auditoría en `sales.create`, `sales.confirm`, `sales.payment.create`,
+      `sales.cancel`, `sales.return`.
+- [x] Frontend real: `/sales` (listado con filtro por estado), `/sales/[id]`
+      (detalle, registrar pagos, cancelar, devolver) y `/sales/pos` (carrito
+      real: búsqueda de producto, cantidades, descuentos por ítem y por
+      venta, cliente, métodos de pago mixtos, confirmación con errores
+      visibles).
+- [x] **`Sale` NO es `Invoice`.** El modelo `Invoice`/`TaxConfiguration`
+      sigue existiendo solo como placeholder genérico desde Fase 1 (ver
+      Fase Comercial 6 más abajo) — Ventas/POS de esta fase no lo toca ni
+      depende de él. Una `Sale` podrá generar en el futuro un documento
+      fiscal a través de un Fiscal Engine independiente, pero esa
+      integración NO se implementó acá y no está en el alcance de esta
+      fase.
+- [x] Corregido antes de empezar (PASO 0 de esta fase): `npm ci` ahora deja
+      el backend compilable de una (agregado `"postinstall": "prisma
+      generate"` a `backend/package.json` — antes había que correr `npx
+      prisma generate` a mano tras cada clon/instalación limpia).
+- [x] Suite de tests de integración real contra Postgres/Redis reales
+      (no mocks): `backend/src/sales/*.spec.ts` +
+      `backend/src/common/money.spec.ts` (26 tests). Ver
+      `backend/src/test-support/integration-app.ts` para la infraestructura
+      compartida y el porqué de las decisiones de Jest (`moduleNameMapper`,
+      `--experimental-vm-modules`, `supertest` en vez de `fetch`).
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
-- **Fase 2 — Ventas / POS**: `Sale`/`SaleItem` ya modelados; falta el
-  módulo de negocio (búsqueda de productos, carrito, cobro, métodos de
-  pago) y la pantalla real de `/sales/pos`.
-- **Fase 3 — Compras**: `Purchase`/`PurchaseItem` ya modelados; falta
+- **Fase Comercial 3 — Compras**: `Purchase`/`PurchaseItem` ya modelados; falta
   órdenes de compra y recepción.
-- **Fase 4 — Inventario avanzado**: `InventoryMovement`/`Inventory` ya
-  modelados; falta la lógica de movimientos (entradas/salidas/
-  transferencias/ajustes/devoluciones) disparada por ventas/compras, y
-  kardex.
-- **Fase 5 — Caja**: `CashRegister`/`CashMovement` ya modelados; falta
-  apertura/cierre/arqueo.
-- **Fase 6 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/
+- **Fase Comercial 4 — Inventario avanzado**: el núcleo atómico
+  (`InventoryService.applyMovement`, IN/OUT/RETURN) ya existe desde la Fase
+  Comercial 2 y Ventas ya lo usa; falta `TRANSFER` entre almacenes,
+  ajustes con motivo estructurado más allá del mínimo manual actual, y
+  kardex/reportería completa.
+- **Fase Comercial 5 — Caja**: `CashRegister`/`CashMovement` ya modelados; falta
+  apertura/cierre/arqueo. Los `Payment` de Ventas todavía NO se enlazan a
+  una caja abierta — eso se define en esta fase.
+- **Fase Comercial 6 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/
   `InvoiceEvent`/`TaxConfiguration` ya modelados de forma genérica, **sin**
   campos específicos del SIN todavía. Antes de tocar código fiscal real,
   hay que investigar la normativa vigente (RND, Anexo Técnico, algoritmo de
   CUF, servicios SOAP/REST) tal como exige el prompt — no se inventan
-  reglas fiscales. El prompt es explícito: esto no arranca hasta que
-  Foundation esté sólido, lo cual ya se cumplió acá.
-- **Fase 7 — Reportes**: depende de que exista actividad real en ventas/
-  compras/inventario/caja/facturación para tener algo que reportar.
-- **Fase 8 — Backoffice del SaaS**: rol `app_superadmin` (con `BYPASSRLS`)
-  ya existe en la base de datos, reservado, sin usar todavía.
-- **Fase 9 — Notificaciones y proveedor de email real**: hoy
+  reglas fiscales. Fuera de alcance hasta nueva autorización explícita.
+- **Fase Comercial 7 — Reportes**: depende de que exista actividad real en
+  ventas/compras/inventario/caja/facturación para tener algo que reportar
+  (ventas ya generan esa actividad desde esta fase).
+- **Fase Comercial 8 — Recibos comerciales no fiscales**: numeración
+  comercial segura bajo concurrencia, snapshot inmutable, PDF A4/ticket
+  80mm. Explícitamente distinto de un documento fiscal — ver sección
+  "Recibos vs. Facturación" más abajo.
+- **Fase Comercial 9 — Notificaciones y proveedor de email real**: hoy
   `MailService` es un stub que loguea; `notifications`/`files` tienen
   tabla pero no API.
-- **Fase 10 — Suscripciones y pagos reales**: hoy existe un plan "Gratis"
-  automático y la página de Suscripción es de solo lectura; falta
+- **Fase Comercial 10 — Suscripciones y pagos reales**: hoy existe un plan
+  "Gratis" automático y la página de Suscripción es de solo lectura; falta
   pasarela de pago para cambiar de plan.
+
+## Recibos vs. Facturación (aclaración explícita, sección 3/4 del master spec)
+
+KIPU emite actualmente, y seguirá emitiendo hasta nueva orden, **recibos
+comerciales NO FISCALES** (Fase Comercial 8, todavía no implementada). Un
+recibo:
+
+- NO es una factura ni un documento fiscal, y nunca se presenta como tal.
+- NO depende del SIN de Bolivia ni de ninguna integración fiscal.
+- NO modifica ni transforma la `Sale` que le da origen.
+
+La integración de facturación electrónica con el SIN de Bolivia
+(`FiscalDocument`, XML/XSD, CUF/CUIS/CUFD/CAFC, firma digital, XMLDSig,
+SOAP/WSDL, QR fiscal, anulación fiscal) queda para una fase futura
+independiente y explícitamente autorizada — no se implementó nada de esto
+en la Fase Comercial 2, ni se modificó el núcleo comercial (`Sale`) para
+introducir ninguna dependencia hacia ella. La arquitectura prevista para
+cuando se autorice es `Sale → Fiscal Engine → Fiscal Document → SIN
+Adapter → SIN Bolivia`, pero hoy esa cadena no existe más allá del
+`Sale` inicial.
 
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 

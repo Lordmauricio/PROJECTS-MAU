@@ -5,8 +5,9 @@
 Un solo backend NestJS, dividido internamente en módulos independientes
 (`auth`, `organizations`, `branches`, `warehouses`, `pos-terminals`, `roles`,
 `members`, `customers`, `suppliers`, `products`, `product-categories`,
-`product-units`, `audit`, y los módulos de infraestructura `prisma`,
-`redis`). No se crearon microservicios: para el tamaño de negocio objetivo
+`product-units`, `inventory`, `sales`, `audit`, y los módulos de
+infraestructura `prisma`, `redis`). No se crearon microservicios: para el
+tamaño de negocio objetivo
 (PyMEs bolivianas empezando por Cochabamba) la complejidad operativa de
 microservicios (service discovery, mensajería entre servicios, despliegues
 independientes) no se justifica todavía.
@@ -100,11 +101,64 @@ no depende de que expire el access token.
 
 ## 6. Qué se construyó vs. qué queda para después
 
-Ver `docs/PROJECT_PLAN.md` para el detalle fase por fase. Resumen: en esta
-fase (Foundation) todas las entidades del dominio completo están modeladas
-en la base de datos, pero solo tienen módulo NestJS con endpoints reales:
+Ver `docs/PROJECT_PLAN.md` para el detalle fase por fase. Resumen: desde
+Foundation + Fase Comercial 2, tienen módulo NestJS con endpoints reales:
 autenticación, organizaciones/sucursales/almacenes/puntos de venta, roles y
-permisos, miembros, clientes, proveedores, productos/categorías/unidades, y
-auditoría. Ventas, compras, POS, caja, facturación, reportes,
-notificaciones y suscripciones/pagos tienen su tabla lista pero ningún
-endpoint todavía — así se evita construir pantallas o rutas a medias.
+permisos, miembros, clientes, proveedores, productos/categorías/unidades,
+inventario (núcleo mínimo: entrada manual/ajuste + los movimientos que
+dispara Ventas), ventas/POS, y auditoría. Compras, caja, facturación,
+reportes, notificaciones y suscripciones/pagos tienen su tabla lista pero
+ningún endpoint todavía — así se evita construir pantallas o rutas a
+medias.
+
+## 7. Fase Comercial 2 — Ventas/POS: decisiones técnicas
+
+### Concurrencia sin overselling, sin locks explícitos de aplicación
+
+`InventoryService.applyMovement` decrementa stock con una única sentencia
+SQL condicional (`UPDATE inventories SET quantity = quantity - $1 WHERE
+... AND quantity >= $1`, vía `updateMany` de Prisma). Bajo concurrencia,
+Postgres serializa los `UPDATE` que tocan la misma fila: la segunda
+transacción espera a que la primera cierre, ve el stock ya descontado, y su
+propio `UPDATE` afecta 0 filas → se rechaza con stock insuficiente. No hace
+falta `SELECT ... FOR UPDATE` para este caso — la propia semántica del
+`UPDATE` condicional ya serializa correctamente.
+
+### Transiciones de estado de `Sale`: `SELECT ... FOR UPDATE` + máquina de estados
+
+`confirm`/`addPayment`/`cancel`/`return` sí necesitan leer el estado actual
+de la venta y decidir la transición antes de escribir, así que bloquean
+explícitamente la fila (`SELECT ... FOR UPDATE`) al inicio de la
+transacción. Dos confirmaciones concurrentes de la MISMA venta quedan
+serializadas por ese lock: la segunda ve el estado ya cambiado (no
+`DRAFT`) y responde con el estado actual en vez de repetir el efecto — es
+la idempotencia natural del patrón, sin necesitar una idempotency key para
+`confirm`/`cancel`/`return`.
+
+### Por qué `Payment` sí necesita `idempotencyKey` explícita
+
+A diferencia de confirmar/cancelar/devolver (transiciones de estado con un
+único resultado posible), dos pagos del mismo monto sobre la misma venta
+podrían ser dos cobros legítimos distintos o un doble click — el sistema no
+puede distinguirlos solo por el monto. `Payment.idempotencyKey` (columna
+única, generada por el cliente una vez por intento de cobro) resuelve esto.
+Importante: el catch de esa colisión de unicidad se maneja **fuera** de la
+transacción que la generó (`SalesService.runOrResolvePaymentConflict`), no
+con un `try/catch` alrededor del `INSERT` dentro de la misma transacción —
+Postgres marca la transacción entera como abortada en cuanto una sentencia
+falla, así que cualquier sentencia siguiente en esa misma transacción
+(el `UPDATE` del estado de la venta, por ejemplo) fallaría igual aunque el
+`catch` de JavaScript nunca vea el error. Ver el comentario en
+`sales.service.ts` para el detalle.
+
+### Dinero: `Prisma.Decimal` siempre, nunca `number` de JS para aritmética
+
+`common/money.ts` centraliza la conversión/redondeo (half-up, 2 decimales).
+Los DTOs siguen aceptando `number` en la entrada (convención ya establecida
+en Foundation, y JSON no tiene un tipo Decimal nativo), pero ese `number`
+se convierte a `Prisma.Decimal` inmediatamente y toda operación posterior
+(sumas, comparaciones de saldo, totales) usa esa representación exacta.
+
+### `Sale` no es `Invoice`
+
+Ver `docs/PROJECT_PLAN.md`, sección "Recibos vs. Facturación".

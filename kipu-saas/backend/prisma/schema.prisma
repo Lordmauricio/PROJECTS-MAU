@@ -275,6 +275,7 @@ model Warehouse {
 
   inventories        Inventory[]
   inventoryMovements InventoryMovement[]
+  sales              Sale[]
 
   @@index([organizationId])
   @@index([branchId])
@@ -500,7 +501,10 @@ enum SaleType {
 enum SaleStatus {
   DRAFT
   CONFIRMED
+  PARTIALLY_PAID
+  PAID
   CANCELLED
+  REFUNDED
 }
 
 model Sale {
@@ -508,8 +512,14 @@ model Sale {
   organizationId String
   posTerminalId  String?
   posTerminal    POSTerminal? @relation(fields: [posTerminalId], references: [id])
-  customerId     String?
-  customer       Customer?    @relation(fields: [customerId], references: [id])
+  // Almacén del que se descuenta stock al confirmar. Requerido en la
+  // práctica para SaleType.SALE (validado en el service, no acá, para no
+  // romper el modelado de QUOTE que no afecta inventario); nulo solo
+  // mientras la venta está en DRAFT sin almacén elegido todavía.
+  warehouseId String?
+  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+  customerId  String?
+  customer    Customer?  @relation(fields: [customerId], references: [id])
 
   type     SaleType   @default(SALE)
   status   SaleStatus @default(DRAFT)
@@ -519,14 +529,18 @@ model Sale {
 
   createdById String?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  confirmedAt DateTime?
+  cancelledAt DateTime?
+  refundedAt  DateTime?
 
   items    SaleItem[]
   payments Payment[]
   invoice  Invoice?
 
   @@index([organizationId])
+  @@index([warehouseId])
   @@map("sales")
 }
 
@@ -610,7 +624,14 @@ model Payment {
   method String  @default("CASH")
   amount Decimal @db.Decimal(12, 2)
 
-  createdAt DateTime @default(now())
+  // Provista por el cliente (uuid generado una vez por intento de cobro y
+  // reutilizada en cualquier reintento/doble click). Única globalmente:
+  // permite detectar y responder de forma idempotente a un mismo intento de
+  // pago repetido, sin volver a aplicarlo contra el saldo de la venta.
+  idempotencyKey String? @unique
+
+  createdById String?
+  createdAt   DateTime @default(now())
 
   @@index([organizationId])
   @@index([saleId])
