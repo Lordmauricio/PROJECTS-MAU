@@ -114,6 +114,50 @@ export interface ApiAuditLog {
   entityId: string | null;
 }
 
+// Forma de las respuestas de /purchases* y /payables* — mismo criterio que
+// las de /sales* de arriba.
+export interface ApiPurchaseItem {
+  id: string;
+  productId: string;
+  quantity: string;
+  receivedQuantity: string;
+  returnedQuantity: string;
+  unitCost: string;
+  discount: string;
+  subtotal: string;
+}
+
+export interface ApiPurchase {
+  id: string;
+  status: string;
+  subtotal: string;
+  discount: string;
+  total: string;
+  items: ApiPurchaseItem[];
+  payables: ApiPayable[];
+  receipts: Array<{
+    id: string;
+    idempotencyKey?: string | null;
+    items: Array<{ purchaseItemId: string; quantity: string }>;
+  }>;
+  returns: Array<{
+    id: string;
+    idempotencyKey?: string | null;
+    items: Array<{ purchaseItemId: string; quantity: string }>;
+  }>;
+}
+
+export interface ApiPayable {
+  id: string;
+  supplierId: string;
+  purchaseId: string | null;
+  amount: string;
+  status: string;
+  paidTotal?: string;
+  balance?: string;
+  payments?: ApiPayment[];
+}
+
 type HttpMethod = 'get' | 'post' | 'patch' | 'delete' | 'put';
 
 export async function callApi<T = unknown>(
@@ -242,7 +286,49 @@ export async function createUserWithRole(
   return login.body.accessToken;
 }
 
-/** Crea un producto y le carga stock inicial vía el movimiento manual IN (no existe módulo de Compras todavía). */
+/** Crea un proveedor real (módulo de Foundation) para usar en tests de Compras. */
+export async function createTestSupplier(
+  app: INestApplication,
+  tenant: TestTenant,
+  name: string,
+): Promise<{ supplierId: string }> {
+  const res = await callApi<{ id: string }>(
+    app,
+    'POST',
+    '/suppliers',
+    { name },
+    tenant.accessToken,
+  );
+  if (res.status !== 201) {
+    throw new Error(
+      `crear proveedor debía dar 201, dio ${res.status}: ${JSON.stringify(res.body)}`,
+    );
+  }
+  return { supplierId: res.body.id };
+}
+
+/** Crea un producto sin stock (para tests de Compras, donde el stock lo genera la recepción, no una carga manual). */
+export async function createTestProduct(
+  app: INestApplication,
+  tenant: TestTenant,
+  opts: { name: string; price?: number; cost?: number },
+): Promise<{ productId: string }> {
+  const res = await callApi<{ id: string }>(
+    app,
+    'POST',
+    '/products',
+    { name: opts.name, price: opts.price ?? 10, cost: opts.cost },
+    tenant.accessToken,
+  );
+  if (res.status !== 201) {
+    throw new Error(
+      `crear producto debía dar 201, dio ${res.status}: ${JSON.stringify(res.body)}`,
+    );
+  }
+  return { productId: res.body.id };
+}
+
+/** Crea un producto y le carga stock inicial vía el movimiento manual IN (usado por los tests de Ventas). */
 export async function createProductWithStock(
   app: INestApplication,
   tenant: TestTenant,

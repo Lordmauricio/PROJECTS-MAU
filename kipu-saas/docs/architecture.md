@@ -5,9 +5,9 @@
 Un solo backend NestJS, dividido internamente en módulos independientes
 (`auth`, `organizations`, `branches`, `warehouses`, `pos-terminals`, `roles`,
 `members`, `customers`, `suppliers`, `products`, `product-categories`,
-`product-units`, `inventory`, `sales`, `audit`, y los módulos de
-infraestructura `prisma`, `redis`). No se crearon microservicios: para el
-tamaño de negocio objetivo
+`product-units`, `inventory`, `sales`, `purchases`, `payables`, `audit`, y
+los módulos de infraestructura `prisma`, `redis`). No se crearon
+microservicios: para el tamaño de negocio objetivo
 (PyMEs bolivianas empezando por Cochabamba) la complejidad operativa de
 microservicios (service discovery, mensajería entre servicios, despliegues
 independientes) no se justifica todavía.
@@ -102,14 +102,15 @@ no depende de que expire el access token.
 ## 6. Qué se construyó vs. qué queda para después
 
 Ver `docs/PROJECT_PLAN.md` para el detalle fase por fase. Resumen: desde
-Foundation + Fase Comercial 2, tienen módulo NestJS con endpoints reales:
-autenticación, organizaciones/sucursales/almacenes/puntos de venta, roles y
-permisos, miembros, clientes, proveedores, productos/categorías/unidades,
-inventario (núcleo mínimo: entrada manual/ajuste + los movimientos que
-dispara Ventas), ventas/POS, y auditoría. Compras, caja, facturación,
-reportes, notificaciones y suscripciones/pagos tienen su tabla lista pero
-ningún endpoint todavía — así se evita construir pantallas o rutas a
-medias.
+Foundation + Fases Comerciales 2 y 3, tienen módulo NestJS con endpoints
+reales: autenticación, organizaciones/sucursales/almacenes/puntos de venta,
+roles y permisos, miembros, clientes, proveedores,
+productos/categorías/unidades, inventario (núcleo mínimo: entrada
+manual/ajuste + los movimientos que disparan Ventas y Compras), ventas/POS,
+compras (orden → recepción → cuenta por pagar → devolución), y auditoría.
+Caja, facturación, reportes, notificaciones y suscripciones/pagos tienen su
+tabla lista pero ningún endpoint todavía — así se evita construir pantallas
+o rutas a medias.
 
 ## 7. Fase Comercial 2 — Ventas/POS: decisiones técnicas
 
@@ -162,3 +163,74 @@ se convierte a `Prisma.Decimal` inmediatamente y toda operación posterior
 ### `Sale` no es `Invoice`
 
 Ver `docs/PROJECT_PLAN.md`, sección "Recibos vs. Facturación".
+
+## 8. Fase Comercial 3 — Compras: decisiones técnicas
+
+### Un solo motor de inventario, reutilizado
+
+`PurchasesService.receive()` y `.returnToSupplier()` llaman al MISMO
+`InventoryService.applyMovement` de la Fase Comercial 2 (tipos `IN` y
+`OUT` respectivamente) que ya usa `SalesService`. No existe un segundo
+motor de stock para Compras — la atomicidad/anti-overselling descrita en
+la sección 7 (`UPDATE` condicional, sin `FOR UPDATE` necesario a nivel de
+`inventories`) aplica igual acá.
+
+### `PurchaseReceipt`/`PurchaseReturn`: el mismo patrón de ledger que `Payment`
+
+En vez de mutar `PurchaseItem.receivedQuantity`/`returnedQuantity`
+directamente sin dejar rastro, cada recepción y cada devolución quedan
+como una fila propia (`PurchaseReceipt`/`PurchaseReturn`, con sus
+`*Item` hijos) con su propia `idempotencyKey` única. Es el mismo principio
+de trazabilidad que `Payment` en Ventas, aplicado a eventos de mercadería
+en vez de eventos de dinero.
+
+### Por qué el lock de `Purchase` también sirve para evitar sobre-recepción
+
+`receive()` bloquea la fila de `Purchase` (`SELECT ... FOR UPDATE`) igual
+que las transiciones de estado de `Sale`. Esto no es solo para la máquina
+de estados: como la validación "no recibir más de lo pedido" lee
+`PurchaseItem.receivedQuantity` (que solo se actualiza dentro de esa misma
+transacción bloqueada), dos recepciones concurrentes sobre la MISMA
+compra quedan serializadas — la segunda ve el `receivedQuantity` ya
+actualizado por la primera y valida contra el remanente real, no contra un
+valor obsoleto. Probado explícitamente: dos recepciones concurrentes que
+juntas excederían lo pedido → exactamente una se acepta.
+
+### Cómo crece la `Payable` con cada recepción parcial
+
+`Payable.amount` no se fija de una vez al confirmar la orden — crece con
+cada recepción real (nunca se le debe a un proveedor por mercadería que no
+llegó). Para que, una vez recibido todo, la `Payable` coincida
+exactamente con `Purchase.total` (incluyendo el descuento a nivel de
+orden, no solo el de cada ítem), el valor de cada recepción se prorratea
+en dos pasos: primero por el costo neto por unidad de cada ítem
+(`item.subtotal / item.quantity`, que ya descuenta el descuento de ese
+ítem), y luego por `purchase.total / purchase.subtotal` (que reparte el
+descuento de la orden proporcionalmente). Ver el comentario en
+`growOrCreatePayable` (`purchases.service.ts`) para la fórmula exacta.
+
+### `Payment` genérico: Sale XOR Payable
+
+`Payment` pasó a ser el ledger genérico de dinero tanto para Ventas
+(`saleId`, dinero que entra) como para Compras (`payableId`, dinero que
+sale) — no se creó un modelo `PayablePayment` separado. Un CHECK
+constraint en SQL (`payments_exactly_one_target_check`, agregado a mano en
+la migración `20260817121351_purchases_core` — Prisma no expresa CHECK
+entre columnas en su DSL) exige que tenga exactamente uno de los dos, nunca
+ambos ni ninguno. La resolución de conflictos de `idempotencyKey` fuera de
+la transacción (ver sección 7) es idéntica para pagos de Compras.
+
+### Dependencia de Caja documentada, no resuelta a medias
+
+Una devolución al proveedor reduce la `Payable`. Si esa reducción dejaría
+el monto por debajo de lo ya pagado, significaría que el proveedor nos
+debe dinero — un concepto de "crédito a favor" que no existe todavía en
+el modelo (necesitaría la Fase Comercial 5/6, Caja/Cuentas). En vez de
+inventar una solución temporal, `returnToSupplier()` **rechaza
+explícitamente** esa devolución con un mensaje que explica la dependencia.
+Ver `docs/PROJECT_PLAN.md` para el seguimiento de este pendiente.
+
+### `Purchase` no es `Invoice`
+
+Igual que `Sale` — ver `docs/PROJECT_PLAN.md`, sección "Recibos vs.
+Facturación".

@@ -22,7 +22,7 @@ describe('Ventas/POS — tenant isolation, RLS y RBAC (integración, DB real)', 
 
   afterAll(async () => {
     await app.close();
-  });
+  }, 15000);
 
   async function createSaleAs(
     tenant: TestTenant,

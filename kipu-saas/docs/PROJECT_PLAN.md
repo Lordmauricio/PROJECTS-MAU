@@ -169,18 +169,86 @@ concurrencia. Ver `docs/architecture.md` (sección "Fase Comercial 2") y
       compartida y el porqué de las decisiones de Jest (`moduleNameMapper`,
       `--experimental-vm-modules`, `supertest` en vez de `fetch`).
 
+## Fase Comercial 3 — Compras ✅
+
+Entregable: un usuario puede crear una orden de compra a un proveedor,
+confirmarla, recibir la mercadería (completa o en varias entregas
+parciales) con descuento/entrada de inventario atómico y sin duplicarse
+bajo concurrencia, ver la cuenta por pagar que se genera automáticamente,
+pagarla (parcial o completa, sin poder sobrepagar), y devolver mercadería
+al proveedor sin borrar ni reescribir la compra original. Ver
+`docs/architecture.md` sección 8 para el detalle técnico completo.
+
+- [x] Máquina de estados de `Purchase`: `DRAFT → CONFIRMED →
+      PARTIALLY_RECEIVED → RECEIVED`, o `DRAFT/CONFIRMED → CANCELLED`
+      (nunca se cancela una orden con recepciones — para eso existe la
+      devolución). Edición completa de ítems solo mientras está en DRAFT.
+- [x] Recepción (`PurchaseReceipt`/`PurchaseReceiptItem`, análogo de
+      `Payment` para Ventas): cada recepción es un evento propio con su
+      propia `idempotencyKey`, nunca un campo mutable sin rastro. Usa el
+      MISMO `InventoryService.applyMovement` de la Fase Comercial 2 (tipo
+      `IN`) — no se creó un segundo motor de stock. Valida que nunca se
+      reciba más de lo pedido por ítem.
+- [x] `Payable` se genera/crece automáticamente con cada recepción (nunca
+      antes de que llegue mercadería real), prorrateando el descuento a
+      nivel de ítem y de orden — al recibirse todo, la Payable coincide
+      exactamente con `Purchase.total`. Pagos parciales/completos vía el
+      mismo modelo `Payment` que usa Ventas (`Payment.payableId`, con un
+      CHECK constraint en SQL que exige exactamente uno de `saleId`/
+      `payableId`). Nunca se acepta un pago que exceda el saldo pendiente.
+- [x] Devolución al proveedor (`PurchaseReturn`/`PurchaseReturnItem`, mismo
+      patrón que la recepción): salida de inventario (`OUT`, mismo motor),
+      nunca devuelve más de lo recibido y no devuelto todavía, reduce la
+      Payable proporcionalmente. Dependencia de Caja documentada y
+      **rechazada explícitamente en vez de resuelta a medias**: si la
+      devolución dejaría la Payable por debajo de lo ya pagado (el
+      proveedor terminaría debiéndonos), la operación se rechaza con un
+      mensaje claro — no existe todavía ningún concepto de crédito a favor
+      frente a un proveedor.
+- [x] Idempotencia y concurrencia con el mismo patrón que Ventas: lock
+      (`SELECT ... FOR UPDATE`) sobre la fila de `Purchase` para las
+      transiciones de estado, y resolución del conflicto de
+      `idempotencyKey` FUERA de la transacción que lo generó (ver
+      `runOrResolveReceiptConflict`/`runOrResolveReturnConflict` en
+      `purchases.service.ts`). Probado con recepciones concurrentes reales
+      que juntas excederían lo pedido: el lock serializa y solo una gana.
+- [x] Multi-tenant: `TenantPrismaService` + RLS en las 4 tablas nuevas
+      (`purchase_receipts`, `purchase_receipt_items`, `purchase_returns`,
+      `purchase_return_items`), mismo patrón que el resto del esquema.
+- [x] Permisos: se reutilizan `purchases.manage`/`purchases.read` (ya
+      existían en el catálogo desde Fase 0). Se agregó `payables.read`
+      (antes solo existía `payables.manage`) para que el listado/detalle
+      de cuentas por pagar tenga su propio permiso de solo lectura — sin
+      eso, el rol AUDITOR (que recibe automáticamente todo permiso
+      `.read`) no habría tenido ninguna visibilidad sobre cuentas por
+      pagar. `payables.manage` queda reservado para registrar pagos.
+- [x] Frontend real: `/purchases` (listado + creación) y `/purchases/[id]`
+      (detalle, confirmar, recibir —incluida recepción parcial—, devolver,
+      cancelar, y pagar la cuenta por pagar asociada). `/inventory/movements`
+      ahora también explica que las entradas/salidas de Compras/Ventas son
+      automáticas.
+- [x] Regresión de Ventas verificada: los 26 tests de Fase Comercial 2
+      siguen pasando sin cambios, y un recorrido en navegador real vendió
+      por el POS un producto cuyo stock había llegado exclusivamente por
+      una recepción de compra (integración cruzada real, no solo mockeada).
+- [x] Suite de tests de integración real (33 tests nuevos:
+      `purchases.integration/concurrency/security.spec.ts`), sumando 49 en
+      total con los de Ventas.
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
-- **Fase Comercial 3 — Compras**: `Purchase`/`PurchaseItem` ya modelados; falta
-  órdenes de compra y recepción.
 - **Fase Comercial 4 — Inventario avanzado**: el núcleo atómico
   (`InventoryService.applyMovement`, IN/OUT/RETURN) ya existe desde la Fase
-  Comercial 2 y Ventas ya lo usa; falta `TRANSFER` entre almacenes,
-  ajustes con motivo estructurado más allá del mínimo manual actual, y
-  kardex/reportería completa.
+  Comercial 2 y lo usan tanto Ventas como Compras; falta `TRANSFER` entre
+  almacenes, ajustes con motivo estructurado más allá del mínimo manual
+  actual, y kardex/reportería completa.
 - **Fase Comercial 5 — Caja**: `CashRegister`/`CashMovement` ya modelados; falta
-  apertura/cierre/arqueo. Los `Payment` de Ventas todavía NO se enlazan a
-  una caja abierta — eso se define en esta fase.
+  apertura/cierre/arqueo. Los `Payment` de Ventas y de Compras (cobros a
+  clientes y pagos a proveedores, ambos ya reales desde Fase Comercial 2 y
+  3) todavía NO se enlazan a una caja abierta — eso se define en esta
+  fase. También es la fase que resuelve la dependencia documentada en
+  Compras: qué pasa cuando una devolución al proveedor implicaría que nos
+  deben dinero.
 - **Fase Comercial 6 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/
   `InvoiceEvent`/`TaxConfiguration` ya modelados de forma genérica, **sin**
   campos específicos del SIN todavía. Antes de tocar código fiscal real,
@@ -211,15 +279,22 @@ recibo:
 - NO depende del SIN de Bolivia ni de ninguna integración fiscal.
 - NO modifica ni transforma la `Sale` que le da origen.
 
+**`Sale` NO es `Invoice`. `Purchase` NO es `Invoice`.** Ambos son parte del
+núcleo comercial (ventas/compras reales, con su propio ciclo de vida,
+inventario y cuentas) y son completamente independientes del módulo de
+facturación fiscal (`Invoice`/`TaxConfiguration`, todavía solo esquema
+genérico desde Fase 1). Ninguno de los dos fue modificado en la Fase
+Comercial 3 para introducir dependencia alguna hacia el SIN.
+
 La integración de facturación electrónica con el SIN de Bolivia
 (`FiscalDocument`, XML/XSD, CUF/CUIS/CUFD/CAFC, firma digital, XMLDSig,
 SOAP/WSDL, QR fiscal, anulación fiscal) queda para una fase futura
 independiente y explícitamente autorizada — no se implementó nada de esto
-en la Fase Comercial 2, ni se modificó el núcleo comercial (`Sale`) para
-introducir ninguna dependencia hacia ella. La arquitectura prevista para
-cuando se autorice es `Sale → Fiscal Engine → Fiscal Document → SIN
-Adapter → SIN Bolivia`, pero hoy esa cadena no existe más allá del
-`Sale` inicial.
+en las Fases Comerciales 2 ni 3, ni se modificó el núcleo comercial
+(`Sale`/`Purchase`) para introducir ninguna dependencia hacia ella. La
+arquitectura prevista para cuando se autorice es `Sale → Fiscal Engine →
+Fiscal Document → SIN Adapter → SIN Bolivia`, pero hoy esa cadena no
+existe más allá del `Sale`/`Purchase` inicial.
 
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 

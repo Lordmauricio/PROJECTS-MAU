@@ -22,6 +22,8 @@ import { ProductUnitsModule } from './product-units/product-units.module';
 import { ProductsModule } from './products/products.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { SalesModule } from './sales/sales.module';
+import { PurchasesModule } from './purchases/purchases.module';
+import { PayablesModule } from './payables/payables.module';
 
 @Module({
   imports: [
@@ -60,6 +62,8 @@ import { SalesModule } from './sales/sales.module';
     ProductsModule,
     InventoryModule,
     SalesModule,
+    PurchasesModule,
+    PayablesModule,
   ],
   controllers: [AppController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

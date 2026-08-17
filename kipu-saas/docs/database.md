@@ -67,25 +67,50 @@ Organization
   manual `POST /inventory/movements`); `TRANSFER` y el motor de ajustes
   avanzado quedan para la Fase Comercial 4.
 
-### Ventas (módulo de negocio real desde Fase Comercial 2) / Compras / Caja
+### Ventas y Compras (módulo de negocio real desde Fase Comercial 2 y 3) / Caja
 - `sales` + `sale_items` — venta separada explícitamente de `invoices`
   ("una venta puede generar una factura", no son lo mismo). `status`:
   `DRAFT → CONFIRMED/PARTIALLY_PAID/PAID → REFUNDED`, o `DRAFT →
   CANCELLED`. `warehouseId` (de dónde se descuenta stock al confirmar) y
   `confirmedAt`/`cancelledAt`/`refundedAt` se agregaron en la migración
   `20260817060253_sales_pos_core`.
-- `purchases` + `purchase_items` — esquema listo, módulo de negocio es
-  Fase Comercial 3.
-- `payments` — pagos asociados a una venta
-  (efectivo/tarjeta/transferencia/QR — "mixto" se representa como varios
-  `Payment`, uno por método, no como un único registro `MIXED`).
-  `idempotencyKey` (única, opcional) agregada en la misma migración:
-  protege contra doble cobro por doble click/retry — ver
-  `docs/architecture.md` sección 7.
+- `purchases` + `purchase_items` — orden de compra, separada explícitamente
+  de `invoices`, igual que `sales`. `status`: `DRAFT → CONFIRMED →
+  PARTIALLY_RECEIVED/RECEIVED`, o `DRAFT/CONFIRMED → CANCELLED` (nunca se
+  cancela con recepciones — para eso existe la devolución). `warehouseId`,
+  `discount`, `confirmedAt`/`cancelledAt`/`receivedAt` y, en
+  `purchase_items`, `receivedQuantity`/`returnedQuantity`/`discount`, se
+  agregaron en la migración `20260817121351_purchases_core`.
+- `purchase_receipts` + `purchase_receipt_items` — ledger de recepciones
+  (una fila por cada recepción, total o parcial), mismo patrón que
+  `payments` para Ventas: `idempotencyKey` única propia, nunca se muta
+  `receivedQuantity` sin dejar rastro de cuándo/cómo. Nuevas en la misma
+  migración, con RLS igual que el resto.
+- `purchase_returns` + `purchase_return_items` — ledger de devoluciones al
+  proveedor, mismo patrón que `purchase_receipts` (`idempotencyKey` propia,
+  trazabilidad propia). Nuevas en la misma migración.
+- `payments` — ledger genérico de dinero: `saleId` (cobro a un cliente,
+  Ventas) O `payableId` (pago a un proveedor, Compras) — un CHECK
+  constraint SQL (`payments_exactly_one_target_check`, agregado a mano)
+  exige exactamente uno de los dos, nunca ambos ni ninguno. "Mixto" se
+  representa como varios `Payment`, uno por método, no un único registro
+  `MIXED`. `idempotencyKey` (única, opcional): protege contra doble
+  cobro/pago por doble click/retry — ver `docs/architecture.md` sección 7.
+  `payableId` se agregó en `20260817121351_purchases_core`.
 - `cash_registers` + `cash_movements` — esquema listo; apertura/cierre/
   arqueo y el enlace de `Payment` a una caja abierta son Fase Comercial 5.
-- `expenses`, `receivables`, `payables` — gastos y cuentas por cobrar/pagar,
-  esquema listo, Fase Comercial 5/6.
+- `expenses`, `receivables` — gastos y cuentas por cobrar, esquema listo,
+  Fase Comercial 5/6.
+- `payables` — cuenta por pagar a un proveedor, módulo de negocio real
+  desde Fase Comercial 3. `purchaseId` es `@unique` (a lo sumo una Payable
+  por compra) cuando no es null — NULLs no colisionan entre sí en
+  Postgres, así que esto no bloquea un futuro Payable sin compra asociada.
+  `amount` crece con cada recepción (nunca antes de que llegue mercadería
+  real) y se reduce con las devoluciones — ver
+  `docs/architecture.md` sección 8 para la fórmula de prorrateo exacta.
+  `status`: `PENDING`/`PAID` en uso real hoy; `OVERDUE`/`CANCELLED`
+  existen en el enum pero ningún código los asigna todavía (`OVERDUE`
+  necesitaría un job por fecha, fuera de alcance de esta fase).
 
 ### Facturación / fiscal (esquema listo, sin integración SIN)
 - `invoices` + `invoice_items` + `invoice_events` — el estado (`VALID`/
@@ -123,4 +148,8 @@ Organization
 - `roles` tiene `@@unique([organizationId, key])`.
 - `pos_terminals` tiene `@@unique([branchId, code])`.
 - `inventories` tiene `@@unique([warehouseId, productId])`.
+- `payables` tiene `@@unique([purchaseId])` (a lo sumo una Payable por compra).
+- `payments` tiene `@@unique([idempotencyKey])` y el CHECK
+  `payments_exactly_one_target_check` (exactamente uno de `saleId`/`payableId`).
+- `purchase_receipts` y `purchase_returns` tienen `@@unique([idempotencyKey])` cada una.
 - Montos siempre `Decimal` (`@db.Decimal`), nunca `Float`.

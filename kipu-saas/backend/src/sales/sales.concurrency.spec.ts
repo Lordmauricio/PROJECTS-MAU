@@ -20,7 +20,7 @@ describe('Ventas/POS — concurrencia e idempotencia (integración, DB real)', (
 
   afterAll(async () => {
     await app.close();
-  });
+  }, 15000);
 
   async function makeDraftSale(productId: string, quantity: number) {
     return callApi<ApiSale>(

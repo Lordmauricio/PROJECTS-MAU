@@ -96,12 +96,15 @@ filas de otro tenant, y que sin contexto de tenant fijado no devuelve nada
   `Product.sku` / `Product.barcode` (tienen `@@unique([organizationId, …])`
   desde la auditoría de Fase 1 — a diferencia de `NULL`, dos filas con
   `""` sí violan un unique constraint en Postgres).
-- Prisma parametriza automáticamente toda query generada por su API;
-  los únicos `$queryRaw`/`$executeRaw` del proyecto (fijar
-  `app.current_tenant`, y una consulta de conteo de stock bajo en el
-  dashboard) usan interpolación segura de Prisma (tagged template), nunca
-  concatenación de strings — ver `TenantPrismaService` y
-  `OrganizationsService.getDashboardSummary`.
+- Prisma parametriza automáticamente toda query generada por su API; todo
+  `$queryRaw`/`$executeRaw` del proyecto (fijar `app.current_tenant`, la
+  consulta de conteo de stock bajo en el dashboard, y los `SELECT ... FOR
+  UPDATE` que bloquean la fila de `Sale`/`Purchase`/`Payable` antes de una
+  transición de estado — ver `docs/architecture.md` secciones 7 y 8) usa
+  interpolación segura de Prisma (tagged template), nunca concatenación de
+  strings — ver `TenantPrismaService`, `OrganizationsService.getDashboardSummary`,
+  y los métodos privados `lockSale`/`lockPurchase`/`lockPayable` en
+  `sales.service.ts`/`purchases.service.ts`/`payables.service.ts`.
 
 ## Transporte y cabeceras
 
@@ -119,9 +122,13 @@ filas de otro tenant, y que sin contexto de tenant fijado no devuelve nada
 login, creación de empresa, creación/edición de sucursales, almacenes,
 puntos de venta, productos, categorías, unidades, clientes, proveedores,
 cambios de permisos de rol, invitación/cambio de rol/suspensión de
-miembros. Cada registro incluye `userId`, `organizationId`, `action`,
-`entityType`/`entityId` cuando aplica, IP y user agent cuando están
-disponibles.
+miembros, y desde las Fases Comerciales 2 y 3: creación/confirmación/pago/
+cancelación/devolución de ventas (`sales.*`), lo mismo para compras
+(`purchases.*`), recepciones (`purchases.receive`), y pagos sobre cuentas
+por pagar (`payables.payment.create`). Cada registro incluye `userId`,
+`organizationId`, `action`, `entityType`/`entityId` cuando aplica, IP y
+user agent cuando están disponibles — nunca montos de tarjeta ni ningún
+otro secreto, solo montos/cantidades de negocio.
 
 ## Qué queda pendiente (explícito, no oculto)
 

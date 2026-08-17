@@ -12,52 +12,174 @@ export interface PermissionDef {
 
 export const PERMISSIONS_CATALOG: PermissionDef[] = [
   // Organización / configuración
-  { key: 'settings.update', module: 'organization', description: 'Editar datos de la empresa y configuración general' },
-  { key: 'organization.branches.manage', module: 'organization', description: 'Crear y editar sucursales, almacenes y puntos de venta' },
-  { key: 'organization.branches.read', module: 'organization', description: 'Ver sucursales, almacenes y puntos de venta' },
-  { key: 'users.manage', module: 'organization', description: 'Invitar usuarios y asignar roles' },
-  { key: 'users.read', module: 'organization', description: 'Ver el listado de usuarios de la empresa' },
-  { key: 'organization.roles.manage', module: 'organization', description: 'Crear/editar roles y sus permisos' },
-  { key: 'organization.roles.read', module: 'organization', description: 'Ver roles y el mapeo de permisos por rol' },
+  {
+    key: 'settings.update',
+    module: 'organization',
+    description: 'Editar datos de la empresa y configuración general',
+  },
+  {
+    key: 'organization.branches.manage',
+    module: 'organization',
+    description: 'Crear y editar sucursales, almacenes y puntos de venta',
+  },
+  {
+    key: 'organization.branches.read',
+    module: 'organization',
+    description: 'Ver sucursales, almacenes y puntos de venta',
+  },
+  {
+    key: 'users.manage',
+    module: 'organization',
+    description: 'Invitar usuarios y asignar roles',
+  },
+  {
+    key: 'users.read',
+    module: 'organization',
+    description: 'Ver el listado de usuarios de la empresa',
+  },
+  {
+    key: 'organization.roles.manage',
+    module: 'organization',
+    description: 'Crear/editar roles y sus permisos',
+  },
+  {
+    key: 'organization.roles.read',
+    module: 'organization',
+    description: 'Ver roles y el mapeo de permisos por rol',
+  },
 
   // Catálogo / inventario
-  { key: 'products.create', module: 'catalog', description: 'Crear productos, categorías y unidades' },
-  { key: 'products.update', module: 'catalog', description: 'Editar productos, categorías y unidades' },
-  { key: 'products.read', module: 'catalog', description: 'Ver productos, categorías y unidades' },
-  { key: 'inventory.manage', module: 'inventory', description: 'Registrar entradas, salidas, ajustes y transferencias de inventario' },
-  { key: 'inventory.read', module: 'inventory', description: 'Ver stock y kardex' },
+  {
+    key: 'products.create',
+    module: 'catalog',
+    description: 'Crear productos, categorías y unidades',
+  },
+  {
+    key: 'products.update',
+    module: 'catalog',
+    description: 'Editar productos, categorías y unidades',
+  },
+  {
+    key: 'products.read',
+    module: 'catalog',
+    description: 'Ver productos, categorías y unidades',
+  },
+  {
+    key: 'inventory.manage',
+    module: 'inventory',
+    description:
+      'Registrar entradas, salidas, ajustes y transferencias de inventario',
+  },
+  {
+    key: 'inventory.read',
+    module: 'inventory',
+    description: 'Ver stock y kardex',
+  },
 
   // Terceros
-  { key: 'customers.manage', module: 'customers', description: 'Crear y editar clientes' },
+  {
+    key: 'customers.manage',
+    module: 'customers',
+    description: 'Crear y editar clientes',
+  },
   { key: 'customers.read', module: 'customers', description: 'Ver clientes' },
-  { key: 'suppliers.manage', module: 'suppliers', description: 'Crear y editar proveedores' },
-  { key: 'suppliers.read', module: 'suppliers', description: 'Ver proveedores' },
+  {
+    key: 'suppliers.manage',
+    module: 'suppliers',
+    description: 'Crear y editar proveedores',
+  },
+  {
+    key: 'suppliers.read',
+    module: 'suppliers',
+    description: 'Ver proveedores',
+  },
 
   // Ventas / POS
-  { key: 'sales.create', module: 'sales', description: 'Registrar ventas en el punto de venta' },
+  {
+    key: 'sales.create',
+    module: 'sales',
+    description: 'Registrar ventas en el punto de venta',
+  },
   { key: 'sales.read', module: 'sales', description: 'Ver ventas' },
-  { key: 'sales.update', module: 'sales', description: 'Editar ventas no facturadas' },
-  { key: 'sales.delete', module: 'sales', description: 'Eliminar/cancelar ventas' },
+  {
+    key: 'sales.update',
+    module: 'sales',
+    description: 'Editar ventas no facturadas',
+  },
+  {
+    key: 'sales.delete',
+    module: 'sales',
+    description: 'Eliminar/cancelar ventas',
+  },
 
   // Compras
-  { key: 'purchases.manage', module: 'purchases', description: 'Registrar y editar compras' },
+  {
+    key: 'purchases.manage',
+    module: 'purchases',
+    description: 'Registrar y editar compras',
+  },
   { key: 'purchases.read', module: 'purchases', description: 'Ver compras' },
 
   // Caja / gastos / cuentas
-  { key: 'cash.manage', module: 'cash', description: 'Abrir/cerrar caja y registrar movimientos' },
-  { key: 'expenses.manage', module: 'expenses', description: 'Registrar gastos' },
-  { key: 'receivables.manage', module: 'finance', description: 'Gestionar cuentas por cobrar' },
-  { key: 'payables.manage', module: 'finance', description: 'Gestionar cuentas por pagar' },
+  {
+    key: 'cash.manage',
+    module: 'cash',
+    description: 'Abrir/cerrar caja y registrar movimientos',
+  },
+  {
+    key: 'expenses.manage',
+    module: 'expenses',
+    description: 'Registrar gastos',
+  },
+  {
+    key: 'receivables.manage',
+    module: 'finance',
+    description: 'Gestionar cuentas por cobrar',
+  },
+  {
+    key: 'payables.manage',
+    module: 'finance',
+    description: 'Registrar pagos sobre cuentas por pagar',
+  },
+  {
+    key: 'payables.read',
+    module: 'finance',
+    description: 'Ver cuentas por pagar',
+  },
 
   // Facturación / fiscal
-  { key: 'invoices.create', module: 'invoicing', description: 'Emitir facturas' },
-  { key: 'invoices.read', module: 'invoicing', description: 'Ver facturas emitidas' },
-  { key: 'invoices.cancel', module: 'invoicing', description: 'Anular facturas' },
-  { key: 'fiscal.settings.manage', module: 'invoicing', description: 'Configurar datos fiscales / integración SIN' },
+  {
+    key: 'invoices.create',
+    module: 'invoicing',
+    description: 'Emitir facturas',
+  },
+  {
+    key: 'invoices.read',
+    module: 'invoicing',
+    description: 'Ver facturas emitidas',
+  },
+  {
+    key: 'invoices.cancel',
+    module: 'invoicing',
+    description: 'Anular facturas',
+  },
+  {
+    key: 'fiscal.settings.manage',
+    module: 'invoicing',
+    description: 'Configurar datos fiscales / integración SIN',
+  },
 
   // Reportes / auditoría
-  { key: 'reports.read', module: 'reports', description: 'Ver y exportar reportes' },
-  { key: 'audit.read', module: 'audit', description: 'Ver el log de auditoría' },
+  {
+    key: 'reports.read',
+    module: 'reports',
+    description: 'Ver y exportar reportes',
+  },
+  {
+    key: 'audit.read',
+    module: 'audit',
+    description: 'Ver el log de auditoría',
+  },
 ];
 
 // Roles iniciales exactos del prompt (Parte 1, sección 4).
@@ -85,44 +207,69 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
   ADMIN: ALL_PERMISSION_KEYS,
   MANAGER: [
     'organization.branches.read',
-    'products.create', 'products.update', 'products.read',
-    'inventory.manage', 'inventory.read',
-    'customers.manage', 'customers.read',
-    'suppliers.manage', 'suppliers.read',
-    'sales.create', 'sales.read', 'sales.update', 'sales.delete',
-    'purchases.manage', 'purchases.read',
-    'cash.manage', 'expenses.manage',
-    'invoices.create', 'invoices.read', 'invoices.cancel',
+    'products.create',
+    'products.update',
+    'products.read',
+    'inventory.manage',
+    'inventory.read',
+    'customers.manage',
+    'customers.read',
+    'suppliers.manage',
+    'suppliers.read',
+    'sales.create',
+    'sales.read',
+    'sales.update',
+    'sales.delete',
+    'purchases.manage',
+    'purchases.read',
+    'payables.read',
+    'cash.manage',
+    'expenses.manage',
+    'invoices.create',
+    'invoices.read',
+    'invoices.cancel',
     'reports.read',
   ],
   ACCOUNTANT: [
     'reports.read',
-    'receivables.manage', 'payables.manage',
+    'receivables.manage',
+    'payables.manage',
+    'payables.read',
     'expenses.manage',
-    'invoices.read', 'invoices.cancel',
+    'invoices.read',
+    'invoices.cancel',
     'purchases.read',
     'audit.read',
   ],
   CASHIER: [
     'organization.branches.read',
-    'sales.create', 'sales.read',
+    'sales.create',
+    'sales.read',
     'cash.manage',
-    'invoices.create', 'invoices.read',
-    'customers.read', 'customers.manage',
+    'invoices.create',
+    'invoices.read',
+    'customers.read',
+    'customers.manage',
     'products.read',
   ],
   INVENTORY: [
     'organization.branches.read',
-    'products.create', 'products.update', 'products.read',
-    'inventory.manage', 'inventory.read',
+    'products.create',
+    'products.update',
+    'products.read',
+    'inventory.manage',
+    'inventory.read',
     'suppliers.read',
     'purchases.read',
   ],
   SALES: [
-    'sales.create', 'sales.read',
-    'customers.manage', 'customers.read',
+    'sales.create',
+    'sales.read',
+    'customers.manage',
+    'customers.read',
     'products.read',
-    'invoices.create', 'invoices.read',
+    'invoices.create',
+    'invoices.read',
   ],
   // .read ya cubre reports.read y audit.read; no duplicar (produce
   // violacion de unique constraint al sembrar).

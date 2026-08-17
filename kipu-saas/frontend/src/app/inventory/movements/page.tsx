@@ -94,8 +94,9 @@ export default function InventoryMovementsPage() {
       <div className="p-6 max-w-4xl space-y-6">
         <h1 className="text-lg font-semibold">Movimientos de inventario</h1>
         <p className="text-sm text-zinc-500">
-          Entrada manual y ajustes básicos, disponibles ahora para poder cargar stock mientras no existe el módulo de
-          Compras. Transferencias entre almacenes y kardex avanzado llegan en una fase siguiente.
+          Las entradas por recepción de compra y las salidas por venta se registran automáticamente desde esos
+          módulos. Acá solo se registran entradas manuales y ajustes básicos (por ejemplo, un conteo físico).
+          Transferencias entre almacenes y kardex avanzado llegan en una fase siguiente.
         </p>
         {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
 

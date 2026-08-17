@@ -23,7 +23,7 @@ describe('Ventas/POS — ciclo de vida (integración, DB real)', () => {
 
   afterAll(async () => {
     await app.close();
-  });
+  }, 15000);
 
   async function makeSale(
     items: Array<{

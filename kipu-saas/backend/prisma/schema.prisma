@@ -276,6 +276,7 @@ model Warehouse {
   inventories        Inventory[]
   inventoryMovements InventoryMovement[]
   sales              Sale[]
+  purchases          Purchase[]
 
   @@index([organizationId])
   @@index([branchId])
@@ -564,6 +565,8 @@ model SaleItem {
 
 enum PurchaseStatus {
   DRAFT
+  CONFIRMED
+  PARTIALLY_RECEIVED
   RECEIVED
   CANCELLED
 }
@@ -573,20 +576,35 @@ model Purchase {
   organizationId String
   supplierId     String
   supplier       Supplier @relation(fields: [supplierId], references: [id])
+  // Almacén donde entra el stock al recibir. Mismo criterio que Sale.warehouseId
+  // (Fase Comercial 2): requerido en la práctica desde que se confirma la
+  // orden, validado en el service, nulo solo mientras está en DRAFT.
+  warehouseId String?
+  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
 
   status   PurchaseStatus @default(DRAFT)
   subtotal Decimal        @default(0) @db.Decimal(12, 2)
+  discount Decimal        @default(0) @db.Decimal(12, 2)
   total    Decimal        @default(0) @db.Decimal(12, 2)
 
   createdById String?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  confirmedAt DateTime?
+  cancelledAt DateTime?
+  // Se fija cuando el status pasa a RECEIVED (recepción completa), no en
+  // cada recepción parcial — ver PurchaseReceipt para el historial de cada
+  // evento de recepción individual.
+  receivedAt DateTime?
 
   items    PurchaseItem[]
   payables Payable[]
+  receipts PurchaseReceipt[]
+  returns  PurchaseReturn[]
 
   @@index([organizationId])
+  @@index([warehouseId])
   @@map("purchases")
 }
 
@@ -598,13 +616,101 @@ model PurchaseItem {
   productId      String
   product        Product  @relation(fields: [productId], references: [id])
 
-  quantity Decimal @db.Decimal(12, 2)
-  unitCost Decimal @db.Decimal(12, 2)
-  subtotal Decimal @db.Decimal(12, 2)
+  quantity Decimal @db.Decimal(12, 2) // cantidad ordenada
+  // Acumulados a través de todas las PurchaseReceiptItem / devoluciones de
+  // este ítem — permiten validar "no recibir más de lo pedido" y "no
+  // devolver más de lo recibido" sin tener que sumar el historial cada vez.
+  receivedQuantity Decimal @default(0) @db.Decimal(12, 2)
+  returnedQuantity Decimal @default(0) @db.Decimal(12, 2)
+  unitCost         Decimal @db.Decimal(12, 2)
+  discount         Decimal @default(0) @db.Decimal(12, 2)
+  subtotal         Decimal @db.Decimal(12, 2)
+
+  receiptItems PurchaseReceiptItem[]
+  returnItems  PurchaseReturnItem[]
 
   @@index([organizationId])
   @@index([purchaseId])
   @@map("purchase_items")
+}
+
+// Ledger de eventos de recepción — el análogo, para Compras, de `Payment`
+// en Ventas (Fase Comercial 2): cada recepción (total o parcial) queda
+// como una fila propia, con su propia idempotencyKey, en vez de mutar
+// directamente PurchaseItem.receivedQuantity sin dejar rastro de cuándo/
+// cómo se llegó a ese número.
+model PurchaseReceipt {
+  id             String   @id @default(cuid())
+  organizationId String
+  purchaseId     String
+  purchase       Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+
+  // Generada por el cliente una vez por intento de recepción y reutilizada
+  // en cualquier reintento/doble click — misma protección que
+  // Payment.idempotencyKey.
+  idempotencyKey String? @unique
+  notes          String?
+  receivedById   String?
+
+  createdAt DateTime @default(now())
+
+  items PurchaseReceiptItem[]
+
+  @@index([organizationId])
+  @@index([purchaseId])
+  @@map("purchase_receipts")
+}
+
+model PurchaseReceiptItem {
+  id                String          @id @default(cuid())
+  organizationId    String // denormalizado, mismo criterio que el resto de los *Item
+  purchaseReceiptId String
+  purchaseReceipt   PurchaseReceipt @relation(fields: [purchaseReceiptId], references: [id], onDelete: Cascade)
+  purchaseItemId    String
+  purchaseItem      PurchaseItem    @relation(fields: [purchaseItemId], references: [id])
+
+  quantity Decimal @db.Decimal(12, 2)
+
+  @@index([organizationId])
+  @@index([purchaseReceiptId])
+  @@map("purchase_receipt_items")
+}
+
+// Ledger de devoluciones al proveedor — mismo patrón que PurchaseReceipt
+// (idempotencyKey propia, trazabilidad propia). Nunca borra ni reescribe
+// PurchaseItem/PurchaseReceipt; solo incrementa PurchaseItem.returnedQuantity.
+model PurchaseReturn {
+  id             String   @id @default(cuid())
+  organizationId String
+  purchaseId     String
+  purchase       Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+
+  idempotencyKey String? @unique
+  reason         String?
+  createdById    String?
+
+  createdAt DateTime @default(now())
+
+  items PurchaseReturnItem[]
+
+  @@index([organizationId])
+  @@index([purchaseId])
+  @@map("purchase_returns")
+}
+
+model PurchaseReturnItem {
+  id               String         @id @default(cuid())
+  organizationId   String
+  purchaseReturnId String
+  purchaseReturn   PurchaseReturn @relation(fields: [purchaseReturnId], references: [id], onDelete: Cascade)
+  purchaseItemId   String
+  purchaseItem     PurchaseItem   @relation(fields: [purchaseItemId], references: [id])
+
+  quantity Decimal @db.Decimal(12, 2)
+
+  @@index([organizationId])
+  @@index([purchaseReturnId])
+  @@map("purchase_return_items")
 }
 
 enum PaymentMethod {
@@ -615,11 +721,18 @@ enum PaymentMethod {
   MIXED
 }
 
+// Ledger genérico de pagos: dinero que ENTRA (contra una Sale, del
+// cliente) o dinero que SALE (contra un Payable, hacia un proveedor).
+// Justo una de las dos relaciones debe estar presente — se refuerza con un
+// CHECK constraint agregado a mano en la migración (Prisma no modela
+// CHECK entre columnas todavía).
 model Payment {
-  id             String  @id @default(cuid())
+  id             String   @id @default(cuid())
   organizationId String
   saleId         String?
-  sale           Sale?   @relation(fields: [saleId], references: [id])
+  sale           Sale?    @relation(fields: [saleId], references: [id])
+  payableId      String?
+  payable        Payable? @relation(fields: [payableId], references: [id])
 
   method String  @default("CASH")
   amount Decimal @db.Decimal(12, 2)
@@ -627,7 +740,8 @@ model Payment {
   // Provista por el cliente (uuid generado una vez por intento de cobro y
   // reutilizada en cualquier reintento/doble click). Única globalmente:
   // permite detectar y responder de forma idempotente a un mismo intento de
-  // pago repetido, sin volver a aplicarlo contra el saldo de la venta.
+  // pago repetido, sin volver a aplicarlo contra el saldo de la venta o
+  // cuenta por pagar.
   idempotencyKey String? @unique
 
   createdById String?
@@ -635,6 +749,7 @@ model Payment {
 
   @@index([organizationId])
   @@index([saleId])
+  @@index([payableId])
   @@map("payments")
 }
 
@@ -730,8 +845,13 @@ model Payable {
   organizationId String
   supplierId     String
   supplier       Supplier  @relation(fields: [supplierId], references: [id])
-  purchaseId     String?
-  purchase       Purchase? @relation(fields: [purchaseId], references: [id])
+  // Una compra tiene a lo sumo una Payable — crece con cada recepción
+  // (nunca se crea una Payable antes de que llegue mercadería real) y se
+  // reduce con las devoluciones al proveedor. @@unique sobre una columna
+  // nullable es seguro en Postgres: NULLs no colisionan entre sí, solo se
+  // exige unicidad cuando purchaseId SÍ está seteado.
+  purchaseId String?   @unique
+  purchase   Purchase? @relation(fields: [purchaseId], references: [id])
 
   amount  Decimal                 @db.Decimal(12, 2)
   dueDate DateTime
@@ -739,6 +859,8 @@ model Payable {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  payments Payment[]
 
   @@index([organizationId])
   @@index([supplierId])
