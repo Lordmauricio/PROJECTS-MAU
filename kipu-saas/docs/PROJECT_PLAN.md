@@ -235,13 +235,108 @@ al proveedor sin borrar ni reescribir la compra original. Ver
       `purchases.integration/concurrency/security.spec.ts`), sumando 49 en
       total con los de Ventas.
 
+## Fase Comercial 4 — Inventario avanzado ✅
+
+Entregable: kardex real por producto y almacén (historial cronológico con
+saldo antes/después de cada movimiento), entrada/salida manual, ajustes
+positivos/negativos con motivo, transferencias atómicas entre almacenes de
+la misma organización, y visibilidad clara de stock por almacén (nunca
+confundido con un stock global). Ver `docs/architecture.md` sección 9 para
+el detalle técnico completo.
+
+- [x] `InventoryService.applyMovement` extendido (no reemplazado): ahora
+      recibe `type` y `direction` por separado, para poder distinguir
+      `ADJUSTMENT`/`TRANSFER` de los `IN`/`OUT`/`RETURN` que ya disparaban
+      Ventas y Compras desde la Fase Comercial 2. `InventoryModule` sigue
+      siendo el único motor de stock — Ventas y Compras solo se
+      actualizaron mecánicamente (4 call sites) para pasar `direction`
+      explícito, sin cambiar su comportamiento.
+- [x] Kardex real (`GET /inventory/kardex`): `stockBefore`/`stockAfter` se
+      graban en cada `InventoryMovement` en el momento del movimiento
+      (antes se calculaban y se descartaban), así que el historial se lee
+      directamente como una cuenta corriente, sin recalcular sumas cada
+      vez. `GET /inventory/movements` sigue existiendo como historial
+      filtrable (almacén/producto/tipo/período, paginado) para vistas más
+      amplias que un solo producto+almacén.
+- [x] Entradas y salidas manuales (`IN`/`OUT`) y ajustes con signo
+      explícito (`ADJUSTMENT` + `direction: INCREASE`/`DECREASE` —
+      rechazado con 400 si falta la dirección, nunca hay un signo
+      implícito). Todos exigen `idempotencyKey` (antes solo `IN`/
+      `ADJUSTMENT` existían y sin ese requisito).
+- [x] Transferencias entre almacenes (`POST /inventory/transfers`,
+      `InventoryTransfer` como entidad de ledger propia, mismo patrón que
+      `Payment`/`PurchaseReceipt`): atómicas (una `DECREASE` en origen y
+      una `INCREASE` en destino dentro de la MISMA transacción — si la
+      salida falla por stock insuficiente, la entrada nunca se aplica),
+      validan que ambos almacenes pertenezcan a la misma organización, y
+      nunca permiten origen = destino.
+- [x] Nunca se permite stock negativo: `OUT`, ajuste negativo y la pierna
+      de salida de una transferencia comparten la misma guarda atómica
+      (`UPDATE ... WHERE quantity >= cantidad`) que ya usaban Ventas/
+      Compras desde la Fase Comercial 2 — rechazo con 409, stock sin
+      alterar.
+- [x] Idempotencia y concurrencia con el mismo patrón que Ventas/Compras:
+      colisión de `idempotencyKey` resuelta fuera de la transacción que la
+      generó. **Problema real encontrado y corregido durante la
+      implementación**: la primera versión no verificaba que una
+      `idempotencyKey` reusada perteneciera a la MISMA operación —
+      devolvía en silencio cualquier movimiento/transferencia que
+      encontrara con esa key, con 201, en vez de rechazar con 409 cuando
+      los datos no coincidían. Corregido agregando la misma verificación
+      que ya usaba Compras (`existingReceipt.purchaseId !== purchaseId`) —
+      ver `docs/architecture.md` sección 9 para el detalle. Probado con
+      transferencias concurrentes reales sobre el mismo stock (dos
+      transferencias que juntas excederían lo disponible → exactamente una
+      gana, la otra 409) y con reintento/doble click (misma key, mismo
+      resultado, nunca duplicado).
+- [x] Multi-tenant: RLS en la tabla nueva (`inventory_transfers`) con el
+      mismo patrón que el resto del esquema, más las columnas nuevas de
+      `inventory_movements` (`stockBefore`/`stockAfter`/`idempotencyKey`).
+      Probado con HTTP real (tenant B nunca ve stock/kardex/movimientos de
+      tenant A, ni puede registrar movimientos/transferencias contra sus
+      almacenes o productos — 400, sin filtrar existencia) y con SQL crudo
+      (contexto de tenant inexistente → cero filas en `inventories`/
+      `inventory_movements`/`inventory_transfers`, fail-closed real).
+- [x] Permisos: se reutilizan `inventory.manage`/`inventory.read` (ya
+      existían en el catálogo desde Fase 0, con una descripción que ya
+      anticipaba ajustes/transferencias) — no se crearon permisos nuevos,
+      siguiendo la instrucción de no crear permisos salvo que sean
+      necesarios. Probado que un rol con `inventory.read` pero sin
+      `inventory.manage` (AUDITOR) puede consultar stock/kardex pero no
+      registrar movimientos ni transferencias (403).
+- [x] Frontend real: `/inventory/movements` pasó de un formulario mínimo
+      (solo entrada/ajuste) a la pantalla completa: filtros (producto,
+      almacén, tipo, rango de fechas), registrar entrada/salida/ajuste,
+      registrar transferencia entre almacenes, ver kardex de un
+      producto+almacén específico con saldo corriente, tabla de stock por
+      almacén, historial general filtrable, y errores visibles en cada
+      formulario (nunca un fallo silencioso).
+- [x] Auditoría: `inventory.movement.create` e `inventory.transfer.create`
+      registrados para cada movimiento manual/ajuste y cada transferencia.
+- [x] Regresión verificada: los 49 tests de Ventas + Compras de las Fases
+      Comerciales 2 y 3 siguen pasando sin cambios, y un recorrido en
+      navegador real confirmó que Ventas sigue descontando stock
+      correctamente después de los cambios de esta fase (mismo motor de
+      inventario).
+- [x] Suite de tests de integración real (26 tests nuevos:
+      `inventory.integration/concurrency/security.spec.ts`), sumando 75 en
+      total.
+- [x] **Inventario avanzado NO es facturación electrónica.** Kardex,
+      transferencias y ajustes no generan XML, no calculan CUF/CUFD, no
+      firman nada — cero relación con el SIN.
+
+**Pendiente detectado (no bloqueante para esta fase, no corregido por estar
+fuera de su alcance)**: la regla de lint `react-hooks/set-state-in-effect`
+(de `eslint-config-next`) marca como error el patrón `useEffect(() => {
+load(); }, [...])` usado en TODAS las páginas del frontend desde Foundation
+(14 ocurrencias en 8+ archivos, incluyendo páginas no tocadas en esta
+fase). No es una regresión de Fase Comercial 4 — ya estaba presente antes
+de empezarla. Corregirlo implicaría refactorizar el patrón de carga de
+datos en todo el frontend, fuera del alcance de esta fase; queda
+documentado acá para una fase de limpieza técnica futura.
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
-- **Fase Comercial 4 — Inventario avanzado**: el núcleo atómico
-  (`InventoryService.applyMovement`, IN/OUT/RETURN) ya existe desde la Fase
-  Comercial 2 y lo usan tanto Ventas como Compras; falta `TRANSFER` entre
-  almacenes, ajustes con motivo estructurado más allá del mínimo manual
-  actual, y kardex/reportería completa.
 - **Fase Comercial 5 — Caja**: `CashRegister`/`CashMovement` ya modelados; falta
   apertura/cierre/arqueo. Los `Payment` de Ventas y de Compras (cobros a
   clientes y pagos a proveedores, ambos ya reales desde Fase Comercial 2 y

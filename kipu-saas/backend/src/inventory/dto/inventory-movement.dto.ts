@@ -7,11 +7,10 @@ import {
   MinLength,
 } from 'class-validator';
 
-// Núcleo mínimo de esta fase: solo entrada manual (IN, para poder cargar
-// stock inicial sin que exista todavía el módulo de Compras) y ajustes con
-// signo (ADJUSTMENT). Transferencias entre almacenes y kardex avanzado
-// quedan para la Fase Comercial 4 — no se modelan acá.
-export type ManualMovementType = 'IN' | 'ADJUSTMENT';
+// Registro directo (Fase Comercial 4): entrada manual (IN), salida manual
+// (OUT), o ajuste con signo (ADJUSTMENT). Transferencias tienen su propio
+// DTO (`CreateInventoryTransferDto`) porque afectan dos almacenes a la vez.
+export type ManualMovementType = 'IN' | 'OUT' | 'ADJUSTMENT';
 export type AdjustmentDirection = 'INCREASE' | 'DECREASE';
 
 export class CreateInventoryMovementDto {
@@ -23,10 +22,10 @@ export class CreateInventoryMovementDto {
   @MinLength(1)
   productId!: string;
 
-  @IsIn(['IN', 'ADJUSTMENT'])
+  @IsIn(['IN', 'OUT', 'ADJUSTMENT'])
   type!: ManualMovementType;
 
-  // Requerido solo cuando type = ADJUSTMENT (un IN siempre incrementa).
+  // Requerido solo cuando type = ADJUSTMENT (IN/OUT ya tienen dirección implícita).
   @IsOptional()
   @IsIn(['INCREASE', 'DECREASE'])
   direction?: AdjustmentDirection;
@@ -38,4 +37,11 @@ export class CreateInventoryMovementDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  // Generada una vez por el cliente (uuid) y reutilizada en cualquier
+  // reintento/doble click del mismo intento de movimiento — sin esto, un
+  // doble click duplicaría el cambio de stock.
+  @IsString()
+  @MinLength(8)
+  idempotencyKey!: string;
 }

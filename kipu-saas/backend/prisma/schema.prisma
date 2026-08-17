@@ -273,10 +273,12 @@ model Warehouse {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  inventories        Inventory[]
-  inventoryMovements InventoryMovement[]
-  sales              Sale[]
-  purchases          Purchase[]
+  inventories         Inventory[]
+  inventoryMovements  InventoryMovement[]
+  sales               Sale[]
+  purchases           Purchase[]
+  transfersOut        InventoryTransfer[] @relation("InventoryTransferFrom")
+  transfersIn         InventoryTransfer[] @relation("InventoryTransferTo")
 
   @@index([organizationId])
   @@index([branchId])
@@ -431,6 +433,7 @@ model Product {
 
   inventories        Inventory[]
   inventoryMovements InventoryMovement[]
+  inventoryTransfers InventoryTransfer[]
   saleItems          SaleItem[]
   purchaseItems      PurchaseItem[]
   invoiceItems       InvoiceItem[]
@@ -475,18 +478,64 @@ model InventoryMovement {
   productId      String
   product        Product   @relation(fields: [productId], references: [id])
 
-  type      InventoryMovementType
-  quantity  Decimal               @db.Decimal(12, 2)
-  reason    String?
-  reference String? // p.ej. id de venta/compra relacionada
-  userId    String?
+  type     InventoryMovementType
+  quantity Decimal               @db.Decimal(12, 2)
+  // Snapshot del stock de este producto en ESTE almacén inmediatamente
+  // antes/después de aplicar el movimiento — persistido en el momento
+  // (Fase Comercial 4), no recalculado después, para que el kardex pueda
+  // mostrar el saldo corriente sin tener que reproducir todo el historial.
+  stockBefore Decimal @db.Decimal(12, 2)
+  stockAfter  Decimal @db.Decimal(12, 2)
+  reason      String?
+  reference   String? // p.ej. id de venta/compra/transferencia relacionada
+  userId      String?
+
+  // Solo la usan movimientos que se registran directamente por esta vía
+  // (entrada/salida/ajuste manual, cada leg de una transferencia) — los
+  // movimientos que dispara Ventas/Compras no la necesitan porque ya están
+  // protegidos por la idempotencia de su propia operación padre (confirmar
+  // venta, recibir compra). Única globalmente, mismo criterio que
+  // Payment.idempotencyKey.
+  idempotencyKey String? @unique
 
   createdAt DateTime @default(now())
 
   @@index([organizationId])
   @@index([warehouseId])
   @@index([productId])
+  @@index([createdAt])
   @@map("inventory_movements")
+}
+
+// Cabecera de una transferencia entre almacenes de la misma organización.
+// Cada transferencia genera exactamente 2 InventoryMovement (tipo
+// TRANSFER: uno OUT en el almacén origen, uno IN en el destino) dentro de
+// la MISMA transacción — ambos comparten `reference` = este id, así se
+// reconstruye el par origen/destino sin necesitar columnas redundantes en
+// InventoryMovement.
+model InventoryTransfer {
+  id             String @id @default(cuid())
+  organizationId String
+
+  productId       String
+  product         Product   @relation(fields: [productId], references: [id])
+  fromWarehouseId String
+  fromWarehouse   Warehouse @relation("InventoryTransferFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouseId   String
+  toWarehouse     Warehouse @relation("InventoryTransferTo", fields: [toWarehouseId], references: [id])
+
+  quantity Decimal @db.Decimal(12, 2)
+  reason   String?
+
+  idempotencyKey String? @unique
+  createdById    String?
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([fromWarehouseId])
+  @@index([toWarehouseId])
+  @@index([productId])
+  @@map("inventory_transfers")
 }
 
 // ==========================================================

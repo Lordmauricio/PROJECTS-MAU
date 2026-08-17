@@ -125,10 +125,48 @@ cambios de permisos de rol, invitación/cambio de rol/suspensión de
 miembros, y desde las Fases Comerciales 2 y 3: creación/confirmación/pago/
 cancelación/devolución de ventas (`sales.*`), lo mismo para compras
 (`purchases.*`), recepciones (`purchases.receive`), y pagos sobre cuentas
-por pagar (`payables.payment.create`). Cada registro incluye `userId`,
-`organizationId`, `action`, `entityType`/`entityId` cuando aplica, IP y
-user agent cuando están disponibles — nunca montos de tarjeta ni ningún
-otro secreto, solo montos/cantidades de negocio.
+por pagar (`payables.payment.create`). Desde la Fase Comercial 4:
+`inventory.movement.create` (entrada/salida manual y ajuste) e
+`inventory.transfer.create` (transferencia entre almacenes). Cada registro
+incluye `userId`, `organizationId`, `action`, `entityType`/`entityId`
+cuando aplica, IP y user agent cuando están disponibles — nunca montos de
+tarjeta ni ningún otro secreto, solo montos/cantidades de negocio.
+
+## Fase Comercial 4 — Inventario avanzado: notas de seguridad específicas
+
+- **RLS en la tabla nueva**: `inventory_transfers` tiene `ENABLE`/`FORCE
+  ROW LEVEL SECURITY` + policy `tenant_isolation`, mismo patrón que el
+  resto del esquema — agregado a mano en la migración
+  `20260817142135_inventory_advanced_core` (Prisma no genera RLS por sí
+  solo). Probado con SQL crudo bajo el mismo rol de Postgres que usa la
+  aplicación (`app_user`, sin `BYPASSRLS`): con contexto de un tenant real
+  se ven solo sus propias filas de `inventories`/`inventory_movements`/
+  `inventory_transfers`; con contexto de un tenant inexistente, cero filas
+  (fail-closed) — ver `inventory.security.spec.ts`.
+- **Sin permisos nuevos**: se reutilizan `inventory.manage`/
+  `inventory.read`, ya existentes desde Fase 0. La descripción de
+  `inventory.manage` en el catálogo ("Registrar entradas, salidas, ajustes
+  y transferencias de inventario") ya anticipaba el alcance completo de
+  esta fase, así que no había justificación para crear permisos separados
+  por operación (leer/mover/ajustar/transferir) — se habría violado la
+  instrucción de no crear permisos salvo que sean necesarios.
+- **No se filtra existencia entre tenants**: un intento de registrar un
+  movimiento o transferencia contra un almacén/producto de OTRA
+  organización responde `400` ("Almacén no encontrado"/"Producto no
+  encontrado"), nunca `404` con detalle ni `500` — el mensaje es el mismo
+  que si el recurso simplemente no existiera, porque desde la perspectiva
+  del tenant que hace el request, no existe.
+- **Corrección de idempotencia con implicación de seguridad**: la primera
+  versión de `registerManualMovement`/`transfer` devolvía en silencio
+  cualquier registro que encontrara al reusar una `idempotencyKey`, sin
+  verificar que perteneciera a la misma operación. Aunque
+  `idempotencyKey` no es un identificador secreto ni cruza el límite de
+  tenant (RLS ya impide que el registro encontrado sea de otro tenant), sí
+  era un defecto de integridad: un cliente podía recibir como "su"
+  resultado el de una operación ajena dentro del mismo tenant si
+  reutilizaba una key por error. Corregido — ver `docs/architecture.md`
+  sección 9 para el detalle técnico y `docs/PROJECT_PLAN.md` para el
+  seguimiento.
 
 ## Qué queda pendiente (explícito, no oculto)
 

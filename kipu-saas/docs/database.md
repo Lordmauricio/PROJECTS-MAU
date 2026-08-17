@@ -59,13 +59,36 @@ Organization
 - `products` — código, SKU, código de barras, nombre, marca, costo, precio,
   precio mayorista, stock mínimo, categoría/unidad/proveedor opcionales.
 - `inventories` — stock actual por producto y almacén (`@@unique([warehouseId, productId])`).
+  Un mismo producto tiene filas independientes por almacén: nunca hay un
+  "stock global" agregado en una columna propia (evita que se
+  desincronice del detalle real).
 - `inventory_movements` — entradas/salidas/transferencias/ajustes/
-  devoluciones, con referencia opcional al documento de origen (`reference`
-  guarda el id de la venta/compra relacionada). `IN`/`OUT`/`RETURN` tienen
-  módulo de negocio real desde Fase Comercial 2
-  (`InventoryService.applyMovement`, usado por Ventas y por la entrada
-  manual `POST /inventory/movements`); `TRANSFER` y el motor de ajustes
-  avanzado quedan para la Fase Comercial 4.
+  devoluciones (`type`: `IN`/`OUT`/`TRANSFER`/`ADJUSTMENT`/`RETURN`), con
+  referencia opcional al documento de origen (`reference` guarda el id de
+  la venta/compra relacionada, o el id de la `InventoryTransfer` cuando
+  `type = TRANSFER`). Módulo de negocio real completo desde la Fase
+  Comercial 4 (`InventoryService.applyMovement`, único motor, usado por
+  Ventas, Compras y por `POST /inventory/movements`/`POST
+  /inventory/transfers`). Desde la Fase Comercial 4 lleva además:
+  - `stockBefore`/`stockAfter` (`Decimal(12,2)`, `NOT NULL`): saldo exacto
+    antes/después del movimiento, grabado en el momento — permite leer el
+    kardex (`GET /inventory/kardex`) como una cuenta corriente sin
+    recalcular sumas históricas.
+  - `idempotencyKey` (`String?`, `@unique`): protege `POST
+    /inventory/movements` contra doble click/retry, mismo patrón que
+    `payments.idempotencyKey`.
+  - `@@index([createdAt])`, además de los índices por
+    organización/almacén/producto ya existentes, para que el filtro por
+    rango de fechas del kardex/historial no dependa de un full scan.
+- `inventory_transfers` — **nueva en la Fase Comercial 4**. Ledger de
+  transferencias entre almacenes de una misma organización (mismo patrón
+  que `payments`/`purchase_receipts`): `productId`, `fromWarehouseId`,
+  `toWarehouseId`, `quantity`, `reason` opcional, `idempotencyKey` única,
+  `createdById`. Cada fila corresponde a exactamente una transferencia, que
+  a su vez generó dos `inventory_movements` (`type = TRANSFER`, uno
+  `DECREASE` en origen y uno `INCREASE` en destino) ligados por
+  `reference = inventory_transfers.id`. RLS igual que el resto del
+  esquema. Migración `20260817142135_inventory_advanced_core`.
 
 ### Ventas y Compras (módulo de negocio real desde Fase Comercial 2 y 3) / Caja
 - `sales` + `sale_items` — venta separada explícitamente de `invoices`
@@ -152,4 +175,9 @@ Organization
 - `payments` tiene `@@unique([idempotencyKey])` y el CHECK
   `payments_exactly_one_target_check` (exactamente uno de `saleId`/`payableId`).
 - `purchase_receipts` y `purchase_returns` tienen `@@unique([idempotencyKey])` cada una.
+- `inventory_movements` y `inventory_transfers` tienen cada una
+  `@@unique([idempotencyKey])` (columna nullable — `IN`/`OUT`/`RETURN`
+  disparados por Ventas/Compras no la usan, solo los movimientos/
+  transferencias registrados directamente vía `POST
+  /inventory/movements`/`POST /inventory/transfers`).
 - Montos siempre `Decimal` (`@db.Decimal`), nunca `Float`.

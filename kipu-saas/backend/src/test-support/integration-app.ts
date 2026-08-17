@@ -102,10 +102,34 @@ export interface ApiInventoryRow {
 }
 
 export interface ApiInventoryMovement {
+  id: string;
   productId: string;
   warehouseId: string;
   type: string;
   quantity: string;
+  stockBefore: string;
+  stockAfter: string;
+  reference?: string | null;
+  idempotencyKey?: string | null;
+}
+
+export interface ApiInventoryTransfer {
+  id: string;
+  productId: string;
+  fromWarehouseId: string;
+  toWarehouseId: string;
+  quantity: string;
+  idempotencyKey?: string | null;
+}
+
+// POST /inventory/movements responde el resultado de `applyMovement`
+// (el movimiento creado + el saldo antes/después), no el movimiento "plano"
+// — a diferencia de GET /inventory/movements y GET /inventory/kardex, que sí
+// devuelven filas planas y usan `ApiInventoryMovement` directamente.
+export interface ApiMovementResult {
+  movement: ApiInventoryMovement;
+  stockBefore: string;
+  stockAfter: string;
 }
 
 export interface ApiAuditLog {
@@ -286,6 +310,27 @@ export async function createUserWithRole(
   return login.body.accessToken;
 }
 
+/** Crea un almacén adicional (módulo de Foundation) en la misma sucursal — usado por los tests de transferencias. */
+export async function createTestWarehouse(
+  app: INestApplication,
+  tenant: TestTenant,
+  name: string,
+): Promise<{ warehouseId: string }> {
+  const res = await callApi<{ id: string }>(
+    app,
+    'POST',
+    '/warehouses',
+    { branchId: tenant.branchId, name },
+    tenant.accessToken,
+  );
+  if (res.status !== 201) {
+    throw new Error(
+      `crear almacén debía dar 201, dio ${res.status}: ${JSON.stringify(res.body)}`,
+    );
+  }
+  return { warehouseId: res.body.id };
+}
+
 /** Crea un proveedor real (módulo de Foundation) para usar en tests de Compras. */
 export async function createTestSupplier(
   app: INestApplication,
@@ -358,6 +403,7 @@ export async function createProductWithStock(
       type: 'IN',
       quantity: opts.quantity,
       reason: 'Carga inicial (test)',
+      idempotencyKey: `stock-inicial-${productId}-${uniqueSuffix()}`,
     },
     tenant.accessToken,
   );

@@ -234,3 +234,91 @@ Ver `docs/PROJECT_PLAN.md` para el seguimiento de este pendiente.
 
 Igual que `Sale` — ver `docs/PROJECT_PLAN.md`, sección "Recibos vs.
 Facturación".
+
+## 9. Fase Comercial 4 — Inventario avanzado: decisiones técnicas
+
+### Un solo motor de stock, extendido en vez de reemplazado
+
+`InventoryService.applyMovement` sigue siendo el único punto que toca
+`inventories`/`inventory_movements` — no se creó un segundo motor. El
+único cambio de forma es que ahora recibe `type` (qué se guarda en el
+kardex: `IN`/`OUT`/`TRANSFER`/`ADJUSTMENT`/`RETURN`) y `direction`
+(`INCREASE`/`DECREASE`, hacia dónde mueve el stock) como parámetros
+separados, en vez de que `type` implicara la dirección. Antes de Fase 4,
+`IN` siempre incrementaba y `OUT` siempre decrementaba, así que no hacía
+falta la distinción; con `ADJUSTMENT` (puede subir o bajar) y `TRANSFER`
+(una pierna de cada) esa implicitud dejó de alcanzar. `SalesService` y
+`PurchasesService` se actualizaron mecánicamente (4 call sites) para pasar
+`direction` explícito — su comportamiento no cambió.
+
+### Kardex real: `stockBefore`/`stockAfter` persistidos, no recalculados
+
+Cada `InventoryMovement` ahora graba el saldo exacto antes y después del
+movimiento en el momento en que ocurre (columnas `stockBefore`/
+`stockAfter`, `NOT NULL`, calculadas dentro de la misma transacción que
+aplica el cambio). Antes de Fase 4 se calculaban pero se descartaban. Sin
+esto, reconstruir "cuál era el saldo en tal fecha" requeriría sumar todo
+el historial cada vez — con el saldo grabado, el kardex (`GET
+/inventory/kardex`, orden cronológico ascendente) se lee directamente
+como una cuenta corriente: el `stockAfter` de una fila es el
+`stockBefore` de la siguiente.
+
+### Transferencias: entidad de ledger propia (`InventoryTransfer`), dos movimientos, una transacción
+
+Una transferencia crea una fila `InventoryTransfer` (cabecera con
+`fromWarehouseId`/`toWarehouseId`/`quantity`/`idempotencyKey` propios) y
+llama a `applyMovement` DOS veces dentro de la MISMA transacción: una
+`DECREASE` en el almacén de origen y una `INCREASE` en el destino, ambas
+`type: 'TRANSFER'`, ambas con `reference` apuntando al id de la
+`InventoryTransfer` (así quedan ligadas sin necesitar una tabla puente).
+Si la salida falla por stock insuficiente, Postgres revierte la
+transacción completa — la entrada nunca llega a aplicarse. Nunca puede
+quedar una transferencia a medias.
+
+### Ajustes: signo explícito, nunca implícito
+
+`ADJUSTMENT` sin `direction` es rechazado (400) — a diferencia de `IN`/
+`OUT`, un ajuste no tiene una dirección "natural", así que el DTO exige
+que el cliente la declare (`INCREASE` para un sobrante de conteo físico,
+`DECREASE` para un faltante). Un ajuste negativo que dejaría stock
+negativo se rechaza igual que cualquier `DECREASE` (ver más abajo).
+
+### Idempotencia: mismo patrón que Ventas/Compras, con una corrección real encontrada durante la implementación
+
+`registerManualMovement`/`transfer` exigen `idempotencyKey` (antes
+opcional/inexistente) y resuelven la colisión de unicidad (P2002) **fuera**
+de la transacción que la generó — mismo patrón que
+`SalesService.runOrResolvePaymentConflict` /
+`PurchasesService.runOrResolveReceiptConflict`. Al escribir los tests de
+concurrencia se encontró una brecha real: la primera versión, al ver una
+`idempotencyKey` ya usada, devolvía en silencio lo que fuera que hubiera
+en esa fila — sin verificar que perteneciera a la MISMA operación
+(mismo producto/almacén/tipo/cantidad, o mismo producto/origen/destino/
+cantidad para transferencias). Eso significa que reusar una
+`idempotencyKey` por error entre dos operaciones distintas devolvía el
+resultado de la operación equivocada con `201`, en vez de avisar del
+conflicto — silenciosamente peor que un `409`, porque el cliente creería
+que SU movimiento se aplicó. Se corrigió agregando una verificación
+(`assertMatches`) tanto en el camino feliz como en el fallback de P2002,
+siguiendo el precedente ya establecido en Compras
+(`existingReceipt.purchaseId !== purchaseId` → 409). Con la corrección,
+reusar una `idempotencyKey` entre dos operaciones distintas siempre
+responde `409`, nunca `201` con datos ajenos.
+
+### Stock por almacén vs. stock global
+
+`GET /inventory` siempre requiere pensar en términos de
+`(productId, warehouseId)`, nunca solo `productId` — el mismo producto
+mantiene saldos independientes por almacén (fila única en `inventories`
+por esa combinación, `@@unique([warehouseId, productId])` ya existente
+desde Fase 2). No se agregó ningún endpoint de "stock total sumado entre
+almacenes": si se necesita a futuro, se agrega como una agregación
+explícita sobre las filas existentes, nunca como una columna nueva que
+pueda desincronizarse.
+
+### Inventario avanzado no es facturación electrónica
+
+Igual que `Sale`/`Purchase` no son `Invoice`, el kardex, las
+transferencias y los ajustes de esta fase no tienen ninguna relación con
+el SIN: no generan XML, no calculan CUF/CUFD, no firman nada. Ver
+`docs/PROJECT_PLAN.md`, sección "Recibos vs. Facturación".
