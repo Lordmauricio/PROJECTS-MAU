@@ -233,11 +233,24 @@ Organization
   cuando haya credenciales reales del SIN.
 
 ### Suscripción del tenant al SaaS (no es facturación del tenant a sus clientes)
-- `plans` — catálogo global de planes (gratis, básico, pro...), con
-  `limits`/`features` en JSON para no hardcodear reglas de negocio en código.
+- `plans` — catálogo global de planes: `free`/`basic`/`pro`/`enterprise`
+  (los 4 sembrados desde `prisma/seed.ts`, fuente única en
+  `backend/src/subscriptions/plans.catalog.ts` — Fase Comercial 10).
+  `limits` (`{ maxUsers, maxBranches, maxProducts }`, `null` = ilimitado)
+  y `features` (`{ pos, inventory, invoicing }`, puramente descriptivo,
+  no enforced) en JSON para no hardcodear reglas de negocio en código.
+  Sin RLS (tabla global, mismo criterio que `permissions`).
 - `subscriptions` — 1:1 por organización; se crea automáticamente en plan
-  "Gratis" al registrar la empresa.
-- `subscription_events` — historial de cambios de suscripción.
+  "Gratis" al registrar la empresa. API real de ciclo de vida desde Fase
+  Comercial 10 (`SubscriptionsModule`): `GET`/`change-plan`/`cancel`/
+  `renew` en `/organizations/me/subscription*`. `status` transiciona
+  perezosamente `ACTIVE` → `PAST_DUE` cuando `currentPeriodEnd` vence (sin
+  cron dedicado, se resuelve al leer). Enforcement real de
+  `maxUsers`/`maxBranches`/`maxProducts` vía `SELECT ... FOR UPDATE`
+  sobre esta tabla — ver `docs/architecture.md` sección 16.
+- `subscription_events` — historial de cambios de suscripción
+  (`plan_changed`/`cancelled`/`expired`/`renewed`), escrito por
+  `SubscriptionsService` en la misma transacción que cada cambio.
 
 ### Notificaciones / email / archivos
 - `notifications` — API real desde Fase Comercial 9 (`NotificationsModule`):

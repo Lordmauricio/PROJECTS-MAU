@@ -398,6 +398,48 @@ inconsistentes en los 5 flujos comerciales completos.
   que dos requests consecutivos al mismo recibo resultan en una sola fila
   `SENT`, nunca dos envíos.
 
+## Fase Comercial 10 — Planes, límites y suscripciones: notas de seguridad específicas
+
+- **El cliente nunca controla su plan ni sus límites**: `ChangePlanDto`
+  solo acepta `planKey` (validado contra las 4 claves reales del
+  catálogo, `@IsIn`, 400 si no coincide) — ningún campo de límites ni de
+  precio viaja nunca en el body de ningún request. Los límites se leen
+  SIEMPRE del lado del servidor, desde `Plan.limits` de la suscripción
+  vigente de la organización del JWT autenticado. No existe ningún
+  endpoint ni parámetro que permita a un usuario fijar su propio límite.
+- **`subscription.manage` (permiso nuevo)**: solo `OWNER`/`ADMIN` (vía
+  `ALL_PERMISSION_KEYS`) pueden cambiar de plan, cancelar o renovar —
+  probado explícitamente con los 6 roles restantes (`MANAGER`,
+  `ACCOUNTANT`, `CASHIER`, `INVENTORY`, `SALES`, `AUDITOR`) recibiendo
+  403 en los tres endpoints sin importar qué `planKey` manden. Ver la
+  suscripción (`GET`) es `@NoPermissionRequired()` — cualquier
+  autenticado puede ver el plan/uso de SU PROPIA empresa, mismo criterio
+  que `GET /organizations/me`.
+- **Enforcement en el backend, nunca solo en el frontend**: los tres
+  límites (`maxUsers`/`maxBranches`/`maxProducts`) se verifican dentro de
+  la MISMA transacción de Postgres que crea el recurso
+  (`MembersService.invite`, `BranchesService.create`,
+  `ProductsService.create`/`duplicate`) — un cliente que se salte la UI y
+  pegue directo a la API HTTP encuentra exactamente el mismo bloqueo.
+- **Concurrencia real probada, no solo asumida**: `assertWithinLimit`
+  bloquea la fila de `subscriptions` con `SELECT ... FOR UPDATE` antes de
+  contar el uso — mismo patrón que los locks de Ventas/Compras/Pagos.
+  Probado con 10 creaciones de producto y 8 invitaciones de usuario
+  verdaderamente concurrentes (`Promise.all`) contra límites chicos: el
+  conteo final nunca superó el límite configurado.
+- **Aislamiento de tenant**: `subscriptions`/`subscription_events` tienen
+  RLS desde Fase 1 (sin cambios de esquema en esta fase). Probado que
+  cambiar/cancelar el plan del tenant A no afecta al tenant B, y RLS
+  crudo confirma fail-closed con contexto de tenant inexistente.
+- **`app_superadmin` sigue sin superficie de aplicación**: se revisó
+  explícitamente para esta fase; no se construyó ningún endpoint que lo
+  use — la gestión del catálogo de planes sigue siendo vía
+  `prisma/seed.ts`, nunca expuesta como API pública.
+- **Sin datos de pago**: no se implementó pasarela real, no se cobra
+  nada, no se almacenan tarjetas ni ningún dato sensible de pago en esta
+  fase (ver `docs/architecture.md` sección 16 para la arquitectura de
+  billing futura, desacoplada de cualquier proveedor concreto).
+
 ## Qué queda pendiente (explícito, no oculto)
 
 - MFA (modelo de datos y guard no implementados todavía).

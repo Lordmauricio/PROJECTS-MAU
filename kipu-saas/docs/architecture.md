@@ -1155,3 +1155,200 @@ de error reales (mismo patrón `loading`/`loadError` que `/receivables`).
 del menú, poblado con `GET /notifications/unread-count` al montar y cada
 30 segundos (`setInterval`) — no hay push en tiempo real en esta fase, es
 polling explícito y documentado como tal.
+
+## 16. Fase Comercial 10 — Planes, límites y suscripciones: decisiones técnicas
+
+### Qué ya existía vs. qué se construyó
+
+`Plan`/`Subscription`/`SubscriptionEvent` (modelos), `SubscriptionStatus`
+(`TRIALING`/`ACTIVE`/`PAST_DUE`/`CANCELLED`), y un plan `free` sembrado
+con `limits: { maxUsers: 3, maxBranches: 1, maxProducts: 50 }` ya existían
+desde Fase 1 — pero sin API de ciclo de vida y, sobre todo, sin
+**enforcement**: cualquier organización podía superar esos límites sin
+que nada lo impidiera. Esta fase no cambia el esquema (cero migraciones
+nuevas) — construye el módulo `subscriptions/` sobre exactamente los
+campos que ya estaban ahí.
+
+### Catálogo de planes: fuente única, 4 planes reales
+
+`backend/src/subscriptions/plans.catalog.ts` es la ÚNICA fuente de
+verdad de nombre/precio/límites por plan — `prisma/seed.ts`,
+`OrganizationsService.bootstrapOrganization` (plan `free` al registrar
+una empresa) y `SubscriptionsService.getOrCreatePlan` leen todos del
+mismo objeto, para que nunca diverjan silenciosamente sobre qué trae
+cada plan:
+
+| Plan | Precio/mes | maxUsers | maxBranches | maxProducts |
+|---|---|---|---|---|
+| `free` | Bs 0 | 3 | 1 | 50 |
+| `basic` | Bs 99 | 10 | 3 | 500 |
+| `pro` | Bs 299 | 30 | 10 | 5000 |
+| `enterprise` | Bs 799 | ilimitado (`null`) | ilimitado | ilimitado |
+
+Los precios/límites de `basic`/`pro`/`enterprise` son valores iniciales
+razonables (no había ninguno definido en el código antes de esta fase
+más allá de `free`) — ajustables desde `plans.catalog.ts` sin tocar
+enforcement ni el resto del sistema.
+
+**Alcance deliberadamente acotado de los límites**: el pedido de esta
+fase listó, a modo de ejemplo, límites de sucursales, almacenes, POS,
+productos, clientes, proveedores, ventas y almacenamiento como "ya
+definidos". Al revisar el código, SOLO `maxUsers`/`maxBranches`/
+`maxProducts` existían realmente en `Plan.limits` — el resto nunca se
+implementó en ninguna fase anterior. Siguiendo la instrucción explícita
+de "no inventar límites nuevos si no están definidos", esta fase
+implementa enforcement real ÚNICAMENTE para esos tres. `features` (JSON,
+`{ pos, inventory, invoicing }`) sigue siendo puramente descriptivo — no
+se inventó gating de funcionalidades por feature flag, tampoco pedido
+explícitamente y no definido en ningún lado antes.
+
+### Ciclo de vida de `Subscription`
+
+- **Alta**: toda organización nueva arranca en el plan `free`,
+  `TRIALING`, sin `currentPeriodEnd` (no vence) — comportamiento ya
+  existente, sin cambios.
+- **Activación / cambio de plan** (`POST
+  .../subscription/change-plan`): elegir un plan pago activa la
+  suscripción (`ACTIVE`, `currentPeriodEnd` = hoy + 30 días — sin
+  pasarela de pago real todavía, ver más abajo); volver a `free` la deja
+  `TRIALING` sin vencimiento. Cambiar al mismo plan que ya está activo es
+  un no-op idempotente. **El downgrade se bloquea (409)** si el uso
+  ACTUAL de la organización ya supera algún límite del plan destino — se
+  compara usuarios/sucursales/productos reales contra los límites del
+  plan elegido ANTES de aplicar el cambio, para nunca dejar una cuenta
+  "ya excedida" apenas cambia de plan.
+- **Expiración perezosa**: no hay cron/worker dedicado (no hace falta sin
+  pasarela de pagos real todavía). Cada vez que se lee la suscripción
+  (`SubscriptionsService.getEffective`, usado por el `GET` del resumen),
+  si está `ACTIVE` y su `currentPeriodEnd` ya pasó, se transiciona a
+  `PAST_DUE` ahí mismo, se persiste, y se dejar un `SubscriptionEvent`
+  tipo `expired`. `PAST_DUE` es informativo (no bloquea creación de
+  recursos en esta fase) — distinto de `CANCELLED`, que sí bloquea (ver
+  Enforcement).
+- **Cancelación** (`POST .../subscription/cancel`): pasa a `CANCELLED`.
+  Idempotente (cancelar dos veces no falla ni duplica el
+  `SubscriptionEvent`).
+- **Renovación manual** (`POST .../subscription/renew`): sin pasarela de
+  pagos real, esto SIMULA el efecto de un cobro exitoso — extiende
+  `currentPeriodEnd` 30 días desde el vencimiento actual (o desde hoy si
+  ya venció) y reactiva la suscripción (`ACTIVE`) si estaba `PAST_DUE` o
+  `CANCELLED`. El plan `free` no tiene período que renovar (400
+  explícito). Es también el mecanismo de "reactivar" una suscripción
+  cancelada — no existe un endpoint `activate` separado, reactivar ES
+  renovar.
+- Todas las transiciones dejan `SubscriptionEvent` (`plan_changed`,
+  `cancelled`, `expired`, `renewed`) Y un `AuditLog` (vía `AuditService`,
+  mismo patrón asíncrono que el resto del sistema) Y una `Notification`
+  al usuario que hizo la acción (reutiliza `NotificationsService` de la
+  Fase Comercial 9 — ningún sistema de notificaciones nuevo).
+
+### Enforcement real: dónde vive, y por qué es seguro bajo concurrencia
+
+`SubscriptionsService.assertWithinLimit(tx, organizationId, resource)` es
+el único punto de enforcement. Se llama SIEMPRE desde DENTRO de la misma
+transacción (`tx`) que va a crear el recurso — nunca desde el
+controller, nunca confiando en nada que venga del cliente:
+
+- `MembersService.invite` → `assertWithinLimit(tx, org, 'users')` antes
+  de crear la membresía. También en `MembersService.setStatus` cuando
+  reactiva un usuario `SUSPENDED` → `ACTIVE` (reactivar también consume
+  un cupo — probado explícitamente).
+- `BranchesService.create` → `assertWithinLimit(tx, org, 'branches')`.
+- `ProductsService.create` y `ProductsService.duplicate` →
+  `assertWithinLimit(tx, org, 'products')` (duplicar cuenta como crear
+  uno nuevo, mismo límite).
+
+**Por qué `SELECT ... FOR UPDATE` sobre la fila de `Subscription`, y no
+solo un `COUNT` antes del `INSERT`**: bajo el nivel de aislamiento por
+defecto de Postgres (READ COMMITTED), dos transacciones concurrentes
+podrían ambas leer el mismo conteo ANTES de que ninguna confirme su
+`INSERT`, ambas ver que están bajo el límite, y ambas insertar — superando
+el límite. `assertWithinLimit` bloquea primero la fila de `subscriptions`
+de esa organización con `FOR UPDATE`: la segunda transacción concurrente
+que intenta crear el mismo tipo de recurso en la MISMA organización queda
+esperando a que la primera confirme (o revierta) antes de poder siquiera
+leer el conteo — mismo patrón exacto que `lockSale`/`lockPurchase`/
+`lockPayableByPurchase` ya usan en Ventas/Compras/Pagos desde fases
+anteriores. Probado con 10 creaciones de producto verdaderamente
+concurrentes (`Promise.all`, nunca secuencial) contra un límite de 3:
+exactamente 3 succeeded, 7 con 402 — nunca 4 o más. Mismo resultado con 8
+invitaciones concurrentes contra `maxUsers: 2`.
+
+**Cancelada bloquea distinto de límite alcanzado**: una suscripción
+`CANCELLED` bloquea CUALQUIER creación de usuario/sucursal/producto con
+`403 Forbidden` (no es un límite numérico, es que la cuenta no tiene plan
+activo). Alcanzar el límite numérico de un plan vigente responde `402
+Payment Required` — código HTTP reservado exactamente para este caso,
+que le permite al frontend distinguir "no podés hacer esto" (403) de "no
+podés hacer MÁS de esto sin actualizar tu plan" (402).
+
+### Seguridad: nada confía en lo que manda el cliente
+
+El usuario nunca puede alterar su plan o sus límites manipulando un
+request HTTP: `ChangePlanDto.planKey` se valida contra las 4 claves reales
+del catálogo (`@IsIn(PLAN_KEYS)`, 400 si no coincide); los LÍMITES nunca
+viajan en ningún request — siempre se leen del lado del servidor desde
+`Plan.limits` de la suscripción vigente de la organización autenticada
+(vía el JWT, nunca un `organizationId` en el body). `subscription.manage`
+(permiso nuevo, solo `OWNER`/`ADMIN` vía `ALL_PERMISSION_KEYS`) protege
+`change-plan`/`cancel`/`renew`; el `GET` del resumen es
+`@NoPermissionRequired()` (cualquier autenticado puede ver el plan y uso
+de su propia empresa, mismo criterio que `GET /organizations/me`).
+
+### Arquitectura de billing futura (sin pasarela real todavía)
+
+Punto 7/8 del pedido: NO se implementó ninguna pasarela de pagos real
+(Mercado Pago/Stripe/otra), NO se cobra nada de verdad, NO se almacenan
+tarjetas ni ningún dato sensible de pago. La preparación deliberada para
+cuando se autorice una pasarela real:
+
+- `changePlan`/`renew` YA separan "decidir qué debería pasar con la
+  suscripción" (lógica 100% en `SubscriptionsService`) de "cómo se
+  cobra" (que hoy simplemente no existe) — conectar una pasarela real
+  significaría agregar un paso ANTES de estos métodos (iniciar un cobro,
+  esperar el webhook de confirmación) sin tener que rediseñar el ciclo de
+  vida de `Subscription` que ya existe.
+- `SubscriptionEvent` (ya modelado desde Fase 1, ahora realmente usado)
+  es el lugar natural donde un futuro webhook de la pasarela escribiría
+  eventos (`payment_succeeded`, `payment_failed`) con el mismo patrón
+  append-only que `plan_changed`/`cancelled`/`renewed` ya usan.
+  `payload` (`String?` @db.Text) ya admite guardar el JSON crudo del
+  webhook del proveedor si hiciera falta para auditoría.
+- Cuando exista un proveedor real, la integración se construiría como
+  un módulo nuevo (`billing/` o similar) con su propia abstracción de
+  proveedor (mismo criterio que `EmailSender`/`ConsoleEmailSender`/
+  `SmtpEmailSender` de la Fase Comercial 9: una interfaz, el dominio
+  nunca conoce al proveedor concreto, la selección es 100% por variable
+  de entorno) — nunca se acopla `SubscriptionsService` directamente a
+  Mercado Pago o Stripe.
+- Ningún placeholder de credenciales se agregó a `.env.example` en esta
+  fase — no hay todavía ninguna variable de entorno de pagos que
+  documentar, porque no se decidió proveedor ni se escribió código que
+  las necesite.
+
+### `app_superadmin`: sigue reservado, sin superficie nueva
+
+El rol Postgres `app_superadmin` (`BYPASSRLS`, creado desde Fase 1) se
+revisó explícitamente para esta fase. Ningún código de aplicación lo usa
+todavía — no existe un contrato de "backoffice" definido en ningún lado
+del proyecto para implementar contra él, así que no se construyó ningún
+controller/endpoint de administración de planes. La gestión del catálogo
+de planes (agregar o ajustar `basic`/`pro`/`enterprise`) sigue siendo vía
+`prisma/seed.ts` (mismo mecanismo que el catálogo de permisos) — un
+backoffice real que use `app_superadmin` queda para cuando haya un
+diseño explícito de esa superficie, que hoy no existe en la
+documentación ni en el código.
+
+### Frontend: `/subscription` real
+
+Reemplaza la página de solo lectura anterior: plan actual, estado (con
+colores por estado — `TRIALING`/`ACTIVE`/`PAST_DUE`/`CANCELLED`), barras
+de uso con porcentaje por cada límite (usuarios/sucursales/productos,
+"Ilimitado" cuando el límite es `null`), tarjetas de los 4 planes
+disponibles con botón "cambiar a este plan", y botones de
+cancelar/renovar. Ningún botón se deshabilita preventivamente por rol
+(el backend ya es fail-closed vía RBAC) — los errores 402/403/409 del
+backend se muestran tal cual (mismo patrón `err.message` ya usado en
+`/users`, `/settings`, `/inventory/products`), así que un mensaje de
+límite alcanzado es automáticamente claro y accionable sin lógica nueva
+en el frontend.

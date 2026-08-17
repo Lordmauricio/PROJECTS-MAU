@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateBranchDto, UpdateBranchDto } from './dto/branch.dto';
 
 @Injectable()
@@ -8,6 +9,7 @@ export class BranchesService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly audit: AuditService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   list(organizationId: string) {
@@ -20,10 +22,19 @@ export class BranchesService {
     );
   }
 
-  async create(organizationId: string, dto: CreateBranchDto, actorUserId: string) {
-    const branch = await this.tenantPrisma.run(organizationId, (tx) =>
-      tx.branch.create({ data: { organizationId, ...dto } }),
-    );
+  async create(
+    organizationId: string,
+    dto: CreateBranchDto,
+    actorUserId: string,
+  ) {
+    const branch = await this.tenantPrisma.run(organizationId, async (tx) => {
+      await this.subscriptions.assertWithinLimit(
+        tx,
+        organizationId,
+        'branches',
+      );
+      return tx.branch.create({ data: { organizationId, ...dto } });
+    });
     await this.audit.log({
       organizationId,
       userId: actorUserId,
@@ -34,9 +45,16 @@ export class BranchesService {
     return branch;
   }
 
-  async update(organizationId: string, branchId: string, dto: UpdateBranchDto, actorUserId: string) {
+  async update(
+    organizationId: string,
+    branchId: string,
+    dto: UpdateBranchDto,
+    actorUserId: string,
+  ) {
     const updated = await this.tenantPrisma.run(organizationId, async (tx) => {
-      const existing = await tx.branch.findFirst({ where: { id: branchId, organizationId } });
+      const existing = await tx.branch.findFirst({
+        where: { id: branchId, organizationId },
+      });
       if (!existing) throw new NotFoundException('Sucursal no encontrada');
       return tx.branch.update({ where: { id: branchId }, data: dto });
     });

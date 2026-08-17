@@ -207,6 +207,14 @@ export const PERMISSIONS_CATALOG: PermissionDef[] = [
     module: 'audit',
     description: 'Ver el log de auditoría',
   },
+
+  // Suscripción / plan (Fase Comercial 10) — ver GET /organizations/me/subscription
+  {
+    key: 'subscription.manage',
+    module: 'subscription',
+    description:
+      'Cambiar de plan, cancelar y renovar la suscripción de la empresa',
+  },
 ];
 
 // Roles iniciales exactos del prompt (Parte 1, sección 4).

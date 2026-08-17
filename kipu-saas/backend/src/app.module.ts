@@ -29,6 +29,7 @@ import { ReceivablesModule } from './receivables/receivables.module';
 import { ReportsModule } from './reports/reports.module';
 import { ReceiptsModule } from './receipts/receipts.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 
 @Module({
   imports: [
@@ -53,6 +54,8 @@ import { NotificationsModule } from './notifications/notifications.module';
     RedisModule,
     MailModule,
     AuditModule,
+    NotificationsModule,
+    SubscriptionsModule,
     AuthModule,
     OrganizationsModule,
     BranchesModule,
@@ -73,7 +76,6 @@ import { NotificationsModule } from './notifications/notifications.module';
     ReceivablesModule,
     ReportsModule,
     ReceiptsModule,
-    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

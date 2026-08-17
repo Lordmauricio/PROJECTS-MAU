@@ -826,24 +826,94 @@ para el detalle técnico completo.
       "Fases siguientes" abajo) — mismo criterio que la renumeración ya
       aplicada en Fase Comercial 8 para Recibos comerciales.
 
+## Fase Comercial 10 — Planes, límites y suscripciones ✅
+
+Entregable: los 4 planes reales (`free`/`basic`/`pro`/`enterprise`) con un
+catálogo fuente único, ciclo de vida completo de `Subscription`
+(activación, cambio de plan, cancelación, expiración perezosa, renovación
+manual), y enforcement REAL (no solo declarado) de los límites que ya
+existían en el esquema (`maxUsers`/`maxBranches`/`maxProducts`), seguro
+bajo concurrencia. Ver `docs/architecture.md` sección 16 para el detalle
+técnico completo.
+
+- [x] Catálogo de 4 planes (`backend/src/subscriptions/plans.catalog.ts`,
+      fuente única para seed/bootstrap/`SubscriptionsService`) — `free`
+      (ya existía: 3 usuarios/1 sucursal/50 productos, Bs 0), `basic` (10/3/500,
+      Bs 99), `pro` (30/10/5000, Bs 299), `enterprise` (ilimitado, Bs 799).
+- [x] Alcance de límites deliberadamente acotado a los que YA estaban
+      definidos en el código (`maxUsers`/`maxBranches`/`maxProducts`) — no
+      se inventaron límites de almacenes/POS/clientes/proveedores/ventas/
+      almacenamiento que el prompt mencionó como ejemplo pero que nunca
+      existieron en el esquema ni en `prisma/seed.ts` antes de esta fase.
+- [x] Ciclo de vida real (`SubscriptionsModule`,
+      `/organizations/me/subscription*`): `GET` (resumen con uso vs.
+      límite), `POST change-plan` (bloquea downgrade si el uso ya excede
+      el plan destino, 409), `POST cancel`, `POST renew` (renovación
+      manual — sin pasarela real, ver más abajo). Expiración perezosa:
+      `ACTIVE` con `currentPeriodEnd` vencido pasa a `PAST_DUE` al leerse,
+      sin cron dedicado. Cada transición deja `SubscriptionEvent` +
+      `AuditLog` + `Notification` (reutiliza la infraestructura de la
+      Fase Comercial 9, ningún sistema nuevo).
+- [x] Enforcement real dentro de la transacción que crea el recurso
+      (`MembersService.invite`/reactivación, `BranchesService.create`,
+      `ProductsService.create`/`duplicate`), con `SELECT ... FOR UPDATE`
+      sobre `subscriptions` para que sea seguro bajo concurrencia
+      real — probado con 10 creaciones de producto y 8 invitaciones
+      verdaderamente concurrentes (`Promise.all`) contra límites chicos:
+      el conteo final nunca superó el límite.
+- [x] Seguridad: `subscription.manage` (permiso nuevo, solo OWNER/ADMIN)
+      protege cambiar de plan/cancelar/renovar — probado 403 para los 6
+      roles restantes. El cliente nunca controla su plan/límites (DTO
+      valida `planKey` contra las 4 claves reales; los límites se leen
+      siempre del servidor). Suscripción CANCELLED bloquea creación de
+      recursos con 403; alcanzar el límite numérico responde 402
+      (`Payment Required`) — distingue "no podés" de "no podés MÁS sin
+      upgradear".
+- [x] `app_superadmin` revisado explícitamente — sigue sin ninguna
+      superficie de aplicación (ningún endpoint lo usa); la gestión del
+      catálogo de planes sigue siendo vía `prisma/seed.ts`.
+- [x] Arquitectura de billing preparada, SIN pasarela real: no se cobra
+      nada, no se almacenan tarjetas ni datos sensibles de pago.
+      `changePlan`/`renew` ya separan "qué le pasa a la suscripción" de
+      "cómo se cobra", y `SubscriptionEvent` es el lugar natural para que
+      un futuro webhook de proveedor escriba eventos — sin acoplar
+      `SubscriptionsService` a Mercado Pago/Stripe/ningún proveedor
+      concreto (ver "Fases siguientes" abajo).
+- [x] Frontend `/subscription` real: estado, uso con barras y porcentaje
+      por límite, tarjetas de los 4 planes, cambiar/cancelar/renovar.
+- [x] Sin tocar `fiscal/` — sigue sin existir ni un placeholder.
+- [x] Tests reales: 34 casos nuevos
+      (`subscriptions.integration.spec.ts` — 12,
+      `subscriptions.security.spec.ts` — 13,
+      `subscriptions.enforcement.spec.ts` — 9, esta última incluye los dos
+      tests de concurrencia real) cubriendo los 4 planes, ciclo de vida
+      completo, enforcement, límites, cambio de plan, expiración,
+      cancelación, tenant isolation, RBAC, y concurrencia. Regresión
+      completa: 271/271 tests (237 previos + 34 nuevos), sin cambios de
+      esquema (cero migraciones nuevas en esta fase).
+- [x] Renumeración: esta fase toma el número 10 (autorizado así
+      explícitamente); Facturación/Fiscal/SIN pasa al número 11 (ver
+      "Fases siguientes" abajo) — mismo criterio que las renumeraciones ya
+      aplicadas en Fases Comerciales 8 y 9.
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
-- **Fase Comercial 10 — Facturación / Fiscal / SIN**: `Invoice`/
+- **Fase Comercial 11 — Facturación / Fiscal / SIN**: `Invoice`/
   `InvoiceItem`/`InvoiceEvent`/`TaxConfiguration` ya modelados de forma
   genérica, **sin** campos específicos del SIN todavía. Antes de tocar
   código fiscal real, hay que investigar la normativa vigente (RND, Anexo
   Técnico, algoritmo de CUF, servicios SOAP/REST) tal como exige el
   prompt — no se inventan reglas fiscales. Fuera de alcance hasta nueva
-  autorización explícita. (Renumerada de nuevo: Notificaciones y Email
-  real tomó el número 9 — arriba —, así que Facturación pasa a este
-  número para no chocar con ella. `receipts/` y el futuro `fiscal/`
-  quedan explícitamente separados — ver la sección de abajo — así que
-  esta renumeración es solo de orden, no de dependencia: Fiscal podrá
-  construirse sin tocar ni una línea de `receipts/` ni de
-  `notifications/`.)
-- **Fase Comercial 11 — Suscripciones y pagos reales**: hoy existe un plan
-  "Gratis" automático y la página de Suscripción es de solo lectura; falta
-  pasarela de pago para cambiar de plan.
+  autorización explícita. (Renumerada de nuevo: Planes/Suscripciones tomó
+  el número 10 — arriba —, así que Facturación pasa a este número para no
+  chocar con ella. `receipts/`, `notifications/` y `subscriptions/`
+  quedan explícitamente separados de un futuro `fiscal/` — así que esta
+  renumeración es solo de orden, no de dependencia.)
+- **Fase Comercial 12 — Pasarela de pagos real**: conectar un proveedor
+  real (Mercado Pago, Stripe, u otro) para que `change-plan`/`renew`
+  cobren de verdad — la Fase Comercial 10 preparó el desacople (ver
+  `docs/architecture.md` sección 16) pero deliberadamente no implementó
+  ningún cobro real, sin especificación de proveedor definida todavía.
 
 ## Recibos vs. Facturación (aclaración explícita, sección 3/4 del master spec)
 
@@ -878,7 +948,7 @@ venta se verá así:
 ```
 Sale
 ├── CommercialReceipt   (Fase Comercial 8 — ya construido, NO fiscal)
-└── FiscalDocument      (Fase Comercial 10 — futuro, SIN Bolivia)
+└── FiscalDocument      (Fase Comercial 11 — futuro, SIN Bolivia)
 ```
 
 Son documentos DIFERENTES, con ciclos de vida y validez legal distintos:

@@ -21,9 +21,4 @@ export class OrganizationsController {
   getDashboard(@CurrentAuth() auth: AccessTokenPayload) {
     return this.organizations.getDashboardSummary(auth.organizationId);
   }
-
-  @Get('me/subscription')
-  getSubscription(@CurrentAuth() auth: AccessTokenPayload) {
-    return this.organizations.getSubscription(auth.organizationId);
-  }
 }

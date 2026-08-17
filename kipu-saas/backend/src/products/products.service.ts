@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateProductDto, UpdateProductDto } from './dto/product.dto';
 
 @Injectable()
@@ -8,6 +9,7 @@ export class ProductsService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly audit: AuditService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   list(organizationId: string, search?: string) {
@@ -50,10 +52,19 @@ export class ProductsService {
     });
   }
 
-  async create(organizationId: string, dto: CreateProductDto, actorUserId: string) {
-    const product = await this.tenantPrisma.run(organizationId, (tx) =>
-      tx.product.create({ data: { organizationId, ...dto } }),
-    );
+  async create(
+    organizationId: string,
+    dto: CreateProductDto,
+    actorUserId: string,
+  ) {
+    const product = await this.tenantPrisma.run(organizationId, async (tx) => {
+      await this.subscriptions.assertWithinLimit(
+        tx,
+        organizationId,
+        'products',
+      );
+      return tx.product.create({ data: { organizationId, ...dto } });
+    });
     await this.audit.log({
       organizationId,
       userId: actorUserId,
@@ -64,9 +75,16 @@ export class ProductsService {
     return product;
   }
 
-  async update(organizationId: string, productId: string, dto: UpdateProductDto, actorUserId: string) {
+  async update(
+    organizationId: string,
+    productId: string,
+    dto: UpdateProductDto,
+    actorUserId: string,
+  ) {
     const updated = await this.tenantPrisma.run(organizationId, async (tx) => {
-      const existing = await tx.product.findFirst({ where: { id: productId, organizationId } });
+      const existing = await tx.product.findFirst({
+        where: { id: productId, organizationId },
+      });
       if (!existing) throw new NotFoundException('Producto no encontrado');
       return tx.product.update({ where: { id: productId }, data: dto });
     });
@@ -82,9 +100,14 @@ export class ProductsService {
 
   async remove(organizationId: string, productId: string, actorUserId: string) {
     await this.tenantPrisma.run(organizationId, async (tx) => {
-      const existing = await tx.product.findFirst({ where: { id: productId, organizationId } });
+      const existing = await tx.product.findFirst({
+        where: { id: productId, organizationId },
+      });
       if (!existing) throw new NotFoundException('Producto no encontrado');
-      return tx.product.update({ where: { id: productId }, data: { active: false } });
+      return tx.product.update({
+        where: { id: productId },
+        data: { active: false },
+      });
     });
     await this.audit.log({
       organizationId,
@@ -95,15 +118,39 @@ export class ProductsService {
     });
   }
 
-  async duplicate(organizationId: string, productId: string, actorUserId: string) {
-    const duplicated = await this.tenantPrisma.run(organizationId, async (tx) => {
-      const existing = await tx.product.findFirst({ where: { id: productId, organizationId } });
-      if (!existing) throw new NotFoundException('Producto no encontrado');
-      const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...rest } = existing;
-      return tx.product.create({
-        data: { ...rest, name: `${existing.name} (copia)`, sku: null, barcode: null },
-      });
-    });
+  async duplicate(
+    organizationId: string,
+    productId: string,
+    actorUserId: string,
+  ) {
+    const duplicated = await this.tenantPrisma.run(
+      organizationId,
+      async (tx) => {
+        const existing = await tx.product.findFirst({
+          where: { id: productId, organizationId },
+        });
+        if (!existing) throw new NotFoundException('Producto no encontrado');
+        await this.subscriptions.assertWithinLimit(
+          tx,
+          organizationId,
+          'products',
+        );
+        const {
+          id: _id,
+          createdAt: _createdAt,
+          updatedAt: _updatedAt,
+          ...rest
+        } = existing;
+        return tx.product.create({
+          data: {
+            ...rest,
+            name: `${existing.name} (copia)`,
+            sku: null,
+            barcode: null,
+          },
+        });
+      },
+    );
     await this.audit.log({
       organizationId,
       userId: actorUserId,

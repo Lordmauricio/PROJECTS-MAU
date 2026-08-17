@@ -23,6 +23,9 @@ export const NOTIFICATION_TYPES = {
   CASH_OPENED: 'cash.opened',
   CASH_CLOSED: 'cash.closed',
   CASH_DISCREPANCY: 'cash.discrepancy',
+  SUBSCRIPTION_PLAN_CHANGED: 'subscription.plan_changed',
+  SUBSCRIPTION_CANCELLED: 'subscription.cancelled',
+  SUBSCRIPTION_RENEWED: 'subscription.renewed',
 } as const;
 
 export type NotificationType =

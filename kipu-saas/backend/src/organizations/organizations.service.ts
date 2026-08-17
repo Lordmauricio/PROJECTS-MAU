@@ -11,6 +11,7 @@ import {
 import { CASH_INCREASE_TYPES, CASH_DECREASE_TYPES } from '../cash/cash.service';
 import { money } from '../common/money';
 import { ReportsService } from '../reports/reports.service';
+import { PLAN_DEFINITIONS } from '../subscriptions/plans.catalog';
 
 export interface BootstrapOrganizationInput {
   organizationName: string;
@@ -161,18 +162,25 @@ export class OrganizationsService {
     return roles;
   }
 
+  /**
+   * Definición de límites/precio centralizada en
+   * `subscriptions/plans.catalog.ts` (Fase Comercial 10) — evita que este
+   * `create` de bootstrap y `SubscriptionsService.getOrCreatePlan` diverjan
+   * silenciosamente sobre qué trae el plan gratuito.
+   */
   private async getOrCreateFreePlan() {
+    const def = PLAN_DEFINITIONS.free;
     const existing = await this.prisma.plan.findUnique({
-      where: { key: 'free' },
+      where: { key: def.key },
     });
     if (existing) return existing;
     return this.prisma.plan.create({
       data: {
-        key: 'free',
-        name: 'Gratis',
-        priceMonthly: 0,
-        limits: { maxUsers: 3, maxBranches: 1, maxProducts: 50 },
-        features: { pos: true, inventory: true, invoicing: false },
+        key: def.key,
+        name: def.name,
+        priceMonthly: def.priceMonthly,
+        limits: def.limits as unknown as Prisma.InputJsonValue,
+        features: def.features as unknown as Prisma.InputJsonValue,
       },
     });
   }
@@ -180,15 +188,6 @@ export class OrganizationsService {
   async findById(organizationId: string) {
     return this.tenantPrisma.run(organizationId, (tx) =>
       tx.organization.findUniqueOrThrow({ where: { id: organizationId } }),
-    );
-  }
-
-  async getSubscription(organizationId: string) {
-    return this.tenantPrisma.run(organizationId, (tx) =>
-      tx.subscription.findUniqueOrThrow({
-        where: { organizationId },
-        include: { plan: true },
-      }),
     );
   }
 

@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { MailService } from '../mail/mail.service';
 import { AuditService } from '../audit/audit.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { InviteMemberDto } from './dto/invite-member.dto';
 
 @Injectable()
@@ -19,6 +20,7 @@ export class MembersService {
     private readonly tenantPrisma: TenantPrismaService,
     private readonly mail: MailService,
     private readonly audit: AuditService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   list(organizationId: string) {
@@ -81,6 +83,11 @@ export class MembersService {
             'Ese usuario ya pertenece a la organización',
           );
         }
+
+        // Enforcement real del límite de usuarios del plan (Fase Comercial
+        // 10) — DENTRO de esta misma transacción, ver
+        // `SubscriptionsService.assertWithinLimit`.
+        await this.subscriptions.assertWithinLimit(tx, organizationId, 'users');
 
         const created = await tx.organizationUser.create({
           data: {
@@ -178,6 +185,12 @@ export class MembersService {
         where: { id: membershipId, organizationId },
       });
       if (!membership) throw new NotFoundException('Membresía no encontrada');
+      // Reactivar un usuario suspendido también consume un cupo del plan
+      // — se chequea el límite igual que al invitar uno nuevo (no aplica
+      // al camino ACTIVE -> ACTIVE, que no cambia el conteo).
+      if (status === 'ACTIVE' && membership.status !== 'ACTIVE') {
+        await this.subscriptions.assertWithinLimit(tx, organizationId, 'users');
+      }
       return tx.organizationUser.update({
         where: { id: membershipId },
         data: { status },

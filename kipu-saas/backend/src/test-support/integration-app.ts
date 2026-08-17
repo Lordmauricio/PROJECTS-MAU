@@ -550,3 +550,52 @@ export async function createProductWithStock(
   }
   return { productId };
 }
+
+/**
+ * Crea (o reutiliza) un `Plan` de prueba con límites arbitrarios y apunta
+ * la `Subscription` de la organización a él directamente vía Prisma — sin
+ * pasar por `SubscriptionsService.changePlan` (que solo acepta las 4
+ * claves reales del catálogo). Existe para poder probar el enforcement de
+ * `maxProducts` (límite real = 50 en el plan más chico) sin tener que
+ * crear 50 productos en cada test — mismo criterio que
+ * `createUserWithRole` (bypass directo de Prisma para preparar un estado
+ * que la API normal no expone un atajo para crear).
+ */
+export async function setOrganizationPlanLimits(
+  app: INestApplication,
+  organizationId: string,
+  limits: {
+    maxUsers?: number | null;
+    maxBranches?: number | null;
+    maxProducts?: number | null;
+  },
+): Promise<void> {
+  const prisma = app.get(PrismaService);
+  const tenantPrisma = app.get(TenantPrismaService);
+  const key = `test-plan-${uniqueSuffix()}`;
+  const plan = await prisma.plan.create({
+    data: {
+      key,
+      name: `Plan de prueba (${key})`,
+      priceMonthly: 0,
+      limits: {
+        maxUsers: limits.maxUsers ?? null,
+        maxBranches: limits.maxBranches ?? null,
+        maxProducts: limits.maxProducts ?? null,
+      },
+      features: { pos: true, inventory: true, invoicing: false },
+      // `active: false` — no es un plan real seleccionable, es un atajo
+      // de test. `SubscriptionsService.listPlans()` filtra por
+      // `active: true`, así que esto evita que se filtre al catálogo
+      // público que ven otros tests corriendo en paralelo (mismo Postgres
+      // compartido entre archivos de test).
+      active: false,
+    },
+  });
+  await tenantPrisma.run(organizationId, (tx) =>
+    tx.subscription.update({
+      where: { organizationId },
+      data: { planId: plan.id },
+    }),
+  );
+}
