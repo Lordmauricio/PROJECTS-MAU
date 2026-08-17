@@ -528,6 +528,57 @@ pedida en esta fase tampoco. Un modelo de devolución/reembolso PARCIAL
 (por ítem) queda fuera de alcance — la devolución sigue siendo total,
 como desde la Fase Comercial 2.
 
+## Auditoría de integración comercial post-Fase 6 ✅
+
+Auditoría de solo-lectura sobre las Fases Comerciales 2-6 ya
+implementadas (sin nuevas features, sin tocar SIN/facturación
+electrónica), pedida explícitamente para buscar inconsistencias entre
+módulos antes de autorizar la Fase 7. Cubrió los 5 flujos comerciales
+completos (venta→inventario→pago→caja; venta a crédito→receivable→
+cobro→caja; compra→inventario→payable→pago→caja; devolución de venta→
+reembolso→caja; pagos parciales/mixtos) y concurrencia/retries, releyendo
+línea por línea `sales.service.ts`, `purchases.service.ts`,
+`payables.service.ts` (y por diseño de la Fase 6, `receivables.service.ts`
+delega en `sales.service.ts`), verificando locks, idempotencia, Decimal,
+RLS y RBAC contra el código real (no solo contra los tests ya escritos).
+
+- [x] **Bug real encontrado y corregido**: `PurchasesService
+      .returnToSupplier()` (y `growOrCreatePayable()`, compartido con
+      `receive()`) leían `Payable.amount`/`status` con un `SELECT` sin
+      bloqueo (`tx.payable.findUnique`), confiando únicamente en el lock
+      de `Purchase` (`lockPurchase`). Como `PayablesService.addPayment`
+      solo bloquea la fila de `Payable` (nunca toca `Purchase`), una
+      devolución al proveedor y un pago sobre la misma Payable, ejecutados
+      concurrentemente, podían validarse cada uno contra un `amount`
+      distinto (el pago contra el monto previo a la devolución) y dejar el
+      balance final negativo (sobrepago) — exactamente uno de los
+      resultados prohibidos explícitamente en el pedido de auditoría.
+      Reproducido de forma determinística en
+      `purchases.concurrency.spec.ts` antes del fix (ambas peticiones
+      devolvían 201 y el balance quedaba en -300), corregido agregando
+      `lockPayableByPurchase` (`SELECT ... FOR UPDATE` sobre `payables`
+      por `purchaseId`) en ambos puntos de lectura-antes-de-escritura, y
+      cubierto con un test de regresión que verifica la invariante
+      (`balance >= 0`) sin importar el orden de la carrera. Batería
+      completa re-ejecutada tras el fix: 139/139 tests, build
+      backend/frontend limpios, `verify:tenant-isolation` 21/21, eslint
+      limpio en los módulos comerciales, y los 4 flujos core
+      re-verificados con Playwright sobre el código corregido.
+- [x] Resto de los módulos auditados (Ventas, Inventario, Caja,
+      Receivables — por delegación en Ventas) sin hallazgos: locks
+      siempre antes de la lectura que determina el efecto, idempotencia
+      vía `idempotencyKey` único + patrón `assertMatches`/P2002 fuera de
+      la transacción original, dinero 100% `Prisma.Decimal` vía
+      `common/money.ts`, RLS activo y forzado en todas las tablas
+      tocadas (incluida la lectura sin scope explícito por
+      `organizationId` de `paidAmountFor`, segura porque corre dentro de
+      `TenantPrismaService.run` con RLS `FORCE`), y `@RequirePermissions`/
+      `@NoPermissionRequired` presentes en todos los endpoints de las
+      Fases 2-6.
+- [x] No se implementó ninguna funcionalidad nueva ni se tocó Reportes,
+      SIN o Facturación Electrónica — alcance estrictamente limitado al
+      bug encontrado.
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
 - **Fase Comercial 7 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/

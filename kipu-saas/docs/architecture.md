@@ -598,3 +598,49 @@ mayormente derivadas, no de sincronización bidireccional:
 Igual que el resto del sistema, Receivables, la integración de Caja con
 Payables, y los reembolsos de venta no tienen ninguna relación con el
 SIN: no generan XML, no calculan CUF/CUFD, no firman nada.
+
+## 12. Auditoría post-Fase 6: el lock de `Payable` tiene que ser explícito, no heredado del de `Purchase`
+
+Una auditoría de integración de solo-lectura sobre las Fases Comerciales
+2-6 (sin nuevas features) encontró una corrección real de concurrencia en
+Compras, con el mismo patrón de causa raíz que la corrección de
+idempotencia de la Fase 4 (sección 9): un supuesto de "el lock de la
+entidad padre alcanza" que dejó de cumplirse en cuanto otro módulo
+empezó a bloquear la entidad hija de forma independiente.
+
+`PurchasesService.returnToSupplier()` reduce `Payable.amount`
+proporcionalmente a lo devuelto, y valida que el nuevo monto no quede por
+debajo de lo ya pagado (la regla de "el proveedor no puede terminar
+debiéndonos" de la Fase 3). Para eso lee el `Payable` actual — pero lo
+leía con un `SELECT` normal (`tx.payable.findUnique`), confiando en que
+`lockPurchase()` (bloqueo de la fila de `Purchase`, tomado al principio
+de la función) fuera suficiente. No lo es: `PayablesService.addPayment()`
+nunca toca ni bloquea `Purchase`, solo bloquea `Payable` directamente. Una
+devolución y un pago concurrentes sobre la misma cuenta por pagar
+terminan bloqueando filas distintas, así que Postgres no los serializa
+entre sí — cada uno valida su propia operación contra un `amount` que el
+otro está a punto de cambiar, y el resultado combinado puede dejar
+`balance = amount - paidTotal` en negativo (sobrepago). El mismo patrón
+de lectura-sin-lock existía en `growOrCreatePayable()` (compartido con
+`receive()`), aunque ahí el `amount` solo crece, así que el riesgo real
+era de un `status` inconsistente, no de sobrepago.
+
+La corrección: `lockPayableByPurchase()`, un `SELECT ... FOR UPDATE`
+sobre `payables` por `purchaseId`, usado en ambos puntos ANTES de leer
+`amount`/`status`. Con el lock explícito sobre `Payable`, cualquier
+intercalado posible entre una devolución y un pago concurrentes queda
+serializado correctamente: quien pierda la carrera por el lock vuelve a
+leer el `amount` ya actualizado por el otro, y su propia validación lo
+rechaza si corresponde (nunca ambos pueden "pasar" a la vez). Reproducido
+de forma determinística antes del fix y cubierto con un test de
+regresión en `purchases.concurrency.spec.ts` que no depende de quién gane
+la carrera — solo afirma la invariante financiera (`balance >= 0`) sin
+importar el orden.
+
+**Lección general, reafirmada**: cuando dos servicios distintos escriben
+sobre la misma entidad (`Purchase`↔`Payable` acá, análogo al
+`Sale`↔`Receivable` de la Fase 6 o al `CashRegister` compartido entre
+Ventas/Payables/reembolsos), el lock tiene que tomarse sobre la entidad
+que efectivamente se lee-y-luego-escribe, nunca asumido por transitividad
+desde el lock de una entidad relacionada — sin importar qué tan
+"naturalmente" parezcan estar unidas en el dominio.

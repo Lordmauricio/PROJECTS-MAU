@@ -104,7 +104,9 @@ filas de otro tenant, y que sin contexto de tenant fijado no devuelve nada
   interpolación segura de Prisma (tagged template), nunca concatenación de
   strings — ver `TenantPrismaService`, `OrganizationsService.getDashboardSummary`,
   y los métodos privados `lockSale`/`lockPurchase`/`lockPayable` en
-  `sales.service.ts`/`purchases.service.ts`/`payables.service.ts`.
+  `sales.service.ts`/`purchases.service.ts`/`payables.service.ts`, más
+  `lockPayableByPurchase` en `purchases.service.ts` (agregado en la
+  auditoría post-Fase 6, ver sección "Auditoría post-Fase 6" más abajo).
 
 ## Transporte y cabeceras
 
@@ -247,6 +249,38 @@ tarjeta ni ningún otro secreto, solo montos/cantidades de negocio.
   para la justificación completa — no es una laguna, es la misma
   distinción "discrecional vs. corrección obligatoria" que ya regía el
   resto del sistema.
+
+## Auditoría post-Fase 6
+
+Auditoría de integración de solo-lectura sobre las Fases Comerciales 2-6
+(sin nuevas features), buscando específicamente saldo negativo, sobrepago,
+doble efecto, fuga entre tenants, bypass de permisos y estados
+inconsistentes en los 5 flujos comerciales completos.
+
+- **Bug de concurrencia real encontrado y corregido**: `PurchasesService
+  .returnToSupplier()`/`growOrCreatePayable()` leían `Payable.amount`/
+  `status` sin bloquear esa fila, confiando en el lock de `Purchase`
+  (`lockPurchase`). Como `PayablesService.addPayment()` bloquea `Payable`
+  directamente sin tocar `Purchase`, una devolución al proveedor y un
+  pago sobre la misma cuenta por pagar, ejecutados concurrentemente,
+  podían dejar el `balance` calculado en negativo — un sobrepago real,
+  no solo teórico (reproducido de forma determinística antes del fix).
+  Corregido con `lockPayableByPurchase` (`SELECT ... FOR UPDATE` explícito
+  sobre `payables`) en ambos puntos. Ver `docs/architecture.md` sección
+  12 para el detalle técnico completo y `purchases.concurrency.spec.ts`
+  para el test de regresión.
+- **Sin hallazgos de tenant/RBAC/idempotencia**: se releyeron
+  `sales.service.ts`, `purchases.service.ts` y `payables.service.ts`
+  línea por línea contra el código real (no solo contra los tests ya
+  escritos por el mismo autor en las mismas fases). Todo lock ocurre
+  antes de la lectura que determina el efecto salvo el caso arriba;
+  todo endpoint de las Fases 2-6 declara `@RequirePermissions` o
+  `@NoPermissionRequired`; todo dinero usa `Prisma.Decimal`; el único
+  query sin `organizationId` explícito en su `WHERE`
+  (`PurchasesService.paidAmountFor`, filtra solo por `payableId`) es
+  seguro porque corre dentro de `TenantPrismaService.run`, con RLS
+  `FORCE` activo en `payments` desde la migración inicial — el filtro
+  por tenant lo aplica Postgres, no la query de Prisma.
 
 ## Qué queda pendiente (explícito, no oculto)
 
