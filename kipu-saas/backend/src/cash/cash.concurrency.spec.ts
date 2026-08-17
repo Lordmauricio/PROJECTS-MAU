@@ -3,14 +3,17 @@ import {
   ApiCashMovement,
   ApiCashRegister,
   ApiExpense,
+  ApiSale,
   bootTestApp,
   callApi,
+  createProductWithStock,
   createTestPosTerminal,
   openCashRegister,
   registerTestOrg,
   TestTenant,
   uniqueSuffix,
 } from '../test-support/integration-app';
+import { CASH_DECREASE_TYPES, CASH_INCREASE_TYPES } from './cash.service';
 
 describe('Caja y Gastos — concurrencia e idempotencia (integración, DB real)', () => {
   let app: INestApplication;
@@ -261,5 +264,87 @@ describe('Caja y Gastos — concurrencia e idempotencia (integración, DB real)'
       idempotencyKey: key,
     });
     expect(second.status).toBe(409);
+  });
+
+  it('cobro en efectivo concurrente con el cierre de la MISMA caja: jamás queda un CashMovement huérfano fuera del arqueo congelado (regresión)', async () => {
+    // Reproduce la raza: `registerSalePaymentMovement` leía la caja OPEN sin
+    // lock, así que un cobro en efectivo de una venta podía intercalarse
+    // entre el `findFirst` (ve OPEN) y el `close()` de otro usuario, e
+    // insertar el CashMovement sobre una caja que `close()` ya había dejado
+    // CLOSED con `expectedAmount`/`difference` congelados sin verlo. La
+    // corrección re-bloquea y revalida `status === 'OPEN'` (igual que sus
+    // hermanas `registerPayablePaymentMovement`/`registerSaleRefundMovement`)
+    // antes de insertar. Invariante verificado acá, sin importar en qué
+    // orden ganó la carrera: el saldo recalculado a partir de TODOS los
+    // movimientos que terminan adjuntos a la caja cerrada debe coincidir
+    // exactamente con su `expectedAmount` congelado — un movimiento
+    // "huérfano" post-cierre rompería esa igualdad.
+    for (let i = 0; i < 5; i++) {
+      const posTerminalId = await freshTerminal(`Race Cobro-Cierre ${i}`);
+      const register = await openCashRegister(app, tenant, {
+        openingAmount: 100,
+        posTerminalId,
+      });
+
+      const { productId } = await createProductWithStock(app, tenant, {
+        name: `Race Cobro-Cierre ${uniqueSuffix()}`,
+        price: 25,
+        quantity: 10,
+      });
+      const sale = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        {
+          posTerminalId,
+          warehouseId: tenant.warehouseId,
+          items: [{ productId, quantity: 1 }],
+        },
+        tenant.accessToken,
+      );
+      await callApi<ApiSale>(
+        app,
+        'POST',
+        `/sales/${sale.body.id}/confirm`,
+        {},
+        tenant.accessToken,
+      );
+
+      const [payRes, closeRes] = await Promise.all([
+        callApi<ApiSale>(
+          app,
+          'POST',
+          `/sales/${sale.body.id}/payments`,
+          {
+            method: 'CASH',
+            amount: 25,
+            idempotencyKey: `race-pay-${posTerminalId}-${uniqueSuffix()}`,
+          },
+          tenant.accessToken,
+        ),
+        closeReq(register.id, 100, `race-close-${posTerminalId}`),
+      ]);
+
+      expect(payRes.status).toBe(201); // el pago SIEMPRE se aplica, con o sin caja
+      expect(closeRes.status).toBe(201);
+
+      const detail = await callApi<ApiCashRegister>(
+        app,
+        'GET',
+        `/cash-registers/${register.id}`,
+        undefined,
+        tenant.accessToken,
+      );
+      expect(detail.body.status).toBe('CLOSED');
+
+      const recomputed = (detail.body.movements ?? []).reduce((balance, m) => {
+        const amount = Number(m.amount);
+        if (CASH_INCREASE_TYPES.has(m.type)) return balance + amount;
+        if (CASH_DECREASE_TYPES.has(m.type)) return balance - amount;
+        return balance;
+      }, Number(detail.body.openingAmount));
+
+      expect(recomputed).toBeCloseTo(Number(detail.body.expectedAmount), 6);
+    }
   });
 });

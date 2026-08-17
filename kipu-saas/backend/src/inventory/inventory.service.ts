@@ -134,9 +134,18 @@ export class InventoryService {
     return { movement, stockBefore, stockAfter };
   }
 
+  /**
+   * `opts.maxRows` por defecto es 200 (vista normal). Pasar `undefined`
+   * explícito vía `{ maxRows: undefined }` NO es lo mismo que omitir
+   * `opts` — solo `ReportsService.inventoryReport` lo hace, para poder
+   * calcular el `summary` (valorización total) sobre el inventario
+   * COMPLETO de la organización y no solo sobre las 200 filas que se
+   * muestran en pantalla (ver comentario en `inventoryReport`).
+   */
   listStock(
     organizationId: string,
     filters: { warehouseId?: string; productId?: string },
+    opts: { maxRows?: number } = { maxRows: 200 },
   ) {
     return this.tenantPrisma.run(organizationId, (tx) =>
       tx.inventory.findMany({
@@ -150,7 +159,7 @@ export class InventoryService {
           warehouse: { select: { id: true, name: true } },
         },
         orderBy: { updatedAt: 'desc' },
-        take: 200,
+        take: opts.maxRows,
       }),
     );
   }
@@ -160,10 +169,21 @@ export class InventoryService {
    * — es la misma tabla que respalda el kardex (`kardex()` de abajo es un
    * caso particular: siempre filtrado por producto, orden cronológico
    * ascendente para leerse como una cuenta corriente).
+   *
+   * `opts.maxPageSize` (default 200) es lo que permite a
+   * `ReportsService.movementsReport` pedir hasta `REPORT_EXPORT_MAX_ROWS`
+   * filas al exportar — sin este override, el tope de 200 quedaba
+   * hardcodeado acá y el `pageSize: REPORT_EXPORT_MAX_ROWS` que el
+   * controller de reportes ya intentaba forzar no tenía ningún efecto
+   * real, truncando el export del kardex en silencio.
    */
-  listMovements(organizationId: string, filters: KardexQueryDto) {
+  listMovements(
+    organizationId: string,
+    filters: KardexQueryDto,
+    opts: { maxPageSize?: number } = {},
+  ) {
     const page = filters.page ?? 1;
-    const pageSize = Math.min(filters.pageSize ?? 50, 200);
+    const pageSize = Math.min(filters.pageSize ?? 50, opts.maxPageSize ?? 200);
     return this.tenantPrisma.run(organizationId, (tx) =>
       tx.inventoryMovement.findMany({
         where: {

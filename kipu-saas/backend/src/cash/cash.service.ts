@@ -482,6 +482,13 @@ export class CashService {
    * una decisión explícita documentada en `docs/architecture.md` para no
    * romper el flujo de Ventas que ya funcionaba sin Caja desde la Fase
    * Comercial 2. Nunca abre su propia transacción: `tx` ya viene abierta.
+   *
+   * Toma `lockCashRegister` (igual que sus hermanas `registerPayablePaymentMovement`/
+   * `registerSaleRefundMovement`) y revalida `status === 'OPEN'` bajo el lock antes
+   * de insertar: sin esto, un cobro en efectivo concurrente con el cierre de la misma
+   * caja podía insertar el movimiento sobre una caja que el cierre ya había dejado
+   * `CLOSED` (con `expectedAmount`/`difference` ya congelados sin verlo), dejando el
+   * dinero cobrado fuera del arqueo de forma silenciosa y permanente.
    */
   async registerSalePaymentMovement(
     tx: Tx,
@@ -506,6 +513,13 @@ export class CashService {
       },
     });
     if (!register) return null;
+
+    const locked = await this.lockCashRegister(
+      tx,
+      params.organizationId,
+      register.id,
+    );
+    if (!locked || locked.status !== 'OPEN') return null; // se cerró justo entre el findFirst y acá
 
     return tx.cashMovement.create({
       data: {

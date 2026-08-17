@@ -131,7 +131,7 @@ const REPORTS: Record<string, ReportDefinition> = {
   inventory: {
     title: 'Reporte de inventario',
     fetchView: (s, org, q) => s.inventoryReport(org, q),
-    fetchExport: (s, org, q) => s.inventoryReport(org, q),
+    fetchExport: (s, org, q) => s.inventoryReport(org, q, EXPORT_OPTS),
     columns: [
       { header: 'Producto', value: (r) => r.product?.name ?? '' },
       { header: 'SKU', value: (r) => r.product?.sku ?? '' },
@@ -146,7 +146,11 @@ const REPORTS: Record<string, ReportDefinition> = {
     title: 'Kardex / movimientos de inventario',
     fetchView: (s, org, q) => s.movementsReport(org, q),
     fetchExport: (s, org, q) =>
-      s.movementsReport(org, { ...q, pageSize: REPORT_EXPORT_MAX_ROWS }),
+      s.movementsReport(
+        org,
+        { ...q, pageSize: REPORT_EXPORT_MAX_ROWS },
+        EXPORT_OPTS,
+      ),
     columns: [
       { header: 'Fecha', value: (r) => r.createdAt },
       { header: 'Producto', value: (r) => r.product?.name ?? '' },

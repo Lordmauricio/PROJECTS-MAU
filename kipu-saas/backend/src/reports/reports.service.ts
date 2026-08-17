@@ -516,11 +516,31 @@ export class ReportsService {
   // motor de stock, sin reimplementarlo), agrega valorización (quantity *
   // Product.cost, dato ya persistido, no recalculado).
   // =========================================================================
-  async inventoryReport(organizationId: string, filters: ReportQueryDto) {
-    const rows = await this.inventory.listStock(organizationId, {
-      warehouseId: filters.warehouseId,
-      productId: filters.productId,
-    });
+  // `opts.maxPageSize` limita cuántas filas se muestran en pantalla/export
+  // (200 por defecto, más alto para export vía EXPORT_OPTS). El `summary`
+  // (totalValue/totalQuantity/lowStockCount), en cambio, SIEMPRE se calcula
+  // sobre el inventario COMPLETO de la organización que matchea los
+  // filtros — nunca solo sobre las filas mostradas — por eso acá se pide
+  // `listStock` SIN límite (`{ maxRows: undefined }`) y el corte a
+  // `maxPageSize` se aplica después, en memoria, solo sobre qué filas se
+  // devuelven para mostrar. Antes de esta corrección, `summary.totalValue`
+  // se calculaba únicamente sobre las 200 filas devueltas por
+  // `listStock`, subreportando la valorización total en cualquier
+  // organización con más de 200 combinaciones producto×almacén, sin
+  // ningún indicio visible de truncamiento.
+  async inventoryReport(
+    organizationId: string,
+    filters: ReportQueryDto,
+    opts?: { maxPageSize?: number },
+  ) {
+    const rows = await this.inventory.listStock(
+      organizationId,
+      {
+        warehouseId: filters.warehouseId,
+        productId: filters.productId,
+      },
+      { maxRows: undefined },
+    );
     return this.tenantPrisma.run(organizationId, async (tx) => {
       let scoped = rows as Array<
         (typeof rows)[number] & { product: { cost?: Prisma.Decimal } }
@@ -576,8 +596,9 @@ export class ReportsService {
         ZERO_MONEY,
       );
 
+      const maxPageSize = opts?.maxPageSize ?? 200;
       return {
-        rows: valuedRows,
+        rows: valuedRows.slice(0, maxPageSize),
         summary: {
           count: valuedRows.length,
           totalQuantity,
@@ -592,15 +613,23 @@ export class ReportsService {
   // 7) Kardex / resumen de movimientos — reutiliza
   // InventoryService.listMovements (mismo motor, mismo paginado).
   // =========================================================================
-  async movementsReport(organizationId: string, filters: ReportQueryDto) {
-    const rows = await this.inventory.listMovements(organizationId, {
-      warehouseId: filters.warehouseId,
-      productId: filters.productId,
-      dateFrom: filters.dateFrom,
-      dateTo: filters.dateTo,
-      page: filters.page,
-      pageSize: filters.pageSize,
-    });
+  async movementsReport(
+    organizationId: string,
+    filters: ReportQueryDto,
+    opts?: { maxPageSize?: number },
+  ) {
+    const rows = await this.inventory.listMovements(
+      organizationId,
+      {
+        warehouseId: filters.warehouseId,
+        productId: filters.productId,
+        dateFrom: filters.dateFrom,
+        dateTo: filters.dateTo,
+        page: filters.page,
+        pageSize: filters.pageSize,
+      },
+      { maxPageSize: opts?.maxPageSize },
+    );
     const summary = {
       count: rows.length,
       in: rows.filter((r) => r.type === 'IN').length,

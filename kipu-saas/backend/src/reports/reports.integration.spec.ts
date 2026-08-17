@@ -13,6 +13,8 @@ import {
   TestTenant,
   uniqueSuffix,
 } from '../test-support/integration-app';
+import { ReportsService } from './reports.service';
+import { InventoryService } from '../inventory/inventory.service';
 
 function decodeJwtSub(token: string): string {
   const payload = token.split('.')[1];
@@ -817,5 +819,129 @@ describe('Reportes — integración (datos reales, DB real)', () => {
     // Utilidad comercial: NUNCA inventada — explícitamente no disponible.
     expect(res.body.grossMargin.available).toBe(false);
     expect(res.body.grossMargin.reason.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Regresión — auditoría pre-producción (Fase 10+): `inventoryReport` y
+ * `movementsReport` truncaban silenciosamente sus resultados a 200 filas
+ * (el tope hardcodeado de `InventoryService.listStock`/`listMovements`),
+ * incluyendo el `summary` (valorización total) del reporte de inventario
+ * y el export (que intentaba pedir hasta `REPORT_EXPORT_MAX_ROWS` filas
+ * sin que el override tuviera ningún efecto real). Se llama a
+ * `ReportsService`/`InventoryService` directamente (organización propia,
+ * sin pasar por HTTP) para poder forzar un tope bajo y probar la
+ * corrección sin tener que crear cientos de filas reales.
+ */
+describe('Reportes de Inventario — regresión: summary NUNCA limitado a las filas visibles', () => {
+  let app: INestApplication;
+  let reportsService: ReportsService;
+  let inventoryService: InventoryService;
+  let tenant: TestTenant;
+  const products: Array<{ id: string; cost: number; quantity: number }> = [];
+
+  beforeAll(async () => {
+    app = await bootTestApp();
+    reportsService = app.get(ReportsService);
+    inventoryService = app.get(InventoryService);
+    tenant = await registerTestOrg(app, 'Reports-Truncation-Regression');
+
+    // 5 productos con costo/cantidad distintos -> 5 filas de Inventory.
+    const specs = [
+      { cost: 10, quantity: 3 },
+      { cost: 20, quantity: 5 },
+      { cost: 7, quantity: 11 },
+      { cost: 15, quantity: 2 },
+      { cost: 30, quantity: 1 },
+    ];
+    for (const spec of specs) {
+      const prod = await callApi<{ id: string }>(
+        app,
+        'POST',
+        '/products',
+        {
+          name: `Trunc ${uniqueSuffix()}`,
+          price: spec.cost * 2,
+          cost: spec.cost,
+        },
+        tenant.accessToken,
+      );
+      const mv = await callApi(
+        app,
+        'POST',
+        '/inventory/movements',
+        {
+          warehouseId: tenant.warehouseId,
+          productId: prod.body.id,
+          type: 'IN',
+          quantity: spec.quantity,
+          reason: 'Carga inicial (regresión truncamiento)',
+          idempotencyKey: `trunc-${prod.body.id}-${uniqueSuffix()}`,
+        },
+        tenant.accessToken,
+      );
+      if (mv.status !== 201) {
+        throw new Error(`carga inicial falló: ${JSON.stringify(mv.body)}`);
+      }
+      products.push({
+        id: prod.body.id,
+        cost: spec.cost,
+        quantity: spec.quantity,
+      });
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 15000);
+
+  it('inventoryReport: summary.totalValue/totalQuantity/count reflejan TODAS las filas, aunque `rows` se recorte a maxPageSize', async () => {
+    const expectedTotalQuantity = products.reduce((a, p) => a + p.quantity, 0);
+    const expectedTotalValue = products.reduce(
+      (a, p) => a + p.cost * p.quantity,
+      0,
+    );
+
+    const capped = await reportsService.inventoryReport(
+      tenant.organizationId,
+      { warehouseId: tenant.warehouseId },
+      { maxPageSize: 2 },
+    );
+
+    expect(capped.rows.length).toBe(2); // vista/export SÍ se recortan a maxPageSize
+    expect(capped.summary.count).toBe(5); // pero el summary es sobre las 5 filas reales
+    expect(Number(capped.summary.totalQuantity)).toBe(expectedTotalQuantity);
+    expect(Number(capped.summary.totalValue)).toBe(expectedTotalValue);
+
+    const uncapped = await reportsService.inventoryReport(
+      tenant.organizationId,
+      { warehouseId: tenant.warehouseId },
+      { maxPageSize: 200 },
+    );
+    expect(uncapped.rows.length).toBe(5);
+    expect(Number(uncapped.summary.totalValue)).toBe(expectedTotalValue);
+  });
+
+  it('movementsReport / listMovements: `opts.maxPageSize` realmente amplía el tope (antes hardcodeado a 200 sin forma de override)', async () => {
+    const narrow = await inventoryService.listMovements(
+      tenant.organizationId,
+      { warehouseId: tenant.warehouseId, pageSize: 1000 },
+      { maxPageSize: 2 },
+    );
+    expect(narrow.length).toBe(2); // el override SÍ reduce el tope efectivo
+
+    const wide = await inventoryService.listMovements(
+      tenant.organizationId,
+      { warehouseId: tenant.warehouseId, pageSize: 1000 },
+      { maxPageSize: 20000 },
+    );
+    expect(wide.length).toBe(5); // el override SÍ permite superar el viejo tope de 200
+
+    const viaReport = await reportsService.movementsReport(
+      tenant.organizationId,
+      { warehouseId: tenant.warehouseId, pageSize: 1000 },
+      { maxPageSize: 20000 },
+    );
+    expect(viaReport.rows.length).toBe(5);
   });
 });
