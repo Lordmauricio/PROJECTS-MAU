@@ -1,6 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import {
   ApiInventoryRow,
+  ApiPayable,
   ApiPurchase,
   bootTestApp,
   callApi,
@@ -8,6 +9,7 @@ import {
   createTestSupplier,
   registerTestOrg,
   TestTenant,
+  uniqueSuffix,
 } from '../test-support/integration-app';
 
 describe('Compras — concurrencia e idempotencia (integración, DB real)', () => {
@@ -161,5 +163,69 @@ describe('Compras — concurrencia e idempotencia (integración, DB real)', () =
       tenant.accessToken,
     );
     expect(Number(detail.body.items[0].receivedQuantity)).toBe(8); // nunca 16
+  }, 15000);
+
+  it('devolución al proveedor concurrente con un pago sobre la MISMA payable: el saldo nunca queda negativo (ni doble efecto)', async () => {
+    const { productId } = await createTestProduct(app, tenant, {
+      name: `Concurrencia Devolución vs Pago ${uniqueSuffix()}`,
+    });
+    // 10 unidades a 100 c/u, sin descuento: total = 1000.
+    const purchase = await makeConfirmedPurchase(productId, 10, 100);
+    const itemId = purchase.items[0].id;
+    const received = await receive(
+      purchase.id,
+      itemId,
+      10,
+      `conc-devolucion-vs-pago-recv-${uniqueSuffix()}`,
+    );
+    const payable = received.body.payables[0];
+    expect(Number(payable.amount)).toBe(1000);
+
+    // Devolver 5 unidades (reduciría la payable a 500) en paralelo con un
+    // pago de 800 (válido si se valida contra el saldo ANTERIOR a la
+    // devolución, de 1000). Si cualquiera de las dos operaciones lee el
+    // monto de la payable sin bloquear la fila, ambas pueden "pasar" su
+    // propia validación y el resultado combinado deja balance = 500 - 800
+    // = -300: saldo negativo / sobrepago.
+    const [returnResult, payResult] = await Promise.all([
+      callApi<ApiPurchase>(
+        app,
+        'POST',
+        `/purchases/${purchase.id}/return`,
+        {
+          items: [{ purchaseItemId: itemId, quantity: 5 }],
+          idempotencyKey: `conc-devolucion-vs-pago-ret-${uniqueSuffix()}`,
+        },
+        tenant.accessToken,
+      ),
+      callApi<ApiPayable>(
+        app,
+        'POST',
+        `/payables/${payable.id}/payments`,
+        {
+          method: 'CASH',
+          amount: 800,
+          idempotencyKey: `conc-devolucion-vs-pago-pay-${uniqueSuffix()}`,
+        },
+        tenant.accessToken,
+      ),
+    ]);
+
+    // No importa cuál de las dos "gane" la carrera: exactamente una de las
+    // dos debe ser rechazada (400/409), porque no pueden ser ambas válidas
+    // a la vez (500 de saldo tras la devolución no alcanza para pagar 800).
+    const statuses = [returnResult.status, payResult.status].sort();
+    expect(statuses[1]).toBeGreaterThanOrEqual(400);
+
+    const detail = await callApi<ApiPayable>(
+      app,
+      'GET',
+      `/payables/${payable.id}`,
+      undefined,
+      tenant.accessToken,
+    );
+    // Invariante financiera: el saldo nunca puede ser negativo (no puede
+    // haberse pagado más de lo que la payable efectivamente debe).
+    expect(Number(detail.body.balance)).toBeGreaterThanOrEqual(0);
   }, 15000);
 });

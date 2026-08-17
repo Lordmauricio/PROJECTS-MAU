@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '../../generated/prisma/client';
+import { Prisma, ReceivablePayableStatus } from '../../generated/prisma/client';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { InventoryService } from '../inventory/inventory.service';
@@ -487,7 +487,14 @@ export class PurchasesService {
           }
         }
 
-        const payable = await tx.payable.findUnique({ where: { purchaseId } });
+        // Bloquea la fila de la Payable ANTES de leer su `amount`: sin esto,
+        // un pago concurrente (PayablesService.addPayment, que sí bloquea la
+        // Payable) puede validarse contra el monto viejo (previo a esta
+        // devolución) porque esta transacción solo tenía tomado el lock de
+        // Purchase, no el de Payable — permitiendo que ambas operaciones
+        // "pasen" su propia validación y el resultado combinado deje un
+        // saldo negativo (sobrepago). Ver purchases.concurrency.spec.ts.
+        const payable = await this.lockPayableByPurchase(tx, purchaseId);
         if (!payable) {
           throw new ConflictException(
             'No existe una cuenta por pagar para esta compra todavía (no se ha recibido nada)',
@@ -693,9 +700,10 @@ export class PurchasesService {
     }
     const newAmount = money(receivedValue.mul(purchaseLevelFactor));
 
-    const existing = await tx.payable.findUnique({
-      where: { purchaseId: purchase.id },
-    });
+    // Mismo motivo que en `returnToSupplier`: bloquea la fila antes de leer
+    // `amount`/`status`, para serializar correctamente contra un pago
+    // concurrente (PayablesService.addPayment) sobre la misma Payable.
+    const existing = await this.lockPayableByPurchase(tx, purchase.id);
     if (!existing) {
       await tx.payable.create({
         data: {
@@ -727,6 +735,20 @@ export class PurchasesService {
       _sum: { amount: true },
     });
     return money(agg._sum.amount ?? 0);
+  }
+
+  private async lockPayableByPurchase(tx: Tx, purchaseId: string) {
+    const rows = await tx.$queryRaw<
+      Array<{
+        id: string;
+        amount: Prisma.Decimal;
+        status: ReceivablePayableStatus;
+        supplierId: string;
+      }>
+    >`
+      SELECT id, amount, status, "supplierId" FROM payables WHERE "purchaseId" = ${purchaseId} FOR UPDATE
+    `;
+    return rows[0] ?? null;
   }
 
   private async lockPurchase(
