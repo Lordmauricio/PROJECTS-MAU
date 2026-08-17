@@ -25,8 +25,12 @@ type Tx = Prisma.TransactionClient;
 // (Fase Comercial 6, pago a proveedor en efectivo) y `SALE_REFUND` (Fase
 // Comercial 6, reembolso de venta en efectivo) se suman a los cuatro tipos
 // ya existentes desde la Fase Comercial 5.
-const CASH_INCREASE_TYPES = new Set(['CASH_IN', 'SALE_PAYMENT']);
-const CASH_DECREASE_TYPES = new Set([
+// Exportados (Fase Comercial 7) para que ReportsService clasifique
+// ingresos/egresos de caja sin reimplementar esta política en otro lado —
+// "reporte de ingresos"/"reporte de egresos" leen exactamente estos
+// mismos conjuntos, nunca una copia propia.
+export const CASH_INCREASE_TYPES = new Set(['CASH_IN', 'SALE_PAYMENT']);
+export const CASH_DECREASE_TYPES = new Set([
   'CASH_OUT',
   'EXPENSE',
   'PAYABLE_PAYMENT',

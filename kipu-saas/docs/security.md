@@ -134,10 +134,13 @@ Comercial 5: `cash.open`, `cash.close`, `cash.movement.create`,
 `expenses.create`. Desde la Fase Comercial 6: `receivables.create`
 (al confirmarse una venta a crédito), `receivables.payment.create`
 (además del `sales.payment.create` ya existente, para que una Receivable
-tenga su propio rastro de auditoría), `sales.refund.create`. Cada registro
-incluye `userId`, `organizationId`, `action`, `entityType`/`entityId`
-cuando aplica, IP y user agent cuando están disponibles — nunca montos de
-tarjeta ni ningún otro secreto, solo montos/cantidades de negocio.
+tenga su propio rastro de auditoría), `sales.refund.create`. Desde la Fase
+Comercial 7: `reports.export` (cada exportación CSV/Excel, con el formato,
+la cantidad de filas exportadas y los filtros usados — para saber quién
+sacó qué datos de la empresa, cuándo). Cada registro incluye `userId`,
+`organizationId`, `action`, `entityType`/`entityId` cuando aplica, IP y
+user agent cuando están disponibles — nunca montos de tarjeta ni ningún
+otro secreto, solo montos/cantidades de negocio.
 
 ## Fase Comercial 4 — Inventario avanzado: notas de seguridad específicas
 
@@ -281,6 +284,36 @@ inconsistentes en los 5 flujos comerciales completos.
   seguro porque corre dentro de `TenantPrismaService.run`, con RLS
   `FORCE` activo en `payments` desde la migración inicial — el filtro
   por tenant lo aplica Postgres, no la query de Prisma.
+
+## Fase Comercial 7 — Reportes: notas de seguridad específicas
+
+- **`reports.read` ya existía en el catálogo desde Fase 1** (placeholder
+  sin endpoints reales hasta ahora) — no se creó ningún permiso nuevo.
+  Asignado a OWNER/ADMIN (todos los permisos), MANAGER, ACCOUNTANT y
+  AUDITOR (rol de solo lectura); SALES/CASHIER/INVENTORY no lo tienen —
+  probado explícitamente con un usuario SALES real recibiendo 403 en los
+  17 endpoints de reporte y en el export, y con ACCOUNTANT/AUDITOR
+  recibiendo 200 (`reports.security.spec.ts`).
+- **Ningún filtro puede escapar el tenant**, incluidos los que resuelven
+  sucursal → almacén/POS (`resolveBranchScope`): un `branchId`/
+  `warehouseId`/`posTerminalId`/`productId`/`categoryId`/`userId` de OTRO
+  tenant, pasado explícitamente por un atacante que conoce ese id (por
+  ejemplo, filtrado de otra fuente), nunca filtra datos ajenos — la
+  resolución de alcance ya está scoped por `organizationId` antes de
+  usarse, así que un id ajeno simplemente resuelve a una lista vacía y el
+  reporte da cero filas. Probado con dos tenants reales y los ids
+  reales del primero, incluyendo el caso de export (`reports.security.spec.ts`,
+  `export: el tenant B exportando ventas nunca incluye filas de A`).
+- **`userNamesMap` (nombres de usuario para "ventas por usuario") lee la
+  tabla global `users`**, la única sin RLS del sistema — pero nunca la
+  usa para BUSCAR por tenant: los `userId` que le llegan ya vinieron de
+  una consulta de `Sale`/`Purchase` previamente filtrada por
+  `organizationId`, así que solo se usan para poner un nombre a un id que
+  ya se sabe que pertenece a este tenant, nunca para descubrir usuarios
+  de otra organización.
+- **Auditoría**: cada export queda registrado (`reports.export`, con
+  `format`, cantidad de filas y filtros usados) — ver la nota
+  "Auditoría" general más abajo, extendida en esta fase.
 
 ## Qué queda pendiente (explícito, no oculto)
 

@@ -263,3 +263,14 @@ Organization
 - `refunds` no tiene ningún `@unique` propio — no lo necesita, ver la
   justificación de idempotencia en `docs/architecture.md` sección 11.
 - Montos siempre `Decimal` (`@db.Decimal`), nunca `Float`.
+
+## Fase Comercial 7 — Reportes: sin cambios de esquema
+
+El módulo de Reportes (`docs/architecture.md` sección 13) es de solo
+lectura sobre las entidades ya documentadas arriba — no agrega tablas,
+columnas, índices ni constraints nuevos, y no requirió ninguna migración
+(`prisma migrate status` sigue reportando las mismas 8 migraciones desde
+la Fase Comercial 6). Los índices ya existentes en `sales`/`purchases`/
+`payments`/`cash_movements`/`inventories`/`inventory_movements`
+(`organizationId`, y las FK relevantes) ya cubren los filtros que usan
+sus reportes correspondientes.

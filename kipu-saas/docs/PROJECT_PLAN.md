@@ -579,20 +579,97 @@ RLS y RBAC contra el código real (no solo contra los tests ya escritos).
       SIN o Facturación Electrónica — alcance estrictamente limitado al
       bug encontrado.
 
+## Fase Comercial 7 — Reportes ✅
+
+Entregable: módulo de reportes comerciales (NO fiscales) sobre los datos
+reales de las Fases 2-6, más un dashboard con indicadores reales. Ver
+`docs/architecture.md` sección 13 para el detalle técnico completo.
+
+- [x] 17 reportes (`backend/src/reports/`, `ReportsService`/
+      `ReportsController`, uno por endpoint `GET /reports/<clave>`): ventas,
+      compras, ingresos, egresos, caja, inventario, kardex/movimientos,
+      cuentas por cobrar, cuentas por pagar, productos más vendidos, ventas
+      por producto/categoría/sucursal/POS/usuario, métodos de pago, ventas
+      por rango de fechas.
+- [x] Filtros comunes (fecha desde/hasta, sucursal, almacén, POS, usuario,
+      producto, categoría, método de pago, estado) vía un único
+      `ReportQueryDto` — cada reporte usa solo los que le aplican. Ningún
+      filtro puede escapar el tenant: todo id se combina siempre con
+      `organizationId` (y las tablas referenciadas tienen RLS `FORCE`), así
+      que un id de otro tenant nunca filtra datos ajenos, simplemente no
+      matchea nada.
+- [x] **No se duplicó ningún motor de negocio**: `inventoryReport`/
+      `movementsReport` reutilizan `InventoryService.listStock`/
+      `listMovements` directamente; `incomeReport`/`expensesReport`/
+      `cashReport` clasifican `CashMovement` con los mismos
+      `CASH_INCREASE_TYPES`/`CASH_DECREASE_TYPES` que ya usa
+      `CashService.computeBalance` (exportados desde ahí, no redeclarados);
+      el resto son lecturas/agregaciones directas (Prisma `aggregate`/
+      `groupBy`, algún `$queryRaw` de solo lectura para joins que Prisma no
+      resuelve) sobre las tablas que Ventas/Compras/Receivables/Payables ya
+      escriben — nunca se reimplementa cómo se confirma una venta, se
+      recibe una compra o se calcula un saldo.
+- [x] Exportación CSV y Excel real (`exceljs`) por reporte
+      (`GET /reports/:key/export?format=csv|xlsx`), reutilizando EXACTO el
+      mismo método/filtros que la vista en pantalla — nunca una consulta
+      separada, así que pantalla y archivo nunca pueden divergir. Auditado
+      (`reports.export`).
+- [x] Dashboard (`OrganizationsService.getDashboardSummary`) ampliado con
+      datos reales: ventas/compras del período, ingresos/egresos de caja,
+      cuentas por cobrar/pagar pendientes, valorización de inventario,
+      productos más vendidos (reutiliza `ReportsService.topProductsReport`).
+      Se corrigió además un subconteo real heredado de Fase 1: "ventas del
+      día/mes" solo contaba `status: 'CONFIRMED'`, dejando afuera toda
+      venta ya `PARTIALLY_PAID`/`PAID` (la inmensa mayoría en la práctica).
+- [x] **Utilidad comercial explícitamente NO calculada**: `SaleItem` no
+      persiste el costo unitario al momento de la venta (a diferencia de
+      `PurchaseItem.unitCost`, que sí es histórico) y no hay trazabilidad de
+      lote/FIFO. El dashboard devuelve
+      `grossMargin: { available: false, reason: '...' }` en vez de inventar
+      una cifra con el costo actual del producto.
+- [x] Seguridad: RLS + `TenantPrismaService` en todo, `@RequirePermissions('reports.read')`
+      en los 17 endpoints + el export (permiso que ya existía en el
+      catálogo desde Fase 1, asignado a OWNER/ADMIN/MANAGER/ACCOUNTANT/
+      AUDITOR — no se creó ningún permiso nuevo). Probado con dos tenants
+      reales, incluyendo filtrar explícitamente por ids (producto,
+      almacén, sucursal, POS) del OTRO tenant desde el token propio: cero
+      filas, nunca fuga.
+- [x] Rendimiento: paginación real (`skip`/`take`) en los reportes
+      tabulares, `summary` calculado con una query de agregación aparte
+      (nunca trayendo todas las filas a memoria solo para sumarlas), sin
+      N+1 (los `include`/joins necesarios van en la misma query).
+- [x] Frontend real `/reports` (reemplaza el `ComingSoon` de Fase 1):
+      selector de los 17 reportes agrupados, filtros contextuales, tarjetas
+      de resumen, tabla paginada, estados de carga/vacío/error, exportación
+      CSV/Excel. Dashboard (`/dashboard`) actualizado con los indicadores
+      nuevos y la tabla de productos más vendidos.
+- [x] Tests reales (`reports.integration.spec.ts` 27 casos,
+      `reports.security.spec.ts` 14 casos): aislamiento de tenant,
+      filtros/fechas/agregaciones sobre un escenario fijo con cifras
+      conocidas de antemano, permisos (403 sin `reports.read`, 200 con
+      él), exportación CSV/Excel verificando que el archivo trae las
+      MISMAS cifras que la vista. Regresión completa: 180/180 tests
+      (139 previos + 41 nuevos), sin cambios de esquema (ninguna migración
+      nueva — no era necesaria).
+
+**Pendiente explícito (NO pedido en esta fase)**: sin gráficos/visualizaciones
+(solo tablas y tarjetas numéricas); sin reportes fiscales/de facturación
+electrónica (fuera de alcance por diseño); "ventas por categoría" no tiene
+selector de categoría en su propio filtro (no aplica: es precisamente lo
+que agrupa); la utilidad comercial queda sin calcular hasta que exista
+costo histórico por línea de venta (fuera de alcance de esta fase).
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
-- **Fase Comercial 7 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/
+- **Fase Comercial 8 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/
   `InvoiceEvent`/`TaxConfiguration` ya modelados de forma genérica, **sin**
   campos específicos del SIN todavía. Antes de tocar código fiscal real,
   hay que investigar la normativa vigente (RND, Anexo Técnico, algoritmo de
   CUF, servicios SOAP/REST) tal como exige el prompt — no se inventan
   reglas fiscales. Fuera de alcance hasta nueva autorización explícita.
-  (Renumerada: este documento la listaba antes como "Fase Comercial 6",
-  pero la Fase Comercial 6 autorizada y construida fue Pagos y Cuentas,
-  arriba — Facturación pasa a este número para no chocar con ella.)
-- **Fase Comercial 8 — Reportes**: depende de que exista actividad real en
-  ventas/compras/inventario/caja/facturación para tener algo que reportar
-  (ventas ya generan esa actividad desde esta fase).
+  (Renumerada de nuevo: la Fase Comercial 7 autorizada y construida fue
+  Reportes, arriba — Facturación pasa a este número para no chocar con
+  ella.)
 - **Fase Comercial 9 — Recibos comerciales no fiscales**: numeración
   comercial segura bajo concurrencia, snapshot inmutable, PDF A4/ticket
   80mm. Explícitamente distinto de un documento fiscal — ver sección

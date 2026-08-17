@@ -35,3 +35,26 @@ export async function api<T = unknown>(
   }
   return data as T;
 }
+
+/** Descarga un archivo (export CSV/Excel) autenticado y dispara el guardado en el navegador. */
+export async function apiDownload(path: string, filename: string, token?: string): Promise<void> {
+  const authToken = token ?? getToken();
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => undefined);
+    const rawMessage = data?.message ?? data?.error ?? "No se pudo exportar";
+    const message = Array.isArray(rawMessage) ? rawMessage.join(", ") : rawMessage;
+    throw new ApiError(res.status, message, data);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}

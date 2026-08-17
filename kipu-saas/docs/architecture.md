@@ -644,3 +644,126 @@ Ventas/Payables/reembolsos), el lock tiene que tomarse sobre la entidad
 que efectivamente se lee-y-luego-escribe, nunca asumido por transitividad
 desde el lock de una entidad relacionada — sin importar qué tan
 "naturalmente" parezcan estar unidas en el dominio.
+
+## 13. Fase Comercial 7 — Reportes: decisiones técnicas
+
+### Un módulo de solo lectura, sin motor propio
+
+`ReportsModule` (`backend/src/reports/`) no tiene tablas propias ni
+lógica de negocio que mutar: los 17 reportes pedidos son lecturas y
+agregaciones sobre tablas que Ventas/Compras/Inventario/Caja/Receivables/
+Payables ya escriben desde las Fases 2-6. La regla explícita del pedido
+("no crear otro motor de ventas/inventario/caja") se cumple por
+construcción de dos formas distintas según el caso:
+
+- **Reutilizando el servicio existente directamente**, cuando ya expone
+  exactamente la lectura que hace falta: `inventoryReport`/
+  `movementsReport` llaman a `InventoryService.listStock`/
+  `listMovements` tal cual — cero reimplementación del cálculo de stock
+  ni del kardex.
+- **Reutilizando la misma CLASIFICACIÓN, no reinventándola**, cuando el
+  dato es una agregación nueva sobre una tabla ya existente:
+  `incomeReport`/`expensesReport`/`cashReport` necesitan saber qué tipos
+  de `CashMovement` suman y cuáles restan del saldo de una caja — en vez
+  de decidirlo de nuevo, importan `CASH_INCREASE_TYPES`/
+  `CASH_DECREASE_TYPES` directamente desde `cash.service.ts` (exportados
+  ahí puntualmente para esto). Si mañana Caja agrega un tipo de
+  movimiento nuevo, Reportes lo clasifica bien automáticamente, sin tocar
+  una sola línea acá.
+
+El resto (`salesReport`, `purchasesReport`, `receivablesReport`,
+`payablesReport`, y los 8 reportes agregados de Ventas —
+`sales-by-*`/`top-products`/`payment-methods`) son lecturas directas vía
+`TenantPrismaService.run` + Prisma `findMany`/`aggregate`/`groupBy` (y
+`$queryRaw` de solo lectura para los 2 casos que cruzan relaciones que
+Prisma no agrega directamente: ventas por categoría, que hace JOIN
+`sale_items`→`products`→`product_categories`, y ventas por sucursal, que
+resuelve `posTerminal.branchId`/`warehouse.branchId`) — el mismo patrón
+que ya usaba `OrganizationsService.getDashboardSummary` desde Fase 1, no
+uno nuevo.
+
+### Filtros: un DTO compartido, resuelto contra el tenant siempre
+
+Los 17 reportes aceptan el mismo `ReportQueryDto` (fecha desde/hasta,
+sucursal, almacén, POS, usuario, producto, categoría, método de pago,
+estado) y cada uno usa solo los campos que le aplican — evita 17 DTOs
+casi idénticos. `Sale`/`Purchase` no tienen `branchId` como columna
+propia (solo `warehouseId`/`posTerminalId`), así que "filtrar por
+sucursal" se resuelve en dos pasos dentro de la misma transacción:
+primero `resolveBranchScope` busca qué `warehouseId`/`posTerminalId` de
+ESTE tenant pertenecen a esa sucursal, y luego ese resultado (posiblemente
+vacío) entra al `WHERE` de la consulta real. Un `branchId`/`productId`/
+`warehouseId`/etc. que pertenece a OTRO tenant nunca puede filtrar datos
+ajenos: como el primer paso ya está scoped por `organizationId` (más RLS
+`FORCE` de fondo), simplemente no encuentra nada y el filtro completo
+devuelve cero filas — nunca la consulta "ignora" el filtro y devuelve
+todo. Cubierto explícitamente en `reports.security.spec.ts` con un
+segundo tenant real filtrando por ids reales del primero.
+
+### Vista paginada vs. export: la misma función, distinto techo
+
+Cada reporte "tabular" (ventas, compras, ingresos, egresos, caja,
+cuentas por cobrar/pagar) acepta un `opts?: { maxPageSize }` opcional en
+su método de `ReportsService`. La vista en pantalla lo omite (pagina de a
+20, tope 100); el export le pasa `REPORT_EXPORT_MAX_ROWS` (20 000) — es
+la MISMA función, con el MISMO `where`, solo cambia cuántas filas trae.
+`ReportsController` mantiene un registro (`REPORTS`) que asocia cada
+clave de URL con su método de vista y de export; el export nunca arma su
+propia consulta, siempre llama al mismo método que ya devuelve el JSON
+de pantalla, así que un archivo exportado no puede mostrar cifras
+distintas a las que el usuario ya vio con los mismos filtros — la
+sección "EXPORTACIÓN" del pedido ("no generar cifras diferentes entre
+pantalla y exportación") se cumple porque literalmente es el mismo
+código, no una promesa de mantenerlos sincronizados a mano.
+
+El `summary` (totales) de cada reporte se calcula con su propia query de
+agregación (`aggregate`/`groupBy`) sobre el `where` completo, nunca
+sumando en memoria las filas ya traídas — así el total mostrado es
+correcto incluso cuando la tabla en pantalla solo muestra la página
+actual.
+
+### CSV y Excel real, generados de los mismos `rows`/`columns`
+
+`reports-export.util.ts` expone `rowsToCsv`/`rowsToXlsx`, ambas reciben
+el mismo par `(columns, rows)` — un array de `{header, value: (row) =>
+...}` por reporte, definido una sola vez en `reports.controller.ts`. CSV
+es texto plano con BOM UTF-8 (para que Excel/LibreOffice detecten tildes
+y ñ correctamente) y separador `,` con escape RFC-4180; Excel es un
+`.xlsx` real (librería `exceljs`, agregada en esta fase — antes no había
+ninguna dependencia de hojas de cálculo), no un CSV renombrado. Los
+valores `Prisma.Decimal` se serializan con `.toFixed(2)` en ambos formatos
+— nunca aritmética de exportación aparte del dato ya calculado por
+`ReportsService`.
+
+### Dashboard: mismo criterio de "no inventar", aplicado a utilidad comercial
+
+El pedido pide explícitamente "utilidad comercial si puede calcularse
+correctamente" y, si no, "No disponible" documentado — nunca inventada.
+Se evaluó y se descartó: `SaleItem` no persiste el costo unitario al
+momento de la venta (a diferencia de `PurchaseItem.unitCost`, que sí es
+histórico desde Fase 3), y no existe trazabilidad de lote/FIFO que ligue
+una unidad vendida a la compra que la abasteció. Aproximar el costo de
+ventas pasadas con `Product.cost` ACTUAL daría una cifra incorrecta para
+cualquier producto cuyo costo cambió desde entonces — exactamente el tipo
+de "número que parece preciso pero está mal" que el resto del sistema
+evita con `Prisma.Decimal`/locks/idempotencia. El dashboard devuelve
+`grossMargin: { available: false, reason: '...' }` en vez de ese número.
+
+De paso, ampliar el dashboard expuso una corrección real heredada de
+Fase 1: `salesToday`/`salesMonth` filtraban `status: 'CONFIRMED'` a
+secas — escrito antes de que Ventas tuviera su propia máquina de estados
+(Fase Comercial 2). Una venta que ya se pagó pasa a `PARTIALLY_PAID`/
+`PAID` y quedaba FUERA del conteo, subestimando sistemáticamente "ventas
+del día/mes" para cualquier negocio con ventas pagadas (la inmensa
+mayoría). Se corrigió a `status: { in: ['CONFIRMED', 'PARTIALLY_PAID',
+'PAID'] }`, excluyendo `REFUNDED` deliberadamente (ese dinero ya se
+devolvió, no es ingreso neto del período) y `CANCELLED`/`DRAFT` (nunca
+fueron una venta real).
+
+### Reportes no son facturación electrónica
+
+Igual que el resto del sistema, los 17 reportes y el dashboard leen
+`Sale`/`Purchase`/`Payment`/`CashMovement`/`Receivable`/`Payable`/
+`Inventory` — nunca `Invoice`/`FiscalDocument`. No generan XML, no
+calculan CUF/CUFD/CAFC, no son ni pretenden ser un sustituto de la
+facturación exigida por el SIN; son reportes de gestión comercial interna.

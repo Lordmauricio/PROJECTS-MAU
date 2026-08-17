@@ -26,6 +26,7 @@ import { PurchasesModule } from './purchases/purchases.module';
 import { PayablesModule } from './payables/payables.module';
 import { CashModule } from './cash/cash.module';
 import { ReceivablesModule } from './receivables/receivables.module';
+import { ReportsModule } from './reports/reports.module';
 
 @Module({
   imports: [
@@ -68,6 +69,7 @@ import { ReceivablesModule } from './receivables/receivables.module';
     PayablesModule,
     CashModule,
     ReceivablesModule,
+    ReportsModule,
   ],
   controllers: [AppController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
