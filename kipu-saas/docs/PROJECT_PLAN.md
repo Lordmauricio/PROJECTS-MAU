@@ -335,15 +335,109 @@ de empezarla. Corregirlo implicaría refactorizar el patrón de carga de
 datos en todo el frontend, fuera del alcance de esta fase; queda
 documentado acá para una fase de limpieza técnica futura.
 
+## Fase Comercial 5 — Caja y Gastos ✅
+
+Entregable: apertura/cierre/arqueo de caja real por punto de venta (a lo
+sumo una caja OPEN por terminal, garantizado a nivel de Postgres),
+ingresos/egresos manuales, gastos asociados a una caja abierta, y los
+cobros en efectivo de Ventas ahora alimentan automáticamente el
+movimiento de caja correspondiente cuando hay una caja abierta para ese
+punto de venta. Ver `docs/architecture.md` sección 10 para el detalle
+técnico completo.
+
+- [x] `CashRegister`/`CashMovement`/`Expense` — modelos placeholder desde
+      la Fase 1 — pasaron a tener módulo de negocio real
+      (`backend/src/cash/`). Se ampliaron con las columnas que el modelo
+      original no tenía: `openingIdempotencyKey`/`closingIdempotencyKey`
+      en `CashRegister`, `idempotencyKey`/`createdById`/`reference` en
+      `CashMovement`, `cashRegisterId`/`createdById`/`idempotencyKey`/
+      `observation` en `Expense` (y `category` pasó a opcional). Migración
+      `20260817160000_cash_expenses_core`.
+- [x] Apertura (`POST /cash-registers`): a lo sumo una caja `OPEN` por
+      `posTerminalId`, garantizado por un índice único parcial de
+      Postgres (`WHERE status = 'OPEN'`, Prisma no lo expresa en su DSL,
+      agregado a mano en la migración — mismo criterio que el `CHECK`
+      constraint de `payments` en la Fase Comercial 3) — nunca un chequeo
+      "leer-luego-escribir" en la aplicación, que tendría una carrera real
+      bajo concurrencia.
+- [x] Cierre + arqueo en un solo paso (`POST /cash-registers/:id/close`):
+      calcula `expectedAmount` (saldo inicial + ingresos − egresos) bajo
+      lock (`SELECT ... FOR UPDATE`, mismo patrón que
+      `lockSale`/`lockPurchase`/`lockPayable`), compara contra
+      `countedAmount` (efectivo contado por el usuario) para obtener
+      `difference` (positivo = sobrante, negativo = faltante), y deja la
+      caja `CLOSED` — ya no admite nuevos movimientos ni gastos (`409`).
+- [x] Ingresos/egresos manuales (`POST /cash-registers/:id/movements`,
+      `type: CASH_IN`/`CASH_OUT`) y gastos (`POST /expenses`, crea el
+      `Expense` y su `CashMovement` tipo `EXPENSE` atómicamente, en la
+      misma transacción).
+- [x] **Decisión explícita documentada antes de implementarla** (pedida
+      por el prompt): ni un egreso manual ni un gasto pueden superar el
+      saldo disponible de la caja — se rechazan con `400`. No se permite
+      saldo negativo, mismo principio que "nunca stock negativo" en
+      Inventario y "nunca pagar más del saldo pendiente" en Ventas/Compras.
+- [x] Integración con Ventas: un pago con `method: CASH` genera
+      automáticamente un `CashMovement` (`type: SALE_PAYMENT`) en la caja
+      `OPEN` del punto de venta de la venta, atómico con el `Payment`
+      (misma transacción). Métodos no efectivo (CARD/TRANSFER/QR) nunca
+      generan movimiento de caja — no mueven efectivo físico. Si no hay
+      caja abierta para ese terminal, el pago se aplica igual, sin
+      movimiento de caja — Ventas nunca quedó bloqueada por no tener Caja
+      abierta (los 27 tests de Ventas de Fases 2-4, que nunca abren una
+      caja, siguen pasando sin cambios).
+- [x] Idempotencia y concurrencia con el mismo rigor que Ventas/Compras/
+      Inventario: apertura, cierre, movimientos y gastos exigen
+      `idempotencyKey`; colisión de unicidad resuelta fuera de la
+      transacción que la generó; y — aplicando directamente desde el
+      inicio la corrección que Inventario necesitó agregar después (Fase
+      Comercial 4) — reusar una `idempotencyKey` con datos distintos
+      siempre responde `409`, nunca aplica en silencio el registro
+      ajeno. Probado con aperturas concurrentes (una gana, la otra `409`),
+      cierres concurrentes (exactamente uno completa), egresos/gastos
+      concurrentes que juntos excederían el saldo (uno gana), y doble
+      click/retry en cada operación (efecto único).
+- [x] Multi-tenant: RLS ya existía en las 3 tablas desde la migración
+      inicial (eran placeholders desde Fase 1); probado con HTTP real
+      (tenant B nunca ve/opera una caja de tenant A, ni puede abrir una
+      caja reusando un `posTerminalId` de A) y con SQL crudo (contexto de
+      tenant inexistente → cero filas, fail-closed real).
+- [x] Permisos: se agregaron `cash.read` y `expenses.read` (antes solo
+      existían `cash.manage`/`expenses.manage` — sin un permiso de solo
+      lectura, AUDITOR no podía ver nada de Caja/Gastos, mismo motivo por
+      el que se agregó `payables.read` en la Fase Comercial 3). No se
+      crearon permisos por operación (abrir/cerrar/mover por separado):
+      `cash.manage` ya cubre las tres, evitando proliferación de permisos
+      no pedida.
+- [x] Frontend real: `/cash` (cajas abiertas, formulario de apertura,
+      historial de cajas cerradas) y `/cash/[id]` (detalle: saldo actual
+      calculado en vivo, registrar ingreso/egreso, registrar gasto, cerrar
+      con arqueo, historial de movimientos y gastos de esa caja —
+      formularios de acción se ocultan automáticamente cuando la caja está
+      `CLOSED`).
+- [x] Auditoría: `cash.open`, `cash.close`, `cash.movement.create`,
+      `expenses.create`.
+- [x] Regresión verificada: los 75 tests de Ventas+Compras+Inventario de
+      las Fases Comerciales 2-4 siguen pasando sin cambios (102 tests en
+      total con los 27 nuevos de Caja), y un recorrido en navegador real
+      confirmó el flujo completo: abrir caja → ingreso manual → gasto →
+      vender con pago en efectivo (el POS de Ventas, sin cambios visibles
+      para el usuario) → el movimiento `Cobro de venta` aparece solo en el
+      detalle de caja → cerrar con arqueo exacto (diferencia 0) →
+      Inventario sigue reflejando el stock correcto tras la venta.
+
+**Pendiente explícito (NO resuelto en esta fase — el prompt de Fase
+Comercial 5 no lo pidió, a diferencia de lo que este documento anticipaba
+en una nota anterior)**: los pagos de `Payable` (egresos a proveedores,
+Compras) todavía no se enlazan a Caja, y la devolución de una venta
+(`Sale.return`) todavía no genera ningún reembolso de caja. Ambos quedan
+para una fase futura si se autoriza explícitamente. Tampoco se resolvió
+la dependencia documentada en la Fase Comercial 3 (qué pasa cuando una
+devolución a un proveedor dejaría la `Payable` por debajo de lo ya
+pagado, es decir, el proveedor terminaría debiéndonos) — sigue
+rechazándose explícitamente, sin cambios.
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
-- **Fase Comercial 5 — Caja**: `CashRegister`/`CashMovement` ya modelados; falta
-  apertura/cierre/arqueo. Los `Payment` de Ventas y de Compras (cobros a
-  clientes y pagos a proveedores, ambos ya reales desde Fase Comercial 2 y
-  3) todavía NO se enlazan a una caja abierta — eso se define en esta
-  fase. También es la fase que resuelve la dependencia documentada en
-  Compras: qué pasa cuando una devolución al proveedor implicaría que nos
-  deben dinero.
 - **Fase Comercial 6 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/
   `InvoiceEvent`/`TaxConfiguration` ya modelados de forma genérica, **sin**
   campos específicos del SIN todavía. Antes de tocar código fiscal real,

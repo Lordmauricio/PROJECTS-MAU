@@ -120,10 +120,53 @@ Organization
   `MIXED`. `idempotencyKey` (única, opcional): protege contra doble
   cobro/pago por doble click/retry — ver `docs/architecture.md` sección 7.
   `payableId` se agregó en `20260817121351_purchases_core`.
-- `cash_registers` + `cash_movements` — esquema listo; apertura/cierre/
-  arqueo y el enlace de `Payment` a una caja abierta son Fase Comercial 5.
-- `expenses`, `receivables` — gastos y cuentas por cobrar, esquema listo,
-  Fase Comercial 5/6.
+- `cash_registers` — caja por punto de venta, módulo de negocio real desde
+  la Fase Comercial 5 (antes placeholder desde Fase 1). `status`:
+  `OPEN`/`CLOSED`. `openingAmount` (saldo inicial) y, al cerrar,
+  `closingAmount` (efectivo CONTADO por el usuario en el arqueo),
+  `expectedAmount` (saldo que el sistema esperaba: `openingAmount` +
+  ingresos − egresos) y `difference` (`closingAmount` − `expectedAmount`;
+  positivo = sobrante, negativo = faltante) — los tres quedan `null`
+  mientras la caja sigue `OPEN`. `openingIdempotencyKey`/
+  `closingIdempotencyKey` (ambas `@unique`, nullable): protegen la
+  apertura y el cierre contra doble click/retry por separado, mismo
+  patrón que `payments.idempotencyKey`. `openedById`/`closedById`:
+  usuario responsable de cada operación. No existe una columna de saldo
+  actual mutable — el saldo se calcula siempre bajo demanda desde
+  `openingAmount` + los `cash_movements` de esa caja (ver
+  `docs/architecture.md` sección 10), nunca se incrementa/decrementa
+  directamente (evita que quede desincronizado del detalle real).
+  Migración `20260817160000_cash_expenses_core`.
+  - Índice único parcial `cash_registers_one_open_per_terminal` (`ON
+    "posTerminalId" WHERE status = 'OPEN'`, agregado a mano — Prisma no
+    expresa `WHERE` en `@@unique`): garantiza a nivel de Postgres que
+    nunca haya dos cajas `OPEN` para el mismo `posTerminalId`, incluso
+    bajo dos `INSERT` concurrentes.
+- `cash_movements` — historial de movimientos de una caja (`type`:
+  `CASH_IN`/`CASH_OUT`/`SALE_PAYMENT`/`EXPENSE`, `String` libre en el
+  schema pero validado por DTO en el endpoint manual). `amount` siempre
+  positivo — el signo (suma o resta al saldo) lo decide `type`, nunca el
+  valor, mismo criterio que `InventoryMovement.quantity`. `reference`
+  (nullable): id de la `Sale` (si `SALE_PAYMENT`) o del `Expense` (si
+  `EXPENSE`) que originó el movimiento, cuando no fue manual — mismo
+  patrón que `InventoryMovement.reference`. `idempotencyKey` (`@unique`,
+  nullable): obligatoria para movimientos manuales (`CASH_IN`/`CASH_OUT`)
+  y gastos; los `SALE_PAYMENT` que dispara Ventas también la llevan (la
+  misma que el `Payment` que los originó) pero su idempotencia real ya
+  viene heredada de esa `Payment.idempotencyKey`. Módulo de negocio real
+  desde la Fase Comercial 5.
+- `expenses` — gasto asociado a una caja abierta, módulo de negocio real
+  desde la Fase Comercial 5 (antes placeholder desde Fase 1, sin ningún
+  endpoint). `cashRegisterId` (nuevo, `NOT NULL`): un gasto siempre
+  pertenece a una caja — no puede existir "suelto". `category` pasó de
+  requerida a opcional (`String?`) porque no todo negocio pequeño
+  categoriza cada gasto. `idempotencyKey` (`@unique`, nullable):
+  protege contra doble click — el `Expense` y su `CashMovement` (tipo
+  `EXPENSE`) se crean atómicamente en la misma transacción, así que
+  basta con la `idempotencyKey` del `Expense`.
+- `receivables` — cuentas por cobrar, esquema listo, sin módulo de
+  negocio todavía (Fase Comercial 6+, no pedida explícitamente en la
+  Fase Comercial 5).
 - `payables` — cuenta por pagar a un proveedor, módulo de negocio real
   desde Fase Comercial 3. `purchaseId` es `@unique` (a lo sumo una Payable
   por compra) cuando no es null — NULLs no colisionan entre sí en
@@ -180,4 +223,12 @@ Organization
   disparados por Ventas/Compras no la usan, solo los movimientos/
   transferencias registrados directamente vía `POST
   /inventory/movements`/`POST /inventory/transfers`).
+- `cash_registers` tiene `@@unique([openingIdempotencyKey])` y
+  `@@unique([closingIdempotencyKey])` por separado (apertura y cierre son
+  operaciones distintas, cada una con su propia protección de doble
+  click/retry), más el índice único **parcial**
+  `cash_registers_one_open_per_terminal` (`ON "posTerminalId" WHERE
+  status = 'OPEN'`, agregado a mano — a lo sumo una caja OPEN por
+  terminal, garantizado por Postgres, no por un chequeo de aplicación).
+- `cash_movements` y `expenses` tienen cada una `@@unique([idempotencyKey])`.
 - Montos siempre `Decimal` (`@db.Decimal`), nunca `Float`.

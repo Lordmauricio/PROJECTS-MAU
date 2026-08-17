@@ -24,6 +24,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { SalesModule } from './sales/sales.module';
 import { PurchasesModule } from './purchases/purchases.module';
 import { PayablesModule } from './payables/payables.module';
+import { CashModule } from './cash/cash.module';
 
 @Module({
   imports: [
@@ -64,6 +65,7 @@ import { PayablesModule } from './payables/payables.module';
     SalesModule,
     PurchasesModule,
     PayablesModule,
+    CashModule,
   ],
   controllers: [AppController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

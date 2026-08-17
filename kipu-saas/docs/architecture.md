@@ -322,3 +322,130 @@ Igual que `Sale`/`Purchase` no son `Invoice`, el kardex, las
 transferencias y los ajustes de esta fase no tienen ninguna relación con
 el SIN: no generan XML, no calculan CUF/CUFD, no firman nada. Ver
 `docs/PROJECT_PLAN.md`, sección "Recibos vs. Facturación".
+
+## 10. Fase Comercial 5 — Caja y Gastos: decisiones técnicas
+
+### Una sola caja OPEN por terminal: índice único parcial, no un chequeo en la aplicación
+
+La regla "a lo sumo una `CashRegister` OPEN por `posTerminalId`" NO se
+implementa como "leer si hay una abierta, si no hay, crear" — ese patrón
+tiene una carrera real bajo concurrencia (dos requests leen "no hay
+ninguna" antes de que cualquiera de los dos inserte). Se implementa como
+un índice único **parcial** a nivel de Postgres:
+```sql
+CREATE UNIQUE INDEX "cash_registers_one_open_per_terminal"
+  ON "cash_registers"("posTerminalId") WHERE "status" = 'OPEN';
+```
+agregado a mano en la migración (Prisma DSL no expresa `WHERE` en
+`@@unique`, mismo criterio ya usado para el `CHECK` constraint de
+`payments` en la Fase Comercial 3). Dos `INSERT` concurrentes con
+`status = 'OPEN'` para el mismo terminal: Postgres deja pasar uno y
+rechaza el otro con una violación de unicidad, sin necesitar ningún lock
+explícito de aplicación — mismo espíritu que el `UPDATE` condicional que
+evita overselling en Inventario, aplicado acá a nivel de índice en vez de
+`WHERE` en un `UPDATE`.
+
+`CashService.open()` no distingue de antemano si un `P2002` es un retry
+legítimo (misma `idempotencyKey`) o una carrera real perdida contra otra
+apertura (índice parcial). Ambos casos entran al mismo bloque de
+recuperación (fuera de la transacción abortada, mismo patrón que
+`SalesService.runOrResolvePaymentConflict`): si existe una `CashRegister`
+con la `openingIdempotencyKey` de ESTE request, es un replay → se
+devuelve. Si no existe, es una caja ajena que ganó la carrera → `409`, sin
+devolver en silencio la caja de otra apertura.
+
+### Cierre: mismo patrón de lock que Sale/Purchase, con la corrección de idempotencia ya aplicada en Inventario
+
+El cierre bloquea la fila (`SELECT ... FOR UPDATE`, mismo patrón que
+`lockSale`/`lockPurchase`/`lockPayable`) y exige `idempotencyKey`. A
+diferencia de `Sale.confirm`/`Sale.cancel` (que no necesitan
+`idempotencyKey` porque no hay datos variables que decidir en un
+retry — la transición de estado sola ya es idempotente), el cierre SÍ
+recibe datos que varían por intento (`countedAmount`, `observation`), así
+que se sigue el criterio ya establecido para Inventario en la Fase
+Comercial 4: si la caja ya está `CLOSED` y la `idempotencyKey` coincide
+con la que la cerró, es un retry → se devuelve el resultado ya aplicado.
+Si NO coincide, es un segundo cierre genuinamente distinto llegando tarde
+(dos cajeros intentando cerrar casi al mismo tiempo, con arqueos
+distintos) → `409`, nunca se devuelve en silencio el arqueo de otro
+cajero como si fuera el propio. Con el lock, dos cierres concurrentes
+quedan serializados: el segundo, tras el commit del primero, ve
+`status = CLOSED` y responde según la regla de arriba — "exactamente uno
+completa la operación" se cumple sin inventar un mecanismo nuevo.
+
+### Saldo de caja: calculado bajo lock, nunca una columna mutada directamente
+
+No existe una columna `currentBalance` en `CashRegister` que se
+incremente/decremente en cada movimiento (eso sería una fuente de
+desincronización si algún camino de código la actualizara mal). El saldo
+se calcula siempre bajo demanda, dentro de la transacción que ya bloqueó
+la fila (`CashService.computeBalance`): `openingAmount` + suma de
+movimientos `CASH_IN`/`SALE_PAYMENT` − suma de movimientos
+`CASH_OUT`/`EXPENSE`. El signo nunca vive en `amount` (siempre positivo,
+igual que `InventoryMovement.quantity`/`Payment.amount`) — vive en
+`type`. Este cálculo bajo lock es lo que permite validar "no permitir
+saldo negativo" (ver más abajo) de forma segura bajo concurrencia: un
+segundo egreso/gasto concurrente que llega tras el primero ve el saldo YA
+descontado por el primero, no un valor obsoleto.
+
+### Decisión explícita: caja nunca puede quedar en negativo
+
+El prompt de esta fase pidió decidir y documentar explícitamente si un
+gasto/egreso puede superar el saldo disponible. Se decidió que **no**:
+ni un `CASH_OUT` manual ni un `Expense` pueden exceder el saldo actual de
+la caja (calculado como arriba) — se rechazan con `400`. Igual que
+Inventario nunca permite stock negativo y Ventas/Compras nunca permiten
+pagar más del saldo pendiente, permitir que una caja física quede en
+negativo no representa ninguna situación real (no se puede entregar
+efectivo que no está en el cajón) y habría sido una regla contable nueva
+sin necesidad — la decisión sigue el mismo principio ya aplicado en el
+resto del sistema en vez de inventar una excepción.
+
+### Integración con Ventas: solo `CASH`, y solo si hay una caja OPEN — nunca bloquea la venta
+
+`SalesService.applyPayment` (compartido por `confirm` y `addPayment`, sin
+cambios de firma salvo el nuevo parámetro `posTerminalId`) llama a
+`CashService.registerSalePaymentMovement` DENTRO de la misma transacción
+que crea el `Payment`, así que el `CashMovement` (`type: 'SALE_PAYMENT'`)
+queda atómico con el pago: si algo falla después, ninguno de los dos
+queda aplicado a medias. Dos decisiones explícitas, ambas para no romper
+el comportamiento de Ventas que ya funcionaba sin Caja desde la Fase
+Comercial 2:
+- Solo los pagos con `method: 'CASH'` generan movimiento de caja — un
+  pago con tarjeta/transferencia/QR no mueve efectivo físico, así que no
+  tiene nada que aportar a un arqueo. Esto es la distinción mínima que
+  pidió el prompt ("efectivo" vs. "métodos que no impliquen efectivo
+  físico"), sin inventar más categorías contables.
+- Si no hay ninguna `CashRegister` OPEN para el `posTerminalId` de la
+  venta (o la venta no tiene punto de venta asignado), el pago se aplica
+  igual, sin generar ningún movimiento de caja — `registerSalePaymentMovement`
+  devuelve `null` en silencio, no lanza. Bloquear el cobro de una venta
+  porque no hay una caja abierta habría sido una regla nueva no pedida
+  explícitamente, y habría roto los 27 tests de Ventas de las Fases
+  Comerciales 2-4 (ninguno abre una caja). Se prefirió mantener Caja como
+  una capa que se ENRIQUECE con la actividad de Ventas cuando existe, no
+  una que la condiciona.
+
+Explícitamente fuera de alcance de esta fase (no pedido por el prompt):
+integrar los pagos de `Payable` (egresos a proveedores, Compras) con
+Caja, e integrar la devolución de una venta (`Sale.return`) con un
+reembolso de caja. Ambos quedan documentados como pendientes en
+`docs/PROJECT_PLAN.md`.
+
+### `CashMovement`/`Expense`: mismo patrón de idempotencia con `assertMatches` desde el día uno
+
+A diferencia de Inventario (donde la verificación de que una
+`idempotencyKey` reusada pertenezca a la misma operación fue una
+corrección posterior, ver sección 9), acá se implementó directamente con
+esa verificación desde el principio — tanto `registerMovement` como
+`registerExpense` comparan los datos del registro existente contra el
+`dto` actual (mismo `cashRegisterId`/`type`/`amount` para movimientos;
+mismo `cashRegisterId`/`amount` para gastos) antes de tratar un choque de
+unicidad como un replay válido, en el camino feliz y en el fallback de
+`P2002` por igual.
+
+### Caja y Gastos no son facturación electrónica
+
+Igual que Ventas, Compras e Inventario, la apertura/cierre de caja, los
+movimientos y los gastos no tienen ninguna relación con el SIN: no
+generan XML, no calculan CUF/CUFD, no firman nada.

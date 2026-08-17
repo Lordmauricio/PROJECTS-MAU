@@ -132,6 +132,81 @@ export interface ApiMovementResult {
   stockAfter: string;
 }
 
+export interface ApiCashMovement {
+  id: string;
+  cashRegisterId: string;
+  type: string;
+  amount: string;
+  reason?: string | null;
+  reference?: string | null;
+  idempotencyKey?: string | null;
+  createdAt: string;
+}
+
+export interface ApiExpense {
+  id: string;
+  cashRegisterId: string;
+  amount: string;
+  category?: string | null;
+  description?: string | null;
+  observation?: string | null;
+  idempotencyKey?: string | null;
+  createdAt: string;
+}
+
+export interface ApiCashRegister {
+  id: string;
+  posTerminalId: string;
+  status: string;
+  openingAmount: string;
+  closingAmount?: string | null;
+  expectedAmount?: string | null;
+  difference?: string | null;
+  closingObservation?: string | null;
+  openedAt: string;
+  closedAt?: string | null;
+  movements?: ApiCashMovement[];
+  expenses?: ApiExpense[];
+}
+
+/**
+ * Abre una caja. Por defecto usa el punto de venta principal del tenant,
+ * pero como a lo sumo puede haber UNA caja OPEN por terminal, los tests que
+ * abren más de una caja en la misma organización deben pasar
+ * `posTerminalId` explícito (ver `createTestPosTerminal`) para no chocar
+ * entre sí.
+ */
+export async function openCashRegister(
+  app: INestApplication,
+  tenant: TestTenant,
+  opts: {
+    openingAmount?: number;
+    idempotencyKey?: string;
+    posTerminalId?: string;
+    token?: string;
+  } = {},
+): Promise<ApiCashRegister> {
+  const posTerminalId = opts.posTerminalId ?? tenant.posTerminalId;
+  const res = await callApi<ApiCashRegister>(
+    app,
+    'POST',
+    '/cash-registers',
+    {
+      posTerminalId,
+      openingAmount: opts.openingAmount ?? 0,
+      idempotencyKey:
+        opts.idempotencyKey ?? `open-${posTerminalId}-${uniqueSuffix()}`,
+    },
+    opts.token ?? tenant.accessToken,
+  );
+  if (res.status !== 201) {
+    throw new Error(
+      `abrir caja debía dar 201, dio ${res.status}: ${JSON.stringify(res.body)}`,
+    );
+  }
+  return res.body;
+}
+
 export interface ApiAuditLog {
   id: string;
   action: string;
@@ -308,6 +383,27 @@ export async function createUserWithRole(
     );
   }
   return login.body.accessToken;
+}
+
+/** Crea un punto de venta adicional en la misma sucursal — usado por los tests de Caja, donde cada caso necesita su PROPIO terminal (a lo sumo una caja OPEN por terminal). */
+export async function createTestPosTerminal(
+  app: INestApplication,
+  tenant: TestTenant,
+  name: string,
+): Promise<{ posTerminalId: string }> {
+  const res = await callApi<{ id: string }>(
+    app,
+    'POST',
+    '/pos-terminals',
+    { branchId: tenant.branchId, name, code: `POS-${uniqueSuffix()}` },
+    tenant.accessToken,
+  );
+  if (res.status !== 201) {
+    throw new Error(
+      `crear punto de venta debía dar 201, dio ${res.status}: ${JSON.stringify(res.body)}`,
+    );
+  }
+  return { posTerminalId: res.body.id };
 }
 
 /** Crea un almacén adicional (módulo de Foundation) en la misma sucursal — usado por los tests de transferencias. */

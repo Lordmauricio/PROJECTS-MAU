@@ -8,6 +8,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { InventoryService } from '../inventory/inventory.service';
+import { CashService } from '../cash/cash.service';
 import { money, sumMoney, ZERO_MONEY } from '../common/money';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import {
@@ -27,6 +28,7 @@ export class SalesService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly inventory: InventoryService,
+    private readonly cash: CashService,
     private readonly audit: AuditService,
   ) {}
 
@@ -243,6 +245,7 @@ export class SalesService {
             paid,
             paymentDto,
             actorUserId,
+            locked.posTerminalId,
           );
           paid = paid.add(applied);
         }
@@ -320,6 +323,7 @@ export class SalesService {
           alreadyPaid,
           dto,
           actorUserId,
+          locked.posTerminalId,
         );
 
         const newPaid = alreadyPaid.add(money(dto.amount));
@@ -441,9 +445,10 @@ export class SalesService {
         id: string;
         status: string;
         warehouseId: string | null;
+        posTerminalId: string | null;
         total: Prisma.Decimal;
       }>
-    >`SELECT id, status, "warehouseId", total FROM sales WHERE id = ${saleId} AND "organizationId" = ${organizationId} FOR UPDATE`;
+    >`SELECT id, status, "warehouseId", "posTerminalId", total FROM sales WHERE id = ${saleId} AND "organizationId" = ${organizationId} FOR UPDATE`;
     return rows[0] ?? null;
   }
 
@@ -538,6 +543,7 @@ export class SalesService {
     alreadyAppliedInThisCall: Prisma.Decimal,
     dto: SalePaymentDto,
     actorUserId: string,
+    posTerminalId: string | null,
   ): Promise<Prisma.Decimal> {
     const existing = await tx.payment.findUnique({
       where: { idempotencyKey: dto.idempotencyKey },
@@ -570,6 +576,20 @@ export class SalesService {
         idempotencyKey: dto.idempotencyKey,
         createdById: actorUserId,
       },
+    });
+
+    // Si el método es CASH y hay una caja OPEN para el punto de venta de
+    // esta venta, registra el ingreso correspondiente — atómico con el
+    // Payment de arriba (misma `tx`). Si no hay caja abierta, el pago se
+    // aplica igual (ver `CashService.registerSalePaymentMovement`).
+    await this.cash.registerSalePaymentMovement(tx, {
+      organizationId,
+      posTerminalId,
+      saleId,
+      method: dto.method,
+      amount,
+      actorUserId,
+      idempotencyKey: dto.idempotencyKey,
     });
 
     return amount;

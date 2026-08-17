@@ -168,6 +168,42 @@ tarjeta ni ningún otro secreto, solo montos/cantidades de negocio.
   sección 9 para el detalle técnico y `docs/PROJECT_PLAN.md` para el
   seguimiento.
 
+## Fase Comercial 5 — Caja y Gastos: notas de seguridad específicas
+
+- **RLS ya existía**: `cash_registers`/`cash_movements`/`expenses` tenían
+  `ENABLE`/`FORCE ROW LEVEL SECURITY` + policy `tenant_isolation` desde la
+  migración inicial (eran placeholders de esquema desde la Fase 1, sin
+  endpoints hasta ahora) — no hizo falta agregar RLS nueva en esta fase,
+  solo columnas. Probado con SQL crudo bajo `app_user` (sin `BYPASSRLS`):
+  con contexto de un tenant real se ven solo sus propias filas; con
+  contexto de un tenant inexistente, cero filas (fail-closed) — ver
+  `cash.security.spec.ts`.
+- **Permisos nuevos, solo los necesarios**: se agregaron `cash.read` y
+  `expenses.read` (antes solo existían las variantes `.manage`, sin
+  ninguna forma de dar acceso de solo lectura — el mismo motivo que llevó
+  a agregar `payables.read` en la Fase Comercial 3). No se crearon
+  permisos por operación (abrir/cerrar/mover por separado): `cash.manage`
+  ya cubría las tres desde su descripción original en el catálogo.
+- **No se filtra existencia entre tenants**: abrir una caja reusando el
+  `posTerminalId` de OTRA organización responde `400` ("Punto de venta no
+  encontrado"), igual que el resto del sistema; operar sobre una caja
+  (`GET`/`close`/`movements`) de otro tenant responde `404`, nunca
+  filtra si el id existe para otro tenant.
+- **Índice único parcial como control de integridad, no solo de
+  concurrencia**: el índice `cash_registers_one_open_per_terminal` (`ON
+  "posTerminalId" WHERE status = 'OPEN'`) no es únicamente una
+  optimización de rendimiento bajo carrera — es la única barrera real
+  contra que dos aperturas concurrentes (posible incluso desde el mismo
+  usuario con dos pestañas, o dos cajeros distintos) dejen dos cajas
+  abiertas simultáneas para el mismo punto de venta, lo cual rompería la
+  premisa de todo el módulo (un arqueo solo tiene sentido contra UNA
+  caja). Ver `docs/architecture.md` sección 10.
+- **Nunca saldo negativo, decisión de seguridad financiera explícita**:
+  ver `docs/architecture.md` sección 10 y `docs/PROJECT_PLAN.md`. Egresos
+  y gastos que superarían el saldo disponible se rechazan con `400`,
+  calculado bajo lock para que sea correcto incluso bajo dos intentos
+  concurrentes.
+
 ## Qué queda pendiente (explícito, no oculto)
 
 - MFA (modelo de datos y guard no implementados todavía).
