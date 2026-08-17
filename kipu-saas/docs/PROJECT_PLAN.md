@@ -740,23 +740,107 @@ arquitectónica explícita con el futuro módulo fiscal.
       térmico/estados permitidos. Regresión completa: 209/209 tests
       (180 previos + 29 nuevos), sin cambios destructivos de esquema.
 
+## Fase Comercial 9 — Notificaciones y Email real ✅
+
+Entregable: módulo real de notificaciones internas (listar, marcar
+leída/todas, contador de no leídas, integradas en los eventos de negocio
+importantes) y arquitectura de email real y desacoplada (interfaz
+`EmailSender` + proveedores intercambiables por variable de entorno,
+encolado vía BullMQ/Redis existente, con retries/backoff/idempotencia/
+estado persistido en `EmailLog`). Ver `docs/architecture.md` sección 15
+para el detalle técnico completo.
+
+- [x] `NotificationsModule` (`backend/src/notifications/`): listar
+      (paginado, filtro `unreadOnly`), `GET /unread-count`,
+      `PATCH /:id/read`, `PATCH /read-all` — recurso personal
+      (`@NoPermissionRequired()`, sin permiso de catálogo nuevo), aislado
+      por `organizationId` (RLS) y por `userId` (aplicación: un usuario no
+      puede marcar como leída la notificación de otro, ni siquiera dentro
+      de la misma organización).
+- [x] `Notification.userId` nunca `null` en la implementación real
+      (aunque el campo sigue siendo nullable desde Fase 1) — decisión
+      documentada para no compartir el booleano `read` entre usuarios.
+      Integrada en: venta confirmada, pago recibido, compra recibida,
+      cuenta por cobrar pendiente (venta a crédito nueva), cuenta por
+      pagar pendiente (primera recepción con saldo real), apertura/cierre
+      de caja, y diferencia de arqueo al cerrar caja (error operativo).
+      Cada punto de integración guarda explícitamente contra duplicados
+      en replays idempotentes — probado que un segundo `POST .../confirm`
+      sobre una venta ya confirmada no genera una notificación extra.
+- [x] `MailService` reemplazado por una arquitectura real: interfaz
+      `EmailSender` (`ConsoleEmailSender` default sin credenciales,
+      `SmtpEmailSender` vía `nodemailer`), proveedor elegido 100% por
+      `EMAIL_PROVIDER` (variable de entorno, nunca hardcodeado). El
+      dominio comercial (auth, members, sales, receipts) solo conoce
+      `MailService` — nunca un proveedor concreto.
+      `sendEmailVerification`/`sendPasswordReset`/`sendInvite` mantienen
+      sus firmas ya usadas por `auth.service.ts`/`members.service.ts`; se
+      suman `sendWelcome`, `sendSaleConfirmation`, `sendReceiptEmail`,
+      `sendNotificationEmail`.
+- [x] Cola: reutiliza el BullMQ/Redis ya existente (mismo patrón que
+      `AuditModule`), cola nueva `email` — nunca un segundo sistema de
+      colas. `attempts: 3`, backoff exponencial (delay 1000ms),
+      `removeOnComplete`/`removeOnFail` — el request HTTP nunca espera al
+      proveedor. `EmailLog` (ledger append-only, RLS) registra
+      `to`/`template`/`status`/`provider`/`attempts`/`error`, escrito
+      ÚNICAMENTE por `EmailProcessor` (nunca por `MailService`, para que
+      un rollback de la transacción de negocio que originó el email no
+      deje un registro fantasma). Idempotencia vía
+      `EmailLog.idempotencyKey` única — pedir el email del mismo recibo
+      dos veces no dispara un segundo envío.
+- [x] Templates HTML + texto plano (`mail/templates/`): bienvenida,
+      recuperación de contraseña, confirmación de email, invitación,
+      confirmación de venta, recibo comercial, notificación genérica. El
+      de recibo repite "DOCUMENTO COMERCIAL NO FISCAL" en el cuerpo del
+      correo — el rótulo real vive en el PDF adjunto.
+- [x] Email del recibo (`POST /receipts/:id/email`, `receipts.manage`):
+      adjunta el MISMO PDF (formato A4) que ya genera
+      `GET /receipts/:id/pdf`, siempre desde `receipt.snapshot` — nunca
+      reconstruye desde `Sale`/`Customer`/`Organization` actuales.
+      Destinatario explícito o, si se omite, el email del cliente de la
+      venta; sin ninguno de los dos, 400 explícito (nunca omite el envío
+      en silencio).
+- [x] Frontend: `/notifications` real (lista paginada, filtro "solo no
+      leídas", marcar una/todas como leídas, estados vacíos y de error
+      reales) reemplaza el placeholder. `AppShell` suma un contador de no
+      leídas junto al ítem del menú (poblado al montar y cada 30s).
+- [x] Seguridad: RLS en `email_logs` (tabla nueva, migración puramente
+      aditiva) y `notifications` (ya la tenía desde Fase 1). Secretos de
+      email solo por variable de entorno (`EMAIL_PROVIDER`,
+      `EMAIL_SMTP_*`, `EMAIL_FROM`, `FRONTEND_URL`), ninguno hardcodeado.
+- [x] Sin tocar nada de `fiscal/` — sigue sin existir ni un placeholder.
+- [x] Tests reales: 28 casos nuevos
+      (`notifications.integration.spec.ts` — 11,
+      `notifications.security.spec.ts` — 6, `mail.integration.spec.ts` —
+      6, `email.processor.spec.ts` — 4, más 1 caso nuevo agregado a
+      `receipts.security.spec.ts` para el endpoint de email del recibo,
+      con sus asserts ampliados en los tests de RBAC/401 ya existentes)
+      cubriendo notificaciones/tenant/RBAC/unread-count/mark-read/
+      idempotencia/servicio de email/templates/cola real vía BullMQ+Redis/
+      reintentos y agotamiento vía `EmailProcessor` directo/errores del
+      proveedor/email de recibo con PDF adjunto. Regresión completa:
+      237/237 tests (209 previos + 28 nuevos), sin cambios destructivos
+      de esquema.
+- [x] Renumeración: esta fase toma el número 9 (autorizado así
+      explícitamente); Facturación/Fiscal/SIN pasa al número 10 (ver
+      "Fases siguientes" abajo) — mismo criterio que la renumeración ya
+      aplicada en Fase Comercial 8 para Recibos comerciales.
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
-- **Fase Comercial 9 — Facturación / Fiscal / SIN**: `Invoice`/
+- **Fase Comercial 10 — Facturación / Fiscal / SIN**: `Invoice`/
   `InvoiceItem`/`InvoiceEvent`/`TaxConfiguration` ya modelados de forma
   genérica, **sin** campos específicos del SIN todavía. Antes de tocar
   código fiscal real, hay que investigar la normativa vigente (RND, Anexo
   Técnico, algoritmo de CUF, servicios SOAP/REST) tal como exige el
   prompt — no se inventan reglas fiscales. Fuera de alcance hasta nueva
-  autorización explícita. (Renumerada de nuevo: la Fase Comercial 8
-  autorizada y construida fue Recibos comerciales, arriba — Facturación
-  pasa a este número para no chocar con ella. Además, `receipts/` y el
-  futuro `fiscal/` quedan explícitamente separados — ver la sección de
-  abajo — así que esta renumeración es solo de orden, no de dependencia:
-  Fiscal podrá construirse sin tocar ni una línea de `receipts/`.)
-- **Fase Comercial 10 — Notificaciones y proveedor de email real**: hoy
-  `MailService` es un stub que loguea; `notifications`/`files` tienen
-  tabla pero no API.
+  autorización explícita. (Renumerada de nuevo: Notificaciones y Email
+  real tomó el número 9 — arriba —, así que Facturación pasa a este
+  número para no chocar con ella. `receipts/` y el futuro `fiscal/`
+  quedan explícitamente separados — ver la sección de abajo — así que
+  esta renumeración es solo de orden, no de dependencia: Fiscal podrá
+  construirse sin tocar ni una línea de `receipts/` ni de
+  `notifications/`.)
 - **Fase Comercial 11 — Suscripciones y pagos reales**: hoy existe un plan
   "Gratis" automático y la página de Suscripción es de solo lectura; falta
   pasarela de pago para cambiar de plan.
@@ -794,7 +878,7 @@ venta se verá así:
 ```
 Sale
 ├── CommercialReceipt   (Fase Comercial 8 — ya construido, NO fiscal)
-└── FiscalDocument      (Fase Comercial 9 — futuro, SIN Bolivia)
+└── FiscalDocument      (Fase Comercial 10 — futuro, SIN Bolivia)
 ```
 
 Son documentos DIFERENTES, con ciclos de vida y validez legal distintos:

@@ -239,8 +239,19 @@ Organization
   "Gratis" al registrar la empresa.
 - `subscription_events` — historial de cambios de suscripción.
 
-### Notificaciones / archivos
-- `notifications`, `files` — tablas listas; sin API todavía.
+### Notificaciones / email / archivos
+- `notifications` — API real desde Fase Comercial 9 (`NotificationsModule`):
+  listar paginado, marcar leída/todas, contador de no leídas. `userId`
+  sigue siendo nullable en el esquema (Fase 1) pero la implementación real
+  nunca crea una fila con `userId = null` — ver `docs/architecture.md`
+  sección 15. `readAt` (Fase 9) registra cuándo se marcó como leída.
+- `email_logs` (Fase Comercial 9) — ledger append-only de envíos de email
+  (`to`, `template`, `status` `QUEUED`/`SENT`/`FAILED`, `provider`,
+  `attempts`, `error`, `idempotencyKey` único opcional,
+  `relatedEntityType`/`relatedEntityId`). Lo escribe únicamente
+  `EmailProcessor` (worker de BullMQ), nunca `MailService` directamente —
+  ver `docs/architecture.md` sección 15.
+- `files` — tabla lista; sin API todavía.
 
 ### Auditoría
 - `audit_logs` — acción, tipo/id de entidad, metadata JSON, IP, user agent.

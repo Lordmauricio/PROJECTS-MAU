@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module';
+import { MailModule } from '../mail/mail.module';
 import { ReceiptsService } from './receipts.service';
 import { ReceiptsController } from './receipts.controller';
 
@@ -8,7 +9,7 @@ import { ReceiptsController } from './receipts.controller';
 // su propio `TenantPrismaService`, nunca inyecta `SalesService`, así que
 // `SalesModule` no necesita saber que `ReceiptsModule` existe.
 @Module({
-  imports: [AuditModule],
+  imports: [AuditModule, MailModule],
   controllers: [ReceiptsController],
   providers: [ReceiptsService],
   exports: [ReceiptsService],

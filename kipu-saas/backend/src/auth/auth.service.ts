@@ -51,25 +51,37 @@ export class AuthService {
     private readonly audit: AuditService,
   ) {}
 
-  async register(dto: RegisterDto, meta: { userAgent?: string; ip?: string } = {}) {
-    const existingUser = await this.prisma.user.findUnique({ where: { email: dto.email } });
+  async register(
+    dto: RegisterDto,
+    meta: { userAgent?: string; ip?: string } = {},
+  ) {
+    const existingUser = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+    });
     if (existingUser) {
       throw new ConflictException('Ya existe una cuenta con ese email');
     }
 
     const passwordHash = await argon2.hash(dto.password);
 
-    const { organization, roles, user } = await this.organizations.bootstrapOrganization({
-      organizationName: dto.organizationName,
-      legalName: dto.legalName,
-      nit: dto.nit,
-      branchName: dto.branchName,
-      ownerEmail: dto.email,
-      ownerName: dto.ownerName,
-      ownerPasswordHash: passwordHash,
-    });
+    const { organization, roles, user } =
+      await this.organizations.bootstrapOrganization({
+        organizationName: dto.organizationName,
+        legalName: dto.legalName,
+        nit: dto.nit,
+        branchName: dto.branchName,
+        ownerEmail: dto.email,
+        ownerName: dto.ownerName,
+        ownerPasswordHash: passwordHash,
+      });
 
     await this.issueEmailVerification(user.id, user.email);
+    await this.mail.sendWelcome(
+      user.email,
+      user.name,
+      organization.name,
+      organization.id,
+    );
 
     const ownerRole = roles.find((r) => r.key === 'OWNER')!;
     const tokens = await this.issueTokens({
@@ -108,7 +120,9 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, meta: { userAgent?: string; ip?: string }) {
-    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+    });
     if (!user || !user.active) {
       throw new UnauthorizedException('Credenciales inválidas');
     }
@@ -139,7 +153,9 @@ export class AuthService {
     );
 
     if (memberships.length === 0) {
-      throw new UnauthorizedException('El usuario no pertenece a ninguna organización activa');
+      throw new UnauthorizedException(
+        'El usuario no pertenece a ninguna organización activa',
+      );
     }
 
     let membership = memberships[0];
@@ -148,7 +164,9 @@ export class AuthService {
         const organizations = await Promise.all(
           memberships.map((m) =>
             this.tenantPrisma.run(m.organizationId, (tx) =>
-              tx.organization.findUniqueOrThrow({ where: { id: m.organizationId } }),
+              tx.organization.findUniqueOrThrow({
+                where: { id: m.organizationId },
+              }),
             ),
           ),
         );
@@ -157,18 +175,24 @@ export class AuthService {
           organizations: organizations.map((o) => ({ id: o.id, name: o.name })),
         };
       }
-      const selected = memberships.find((m) => m.organizationId === dto.organizationId);
+      const selected = memberships.find(
+        (m) => m.organizationId === dto.organizationId,
+      );
       if (!selected) {
         throw new UnauthorizedException('No perteneces a esa organización');
       }
       membership = selected;
     }
 
-    const [role, organization] = await this.tenantPrisma.run(membership.organizationId, (tx) =>
-      Promise.all([
-        tx.role.findUniqueOrThrow({ where: { id: membership.roleId } }),
-        tx.organization.findUniqueOrThrow({ where: { id: membership.organizationId } }),
-      ]),
+    const [role, organization] = await this.tenantPrisma.run(
+      membership.organizationId,
+      (tx) =>
+        Promise.all([
+          tx.role.findUniqueOrThrow({ where: { id: membership.roleId } }),
+          tx.organization.findUniqueOrThrow({
+            where: { id: membership.organizationId },
+          }),
+        ]),
     );
 
     const tokens = await this.issueTokens({
@@ -197,7 +221,9 @@ export class AuthService {
 
   async refresh(refreshToken: string) {
     const hash = hashOpaqueToken(refreshToken);
-    const stored = await this.prisma.refreshToken.findUnique({ where: { tokenHash: hash } });
+    const stored = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: hash },
+    });
     if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
@@ -208,7 +234,9 @@ export class AuthService {
       data: { revokedAt: new Date() },
     });
 
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: stored.userId } });
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: stored.userId },
+    });
     // Sin include de `role` acá por la misma razón que en login(): esta
     // consulta solo fija app.current_user_id, y la tabla roles tiene su
     // propia RLS por organizationId — el rol se resuelve aparte, una vez
@@ -219,7 +247,9 @@ export class AuthService {
       }),
     );
     if (memberships.length === 0) {
-      throw new UnauthorizedException('El usuario ya no tiene organizaciones activas');
+      throw new UnauthorizedException(
+        'El usuario ya no tiene organizaciones activas',
+      );
     }
 
     // Preservar la organización con la que se emitió el token original en
@@ -272,15 +302,23 @@ export class AuthService {
 
   async confirmPasswordReset(token: string, newPassword: string) {
     const hash = hashOpaqueToken(token);
-    const record = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash: hash } });
+    const record = await this.prisma.passwordResetToken.findUnique({
+      where: { tokenHash: hash },
+    });
     if (!record || record.usedAt || record.expiresAt < new Date()) {
       throw new BadRequestException('Token de reset inválido o expirado');
     }
 
     const passwordHash = await argon2.hash(newPassword);
     await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: record.userId }, data: { passwordHash } }),
-      this.prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
+      this.prisma.user.update({
+        where: { id: record.userId },
+        data: { passwordHash },
+      }),
+      this.prisma.passwordResetToken.update({
+        where: { id: record.id },
+        data: { usedAt: new Date() },
+      }),
       this.prisma.refreshToken.updateMany({
         where: { userId: record.userId, revokedAt: null },
         data: { revokedAt: new Date() },
@@ -299,13 +337,23 @@ export class AuthService {
 
   async confirmEmailVerification(token: string) {
     const hash = hashOpaqueToken(token);
-    const record = await this.prisma.emailVerificationToken.findUnique({ where: { tokenHash: hash } });
+    const record = await this.prisma.emailVerificationToken.findUnique({
+      where: { tokenHash: hash },
+    });
     if (!record || record.usedAt || record.expiresAt < new Date()) {
-      throw new BadRequestException('Token de verificación inválido o expirado');
+      throw new BadRequestException(
+        'Token de verificación inválido o expirado',
+      );
     }
     await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: record.userId }, data: { emailVerifiedAt: new Date() } }),
-      this.prisma.emailVerificationToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
+      this.prisma.user.update({
+        where: { id: record.userId },
+        data: { emailVerifiedAt: new Date() },
+      }),
+      this.prisma.emailVerificationToken.update({
+        where: { id: record.id },
+        data: { usedAt: new Date() },
+      }),
     ]);
   }
 
@@ -343,7 +391,12 @@ export class AuthService {
     const match = /^(\d+)([smhd])$/.exec(raw);
     const amount = match ? Number(match[1]) : 30;
     const unit = match ? match[2] : 'd';
-    const unitMs: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+    const unitMs: Record<string, number> = {
+      s: 1000,
+      m: 60_000,
+      h: 3_600_000,
+      d: 86_400_000,
+    };
     return new Date(Date.now() + amount * (unitMs[unit] ?? unitMs.d));
   }
 }

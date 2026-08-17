@@ -921,3 +921,237 @@ no calcula CUF/CUIS/CUFD/CAFC, no firma nada, no anula nada fiscalmente,
 y el propio documento (pantalla y PDF) dice explícitamente "DOCUMENTO
 COMERCIAL NO FISCAL" — nunca se presenta ni se puede confundir con una
 factura.
+
+## 15. Fase Comercial 9 — Notificaciones y email real: decisiones técnicas
+
+### Notificaciones internas: un destinatario concreto por fila, nunca `userId = null`
+
+`Notification.userId` sigue siendo nullable desde el esquema de Fase 1
+(pensado originalmente como "notificación de toda la organización"), pero
+`NotificationsService.create` NUNCA crea una fila con `userId = null` en
+la implementación real. Motivo: `read` es una sola columna booleana por
+fila — si una notificación fuera compartida por todos los usuarios de la
+organización, que uno solo la marque leída la ocultaría (o la mostraría
+como leída) para el resto, que es un bug de datos compartidos, no una
+característica. En vez de rediseñar el esquema (tabla de destinatarios
+separada, fuera de alcance de esta fase), cada notificación se crea con
+UN destinatario concreto: el actor que originó el evento de negocio (el
+`userId` del token de acceso de quien hizo el request). Esto convierte el
+centro de notificaciones en un feed de actividad personal ("confirmaste
+esta venta", "abriste esta caja") en vez de un mecanismo de difusión
+multi-usuario — una limitación real y documentada, no un intento de
+simularlo.
+
+Puntos de integración reales (todos después de que la transacción de
+negocio ya confirmó, mismo momento en que se llama `AuditService.log`, y
+solo cuando el evento REALMENTE ocurrió — nunca en un replay idempotente):
+
+- `SalesService.confirm` → `sale.confirmed` (siempre) y
+  `receivable.pending` (solo si `createOrSyncReceivable` reporta
+  `created: true` — venta a crédito nueva, no cada vez que se sincroniza
+  el estado de una receivable ya existente).
+- `SalesService.addPayment` → `sale.payment_received`, solo en el camino
+  real (nunca en el replay de `existingPayment`).
+- `PurchasesService.receive` → `purchase.received` (solo en la recepción
+  real, no en el replay de `existingReceipt`) y `payable.pending` (solo
+  cuando `growOrCreatePayable` reporta `created: true` — primera
+  recepción con saldo pendiente real, no cada recepción parcial que solo
+  hace crecer una Payable ya existente).
+- `CashService.open`/`close` → `cash.opened`/`cash.closed` (solo en la
+  apertura/cierre real, no en el replay idempotente). `close` además
+  dispara `cash.discrepancy` cuando el arqueo (`countedAmount` vs.
+  `expectedAmount`, ya calculado por `computeBalance`) da una diferencia
+  distinta de cero — el caso de "error operativo relevante" pedido por el
+  alcance, usando un cálculo que el servicio ya hacía, sin mecanismo
+  nuevo.
+
+Todos estos guardan explícitamente contra duplicados: cada punto de
+integración usa una variable de closure (`saleConfirmedNow`,
+`paymentRecorded`, `receivedNow`, `openedNow`, `closedNow`, o el resultado
+tipado `created` de `growOrCreatePayable`/`createOrSyncReceivable`) que
+solo se vuelve `true` en el camino que efectivamente mutó algo — nunca en
+un retry/doble-click que `runOrResolve*Conflict` ya neutralizó a nivel de
+negocio.
+
+`NotificationsService.create` nunca tumba la operación que la origina
+(mismo criterio que `AuditService.log`): escribe directo vía
+`TenantPrismaService` (no por cola — es una escritura rápida, a
+diferencia del email, no hay proveedor externo lento de por medio) dentro
+de un `try/catch` que solo loguea si falla.
+
+### API de notificaciones: recurso personal, sin permiso de catálogo nuevo
+
+`NotificationsController` usa `@NoPermissionRequired()` (mismo patrón que
+`OrganizationsController#me`) en vez de agregar un permiso al catálogo:
+"mis notificaciones" no es un recurso de negocio con RBAC por rol, es
+personal de cada usuario autenticado. La pertenencia real la valida
+`NotificationsService`, no un rol: `markRead` compara
+`notification.userId` contra el `sub` del token y devuelve 403 si no
+coincide (después de que RLS ya garantizó que la fila es de la
+organización correcta) — un CASHIER no puede marcar como leída la
+notificación de un OWNER de la misma organización. `list`/`unreadCount`
+filtran por `organizationId` (RLS) Y `userId` (aplicación) juntos.
+
+Paginación explícita (`page`/`pageSize`, tope 100) con `total` devuelto
+junto a los ítems — mismo patrón `skip`/`take` que `SalesService.list` ya
+usa, con un `Promise.all([findMany, count])` agregado porque acá sí hace
+falta el total para la paginación del frontend.
+
+### Email: interfaz `EmailSender` + proveedor seleccionado por variable de entorno
+
+El dominio comercial nunca conoce un proveedor de email concreto — solo
+conoce `MailService` (`backend/src/mail/mail.service.ts`), que arma el
+mensaje (vía los templates de `mail/templates/`) y lo encola. Quien
+efectivamente llama al proveedor es `EmailProcessor`
+(`mail/email.processor.ts`), inyectando la interfaz `EmailSender`
+(`mail/email-sender.interface.ts`) bajo el token `EMAIL_SENDER`. La
+selección del proveedor real es 100% por configuración, en
+`mail.module.ts`:
+
+```ts
+{
+  provide: EMAIL_SENDER,
+  inject: [ConfigService, ConsoleEmailSender, SmtpEmailSender],
+  useFactory: (config, consoleSender, smtpSender) =>
+    config.get('EMAIL_PROVIDER') === 'smtp' ? smtpSender : consoleSender,
+}
+```
+
+`ConsoleEmailSender` (default) solo loguea — no requiere credenciales, así
+que el sistema funciona out-of-the-box en desarrollo/CI. `SmtpEmailSender`
+usa `nodemailer` con host/puerto/usuario/password/from leídos
+exclusivamente de variables de entorno (`EMAIL_PROVIDER`,
+`EMAIL_SMTP_HOST`, `EMAIL_SMTP_PORT`, `EMAIL_SMTP_USER`,
+`EMAIL_SMTP_PASSWORD`, `EMAIL_FROM`, documentadas en `.env.example` sin
+ningún valor real) — nada hardcodeado. Agregar un proveedor nuevo (una
+API HTTP de terceros, por ejemplo) es implementar `EmailSender` y sumarlo
+a esa factory; ningún llamador del dominio comercial cambia.
+
+### Cola: reutiliza BullMQ/Redis existente, mismo patrón que `AuditModule`
+
+No se crea un segundo sistema de colas. `MailModule` registra su propia
+cola (`BullModule.registerQueue({ name: EMAIL_QUEUE })`, `EMAIL_QUEUE =
+'email'`) con el mismo mecanismo que `AuditModule` ya usa para `'audit'`,
+sobre el mismo Redis (`BullModule.forRootAsync` en `app.module.ts`,
+compartido por toda la app). `MailService.enqueue` nunca llama al
+proveedor: agrega el job con `attempts: 3, backoff: { type:
+'exponential', delay: 1000 }, removeOnComplete: true, removeOnFail: 100`
+(mismos valores que `AuditService.log`) y retorna — el request HTTP nunca
+espera al proveedor de email. `EmailProcessor` (un `@Processor(EMAIL_QUEUE)
+extends WorkerHost`, igual que `AuditProcessor`) es quien corre fuera del
+ciclo de vida del request.
+
+Los adjuntos (el PDF del recibo) viajan en el payload del job serializados
+en base64 (`EmailAttachmentPayload.contentBase64`) — un job de BullMQ se
+persiste como JSON en Redis, así que un `Buffer` no sobrevive tal cual; el
+processor lo reconstruye (`Buffer.from(base64, 'base64')`) antes de
+pasarlo al `EmailSender`.
+
+### `EmailLog`: quién es dueño de escribirlo, y por qué no es `MailService`
+
+`EmailLog` (ledger append-only, mismo espíritu que `AuditLog`/`Payment`)
+lo crea y actualiza ÚNICAMENTE `EmailProcessor` — nunca `MailService`.
+Motivo concreto: `MembersService.invite` llama `mail.sendInvite(...)`
+desde DENTRO de una transacción de negocio (`tenantPrisma.run`). Si
+`MailService` escribiera el `EmailLog` sincrónicamente ahí, y esa
+transacción hiciera rollback después (por cualquier otra razón), quedaría
+un registro "fantasma" de un email que el sistema cree haber encolado pero
+cuyo contexto de negocio nunca existió — el `queue.add()` de BullMQ ya
+escribió en Redis, que no participa de la transacción de Postgres, así que
+ese job se ejecuta igual. Dejar que el processor sea la única fuente de
+verdad evita esa inconsistencia: `EmailLog` siempre refleja jobs que
+realmente se ejecutaron.
+
+Reservado a emails con contexto de organización ya resuelto —
+`welcome`, `invite`, `sale-confirmation`, `receipt`, `notification`. Los
+emails de identidad pre-tenant (`email-verification`, `password-reset`)
+se encolan y envían igual, con sus propios reintentos, pero no generan
+fila en `EmailLog` (no siempre hay una organización "actual" inequívoca en
+ese punto del flujo de auth).
+
+Idempotencia: `EmailLog.idempotencyKey` es única y opcional (mismo patrón
+que `payments.idempotencyKey` desde Fase Comercial 2). `EmailProcessor`
+chequea, ANTES de llamar al proveedor, si ya existe una fila `SENT` con
+esa key — si la hay, no reenvía. `sendSaleConfirmation` usa
+`sale-confirmation:{saleId}` y `sendReceiptEmail` usa
+`receipt-email:{receiptId}`: pedir el email del mismo recibo dos veces no
+dispara un segundo correo.
+
+### Reintentos: `onFailed` distingue "todavía puede reintentar" de "se agotaron los intentos"
+
+El evento `'failed'` de un `Worker` de BullMQ se dispara en CADA intento
+fallido, no solo cuando se agotan los reintentos (a diferencia de lo que
+el nombre sugiere a primera lectura). `EmailProcessor.onFailed` compara
+`job.attemptsMade` contra `job.opts.attempts`: si todavía quedan
+reintentos, solo loguea un `warn` y no toca `EmailLog` (el envío puede
+recuperarse solo); si se agotaron, recién ahí escribe/actualiza
+`EmailLog` con `status = FAILED` y el mensaje de error (truncado a 1000
+caracteres). Verificado con un test que llama a `onFailed` directamente
+con intentos 1, 2 y 3 de 3: ninguna fila hasta el intento 3, y recién ahí
+`FAILED`.
+
+Nota de testing: probar este camino disparando el proceso completo
+(SMTP real apuntando a un host inalcanzable) resultó ser una carrera
+contra el resto de la batería — CUALQUIER `.spec.ts` que levanta la app
+(vía `bootTestApp()`) registra su propio `EmailProcessor` escuchando la
+MISMA cola `email` sobre el MISMO Redis compartido, así que un job
+encolado desde un archivo puede terminar siendo procesado por el worker
+de OTRO archivo corriendo en paralelo (con SU proveedor `console`, que
+nunca falla) — BullMQ está diseñado exactamente para eso (varios workers
+compitiendo por la misma cola), pero eso vuelve no-determinístico un test
+que necesita que sea SU proveedor el que procese el job. La solución
+(`mail/email.processor.spec.ts`) instancia `EmailProcessor` directamente
+con un `TenantPrismaService` real (de una app real) y un `EmailSender`
+falso controlado a mano, invocado FUERA de BullMQ — mismo Postgres real,
+sin la cola compartida de por medio.
+
+### Templates: HTML + texto plano, sin dependencias externas
+
+`mail/templates/` — un layout compartido (`layout.ts`, estilos inline
+porque los clientes de correo ignoran `<style>` con frecuencia, sin
+imágenes ni fuentes remotas) y un archivo por tipo: bienvenida,
+recuperación de contraseña, confirmación de email, invitación,
+confirmación de venta, recibo comercial, notificación genérica. Cada uno
+devuelve `{ subject, html, text }`. El template de recibo
+(`receipt.template.ts`) repite explícitamente "DOCUMENTO COMERCIAL NO
+FISCAL — no es una factura ni un documento tributario válido ante el SIN"
+en el cuerpo del correo — el rótulo real vive en el PDF adjunto (ver
+abajo), pero queda dicho también en texto plano por si el destinatario no
+abre el adjunto.
+
+### Email del recibo: el PDF adjunto sale del snapshot inmutable, nunca se reconstruye
+
+`ReceiptsService.sendByEmail` (`POST /receipts/:id/email`,
+`receipts.manage`) reutiliza EXACTAMENTE el mismo `renderReceiptPdf`
+(formato A4) que ya usa `GET /receipts/:id/pdf` — nunca vuelve a leer
+`Sale`/`Customer`/`Organization`/`Product`, solo `receipt.snapshot`. El
+destinatario: si no se pasa `email` explícito en el body, se busca
+`sale.customer.email`; si no hay ninguno de los dos, 400 explícito (nunca
+omite el envío en silencio ni inventa un destinatario). No introduce
+ninguna lógica fiscal — es solo "adjuntar el mismo PDF no-fiscal que ya
+existía por otro medio".
+
+### Seguridad
+
+- `email_logs` tiene RLS igual que toda tabla tenant-scoped
+  (`ENABLE`/`FORCE ROW LEVEL SECURITY` + policy `tenant_isolation`, mismo
+  patrón exacto que el resto del esquema desde Fase 1).
+- `notifications` ya tenía RLS desde la migración inicial (Fase 1); esta
+  fase solo agrega la columna `readAt`, sin nueva policy.
+- Ningún secreto de email hardcodeado — `EMAIL_PROVIDER`,
+  `EMAIL_SMTP_HOST/PORT/USER/PASSWORD`, `EMAIL_FROM`, `FRONTEND_URL` solo
+  por variables de entorno, documentadas en `.env.example` sin valores
+  reales.
+- `EmailLog`/`Notification` nunca exponen contenido de un tenant a otro
+  (RLS) ni de un usuario a otro dentro de la misma organización
+  (`NotificationsService` valida `userId` en la aplicación).
+
+### Frontend: `/notifications` real + indicador en la navegación
+
+`/notifications` reemplaza el placeholder `ComingSoon`: lista paginada,
+filtro "solo no leídas", marcar una o todas como leídas, estados vacíos y
+de error reales (mismo patrón `loading`/`loadError` que `/receivables`).
+`AppShell` agrega un contador de no leídas junto al ítem "Notificaciones"
+del menú, poblado con `GET /notifications/unread-count` al montar y cada
+30 segundos (`setInterval`) — no hay push en tiempo real en esta fase, es
+polling explícito y documentado como tal.

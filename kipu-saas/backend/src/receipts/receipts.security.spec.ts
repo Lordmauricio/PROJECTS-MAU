@@ -95,6 +95,18 @@ describe('Recibos comerciales — seguridad (aislamiento de tenant + RLS + RBAC,
     expect(res.status).toBe(404);
   });
 
+  it('el tenant B no puede pedir el envío por email de un recibo del tenant A (404)', async () => {
+    const { receipt } = await issueReceiptAsA();
+    const res = await callApi(
+      app,
+      'POST',
+      `/receipts/${receipt.id}/email`,
+      { email: 'ajeno@example.test' },
+      tenantB.accessToken,
+    );
+    expect(res.status).toBe(404);
+  });
+
   it('el tenant B no puede descargar el PDF de un recibo del tenant A (404)', async () => {
     const { receipt } = await issueReceiptAsA();
     const res = await callApi(
@@ -298,6 +310,15 @@ describe('Recibos comerciales — seguridad (aislamiento de tenant + RLS + RBAC,
     );
     expect(pdfAttempt.status).toBe(403);
 
+    const emailAttempt = await callApi(
+      app,
+      'POST',
+      `/receipts/${receipt.id}/email`,
+      {},
+      inventoryToken,
+    );
+    expect(emailAttempt.status).toBe(403);
+
     const bySaleAttempt = await callApi(
       app,
       'GET',
@@ -366,6 +387,15 @@ describe('Recibos comerciales — seguridad (aislamiento de tenant + RLS + RBAC,
       cashierToken,
     );
     expect(pdf.status).toBe(200);
+
+    const email = await callApi(
+      app,
+      'POST',
+      `/receipts/${issued.body.id}/email`,
+      { email: 'cliente-cashier@example.test' },
+      cashierToken,
+    );
+    expect(email.status).toBe(201);
   });
 
   it('sin token, todos los endpoints de recibos responden 401', async () => {
@@ -382,5 +412,8 @@ describe('Recibos comerciales — seguridad (aislamiento de tenant + RLS + RBAC,
     expect((await callApi(app, 'POST', '/receipts', { saleId })).status).toBe(
       401,
     );
+    expect(
+      (await callApi(app, 'POST', `/receipts/${receipt.id}/email`, {})).status,
+    ).toBe(401);
   });
 });

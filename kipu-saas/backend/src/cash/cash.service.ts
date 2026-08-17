@@ -7,6 +7,10 @@ import {
 import { Prisma } from '../../generated/prisma/client';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
+import {
+  NotificationsService,
+  NOTIFICATION_TYPES,
+} from '../notifications/notifications.service';
 import { money } from '../common/money';
 import { OpenCashRegisterDto } from './dto/open-cash-register.dto';
 import { CloseCashRegisterDto } from './dto/close-cash-register.dto';
@@ -49,6 +53,7 @@ export class CashService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly audit: AuditService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   list(organizationId: string, filters: ListCashRegistersQueryDto) {
@@ -103,6 +108,7 @@ export class CashService {
     dto: OpenCashRegisterDto,
     actorUserId: string,
   ) {
+    let openedNow = false;
     const result = await this.runOrResolveOpenConflict(
       organizationId,
       dto.idempotencyKey,
@@ -119,6 +125,7 @@ export class CashService {
           throw new BadRequestException('Punto de venta no encontrado');
         }
 
+        openedNow = true;
         return tx.cashRegister.create({
           data: {
             organizationId,
@@ -142,6 +149,16 @@ export class CashService {
         openingAmount: dto.openingAmount ?? 0,
       },
     });
+
+    if (openedNow) {
+      await this.notifications.create(
+        organizationId,
+        actorUserId,
+        NOTIFICATION_TYPES.CASH_OPENED,
+        'Caja abierta',
+        `Se abrió una caja con monto inicial de Bs ${money(dto.openingAmount ?? 0).toString()}.`,
+      );
+    }
 
     return result;
   }
@@ -167,6 +184,7 @@ export class CashService {
     dto: CloseCashRegisterDto,
     actorUserId: string,
   ) {
+    let closedNow = false;
     const result = await this.tenantPrisma.run(organizationId, async (tx) => {
       const locked = await this.lockCashRegister(
         tx,
@@ -204,6 +222,7 @@ export class CashService {
           closingIdempotencyKey: dto.idempotencyKey,
         },
       });
+      closedNow = true;
       return this.loadFull(tx, organizationId, cashRegisterId);
     });
 
@@ -219,6 +238,31 @@ export class CashService {
         difference: result?.difference?.toString(),
       },
     });
+
+    if (closedNow) {
+      await this.notifications.create(
+        organizationId,
+        actorUserId,
+        NOTIFICATION_TYPES.CASH_CLOSED,
+        'Caja cerrada',
+        `Se cerró la caja con un contado de Bs ${result?.closingAmount?.toString() ?? dto.countedAmount}.`,
+      );
+
+      const difference = result?.difference;
+      // "Errores operativos relevantes" (punto 1 del pedido): un
+      // arqueo con diferencia (faltante o sobrante) es la señal más
+      // directa de un problema operativo real en Caja, ya calculada acá
+      // — no hace falta un mecanismo nuevo para detectarla.
+      if (difference && !difference.isZero()) {
+        await this.notifications.create(
+          organizationId,
+          actorUserId,
+          NOTIFICATION_TYPES.CASH_DISCREPANCY,
+          'Diferencia en cierre de caja',
+          `El arqueo de caja tuvo una diferencia de Bs ${difference.toString()} (${difference.isNegative() ? 'faltante' : 'sobrante'}).`,
+        );
+      }
+    }
 
     return result;
   }

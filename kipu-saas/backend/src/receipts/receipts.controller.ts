@@ -17,6 +17,7 @@ import type { AccessTokenPayload } from '../auth/auth.service';
 import { ReceiptsService } from './receipts.service';
 import { IssueReceiptDto } from './dto/issue-receipt.dto';
 import { PdfQueryDto } from './dto/pdf-query.dto';
+import { SendReceiptEmailDto } from './dto/send-receipt-email.dto';
 import { renderReceiptPdf } from './receipt-pdf.util';
 import { ReceiptSnapshot } from './receipt-snapshot';
 
@@ -77,5 +78,26 @@ export class ReceiptsController {
       'Content-Disposition': `inline; filename="recibo-${receipt.series}-${receipt.number}-${format}.pdf"`,
     });
     res.send(buffer);
+  }
+
+  /**
+   * Encola el envío del recibo por email (PDF A4 adjunto, generado desde
+   * el snapshot inmutable). No bloquea esperando al proveedor — responde
+   * apenas el job queda en la cola.
+   */
+  @Post(':id/email')
+  @RequirePermissions('receipts.manage')
+  async sendEmail(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Param('id') id: string,
+    @Body() dto: SendReceiptEmailDto,
+  ) {
+    await this.receipts.sendByEmail(
+      auth.organizationId,
+      id,
+      auth.sub,
+      dto.email,
+    );
+    return { queued: true };
   }
 }

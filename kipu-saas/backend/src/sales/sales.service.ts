@@ -9,6 +9,10 @@ import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { CashService } from '../cash/cash.service';
+import {
+  NotificationsService,
+  NOTIFICATION_TYPES,
+} from '../notifications/notifications.service';
 import { money, sumMoney, ZERO_MONEY } from '../common/money';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import {
@@ -31,6 +35,7 @@ export class SalesService {
     private readonly inventory: InventoryService,
     private readonly cash: CashService,
     private readonly audit: AuditService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   list(organizationId: string, filters: ListSalesQueryDto) {
@@ -194,6 +199,11 @@ export class SalesService {
   ) {
     const candidateKeys = (dto.payments ?? []).map((p) => p.idempotencyKey);
     let receivableCreated = false;
+    // Distingue una confirmación real de un replay idempotente (línea
+    // "Ya estaba confirmada..." más abajo) — solo la primera dispara la
+    // notificación de "venta confirmada" (ver punto 1 del pedido: "no
+    // generar notificaciones innecesarias ni duplicadas").
+    let saleConfirmedNow = false;
     const result = await this.runOrResolvePaymentConflict(
       organizationId,
       saleId,
@@ -261,6 +271,7 @@ export class SalesService {
           where: { id: saleId },
           data: { status, confirmedAt: new Date() },
         });
+        saleConfirmedNow = true;
 
         // Venta a crédito (saldo pendiente al confirmar): genera su
         // Receivable automáticamente, mismo momento en que Compras genera
@@ -305,7 +316,24 @@ export class SalesService {
           entityId: receivable.id,
           metadata: { saleId, amount: receivable.amount.toString() },
         });
+        await this.notifications.create(
+          organizationId,
+          actorUserId,
+          NOTIFICATION_TYPES.RECEIVABLE_PENDING,
+          'Cuenta por cobrar pendiente',
+          `La venta ${saleId} quedó con saldo pendiente de Bs ${receivable.amount.toString()} por cobrar.`,
+        );
       }
+    }
+
+    if (saleConfirmedNow) {
+      await this.notifications.create(
+        organizationId,
+        actorUserId,
+        NOTIFICATION_TYPES.SALE_CONFIRMED,
+        'Venta confirmada',
+        `Se confirmó la venta por un total de Bs ${result.total.toString()}.`,
+      );
     }
 
     return this.attachBalance(result);
@@ -318,6 +346,7 @@ export class SalesService {
     dto: CreatePaymentDto,
     actorUserId: string,
   ) {
+    let paymentRecorded = false;
     const result = await this.runOrResolvePaymentConflict(
       organizationId,
       saleId,
@@ -368,6 +397,7 @@ export class SalesService {
           data: { status: newStatus },
         });
         await this.syncReceivableStatus(tx, saleId, newStatus);
+        paymentRecorded = true;
 
         return this.loadFull(tx, organizationId, saleId);
       },
@@ -381,6 +411,16 @@ export class SalesService {
       entityId: saleId,
       metadata: { amount: dto.amount, method: dto.method },
     });
+
+    if (paymentRecorded) {
+      await this.notifications.create(
+        organizationId,
+        actorUserId,
+        NOTIFICATION_TYPES.SALE_PAYMENT_RECEIVED,
+        'Pago recibido',
+        `Se registró un pago de Bs ${money(dto.amount).toString()} en la venta ${saleId}.`,
+      );
+    }
 
     return this.attachBalance(result);
   }

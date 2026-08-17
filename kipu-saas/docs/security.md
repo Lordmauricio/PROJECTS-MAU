@@ -356,6 +356,48 @@ inconsistentes en los 5 flujos comerciales completos.
   `receipts.pdf.download` (con `format`) — para poder responder "quién
   emitió/descargó qué recibo, cuándo" ante cualquier duda operativa.
 
+## Fase Comercial 9 — Notificaciones y email real: notas de seguridad específicas
+
+- **Sin permiso de catálogo nuevo para notificaciones**: es un recurso
+  personal (`@NoPermissionRequired()`, mismo criterio que
+  `GET /organizations/me`), no un módulo de negocio con RBAC por rol. La
+  pertenencia la valida `NotificationsService` en la aplicación —
+  `markRead` compara `notification.userId` contra el `sub` del token y
+  devuelve 403 si no coincide, incluso cuando la notificación es de la
+  MISMA organización (RLS por sí sola no alcanza para aislar por usuario
+  dentro de un mismo tenant). Probado explícitamente: un CASHIER no puede
+  marcar como leída la notificación del OWNER, ni la ve en su propio
+  listado (`notifications.security.spec.ts`).
+- **Aislamiento de tenant en `notifications` y `email_logs`**: RLS
+  fail-closed confirmado con RLS crudo (contexto de tenant inexistente →
+  cero filas) y vía API (el tenant B nunca ve ni puede marcar como leída
+  una notificación del tenant A).
+- **`email_logs` nunca expone contenido sensible ajeno**: guarda
+  destinatario (`to`), template usado, estado y error truncado (1000
+  caracteres) — nunca el cuerpo HTML completo ni datos de tarjeta (el
+  sistema no procesa datos de tarjeta en ningún punto). RLS por
+  `organizationId` igual que el resto del esquema.
+- **`Notification.userId` nunca `null` en la práctica**: decisión de
+  diseño documentada en `docs/architecture.md` sección 15 — evita que una
+  notificación "compartida" filtre su estado `read` entre usuarios
+  distintos de la misma organización.
+- **Secretos de email SOLO por variable de entorno**: `EMAIL_PROVIDER`,
+  `EMAIL_SMTP_HOST`, `EMAIL_SMTP_PORT`, `EMAIL_SMTP_USER`,
+  `EMAIL_SMTP_PASSWORD`, `EMAIL_FROM`, `FRONTEND_URL` — ninguno
+  hardcodeado en el código, `.env.example` los documenta sin valores
+  reales (`EMAIL_SMTP_USER`/`EMAIL_SMTP_PASSWORD` vacíos por defecto).
+  `SmtpEmailSender` lee todo vía `ConfigService`.
+- **RBAC del endpoint de envío de recibo por email**:
+  `POST /receipts/:id/email` exige `receipts.manage` (mismo permiso que
+  emitir el recibo) — probado que un usuario INVENTORY (sin
+  `receipts.manage`) recibe 403, y que el tenant B no puede pedir el envío
+  del recibo del tenant A (404).
+- **Idempotencia también es una propiedad de seguridad acá**: sin la
+  key única en `EmailLog.idempotencyKey`, un cliente reintentando "enviar
+  recibo por email" podría inundar al destinatario con copias — probado
+  que dos requests consecutivos al mismo recibo resultan en una sola fila
+  `SENT`, nunca dos envíos.
+
 ## Qué queda pendiente (explícito, no oculto)
 
 - MFA (modelo de datos y guard no implementados todavía).

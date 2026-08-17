@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -7,8 +8,10 @@ import { randomUUID } from 'crypto';
 import { Prisma } from '../../generated/prisma/client';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { MailService } from '../mail/mail.service';
 import { money, sumMoney } from '../common/money';
 import { ReceiptSnapshot, buildReceiptSnapshot } from './receipt-snapshot';
+import { renderReceiptPdf } from './receipt-pdf.util';
 
 type Tx = Prisma.TransactionClient;
 
@@ -36,6 +39,7 @@ export class ReceiptsService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly audit: AuditService,
+    private readonly mail: MailService,
   ) {}
 
   /**
@@ -140,6 +144,71 @@ export class ReceiptsService {
     );
     if (!found) throw new NotFoundException('Recibo no encontrado');
     return found;
+  }
+
+  /**
+   * Envía el recibo por email adjuntando el PDF. El PDF se genera EN VIVO
+   * a partir de `receipt.snapshot` (mismo `renderReceiptPdf` que usa
+   * `GET :id/pdf`) — nunca se reconstruye a partir de `Sale`/`Customer`
+   * actuales, así que el adjunto es idéntico al que vería el cliente
+   * descargando el PDF hoy mismo, sin importar cuánto haya cambiado la
+   * venta o el cliente desde que se emitió. El envío en sí lo hace
+   * `MailService` (encolado, asíncrono, con reintentos) — este método
+   * nunca espera al proveedor de email.
+   */
+  async sendByEmail(
+    organizationId: string,
+    receiptId: string,
+    actorUserId: string,
+    overrideEmail?: string,
+  ): Promise<void> {
+    const receipt = await this.findById(organizationId, receiptId);
+    const snapshot = receipt.snapshot as unknown as ReceiptSnapshot;
+
+    const email =
+      overrideEmail ??
+      (await this.resolveCustomerEmail(organizationId, receipt.saleId));
+    if (!email) {
+      throw new BadRequestException(
+        'El cliente de esta venta no tiene email registrado; indicá uno explícitamente',
+      );
+    }
+
+    const pdf = await renderReceiptPdf(snapshot, 'a4');
+    await this.mail.sendReceiptEmail(
+      organizationId,
+      email,
+      {
+        fullNumber: snapshot.operation.fullNumber,
+        issuerName: snapshot.issuer.name,
+        total: snapshot.totals.total,
+        issuedAt: snapshot.operation.issuedAt,
+      },
+      pdf,
+      receiptId,
+    );
+
+    await this.audit.log({
+      organizationId,
+      userId: actorUserId,
+      action: 'receipts.email.send',
+      entityType: 'CommercialReceipt',
+      entityId: receiptId,
+      metadata: { to: email },
+    });
+  }
+
+  private async resolveCustomerEmail(
+    organizationId: string,
+    saleId: string,
+  ): Promise<string | null> {
+    const sale = await this.tenantPrisma.run(organizationId, (tx) =>
+      tx.sale.findFirst({
+        where: { id: saleId, organizationId },
+        include: { customer: { select: { email: true } } },
+      }),
+    );
+    return sale?.customer?.email ?? null;
   }
 
   async logDownload(

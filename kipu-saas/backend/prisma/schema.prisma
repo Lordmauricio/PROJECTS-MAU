@@ -64,6 +64,7 @@ model Organization {
   productUnits      ProductUnit[]
   products          Product[]
   auditLogs         AuditLog[]
+  emailLogs         EmailLog[]
   subscription      Subscription?
 
   @@map("organizations")
@@ -1215,6 +1216,16 @@ model SubscriptionEvent {
 // Notificaciones / Archivos
 // ==========================================================
 
+// `userId` sigue siendo nullable (así se modeló desde Fase 1) pero la
+// implementación real (Fase Comercial 9) NUNCA crea una fila con
+// `userId = null`: como `read` es una sola columna booleana por fila, una
+// notificación "de toda la organización" compartiría ese booleano entre
+// todos los usuarios — que un usuario la marque leída la ocultaría para
+// el resto. En vez de eso, cada notificación se crea con UN destinatario
+// concreto (ver `NotificationsService.create` / `docs/architecture.md`
+// sección 15); la columna se deja nullable para no romper el esquema de
+// Fase 1 ni bloquear una futura ampliación real (tabla de destinatarios
+// separada) si hiciera falta notificación multi-usuario de verdad.
 model Notification {
   id             String  @id @default(cuid())
   organizationId String
@@ -1223,13 +1234,57 @@ model Notification {
   type    String
   title   String
   message String
-  read    Boolean @default(false)
+  read    Boolean   @default(false)
+  readAt  DateTime?
 
   createdAt DateTime @default(now())
 
   @@index([organizationId])
   @@index([userId])
   @@map("notifications")
+}
+
+// ==========================================================
+// Email (Fase Comercial 9) — cola BullMQ + estado persistido
+// ==========================================================
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+// Ledger de envíos de email — mismo patrón que `AuditLog`: nunca se
+// reescribe el motivo de negocio, solo registra qué se intentó enviar y
+// cómo terminó. `idempotencyKey` (única, opcional) es lo que permite que
+// reenviar el recibo de la misma venta dos veces no dispare dos correos —
+// ver `MailService.sendReceiptEmail` / `docs/architecture.md` sección 15.
+// Reservado a emails con contexto de organización ya resuelto (invitación,
+// bienvenida, confirmación de venta, recibo, notificación) — los emails de
+// identidad pre-tenant (verificación de email, reset de contraseña) se
+// encolan y envían igual, con sus propios reintentos, pero no generan fila
+// acá (no siempre hay una organización "actual" inequívoca en ese punto).
+model EmailLog {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  to       String
+  template String
+  status   EmailStatus @default(QUEUED)
+  provider String?
+  error    String?
+  attempts Int         @default(0)
+
+  idempotencyKey    String? @unique
+  relatedEntityType String?
+  relatedEntityId   String?
+
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  @@index([organizationId])
+  @@map("email_logs")
 }
 
 model File {

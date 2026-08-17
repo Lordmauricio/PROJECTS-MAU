@@ -8,6 +8,10 @@ import { Prisma, ReceivablePayableStatus } from '../../generated/prisma/client';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { InventoryService } from '../inventory/inventory.service';
+import {
+  NotificationsService,
+  NOTIFICATION_TYPES,
+} from '../notifications/notifications.service';
 import { money, sumMoney, ZERO_MONEY } from '../common/money';
 import {
   CreatePurchaseDto,
@@ -37,6 +41,7 @@ export class PurchasesService {
     private readonly tenantPrisma: TenantPrismaService,
     private readonly inventory: InventoryService,
     private readonly audit: AuditService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   list(organizationId: string, filters: ListPurchasesQueryDto) {
@@ -271,6 +276,17 @@ export class PurchasesService {
     dto: ReceivePurchaseDto,
     actorUserId: string,
   ) {
+    // Envuelto en un objeto (en vez de un `let` suelto) para que TypeScript
+    // no lo estreche a `null` al leerlo después del `await`: el análisis de
+    // flujo no ve la reasignación que ocurre dentro del closure async de
+    // abajo, y con un `let` optional-chaining sobre él quedaría tipado
+    // `never` en la rama truthy aunque en runtime sí cambie.
+    const state: {
+      payableOutcome: { created: boolean; amount: Prisma.Decimal } | null;
+    } = {
+      payableOutcome: null,
+    };
+    let receivedNow = false;
     const result = await this.runOrResolveReceiptConflict(
       organizationId,
       purchaseId,
@@ -393,12 +409,13 @@ export class PurchasesService {
           },
         });
 
-        await this.growOrCreatePayable(
+        state.payableOutcome = await this.growOrCreatePayable(
           tx,
           organizationId,
           locked,
           refreshedItems,
         );
+        receivedNow = true;
 
         return this.loadFull(tx, organizationId, purchaseId);
       },
@@ -412,6 +429,30 @@ export class PurchasesService {
       entityId: purchaseId,
       metadata: { items: dto.items },
     });
+
+    if (receivedNow) {
+      await this.notifications.create(
+        organizationId,
+        actorUserId,
+        NOTIFICATION_TYPES.PURCHASE_RECEIVED,
+        'Compra recibida',
+        `Se registró una recepción sobre la compra ${purchaseId}.`,
+      );
+    }
+
+    // Solo cuando la Payable se CREA (primera recepción con saldo real
+    // pendiente) — no en cada recepción parcial que solo hace crecer el
+    // monto de una Payable ya existente (ver punto 1 del pedido: "no
+    // generar notificaciones innecesarias ni duplicadas").
+    if (state.payableOutcome?.created) {
+      await this.notifications.create(
+        organizationId,
+        actorUserId,
+        NOTIFICATION_TYPES.PAYABLE_PENDING,
+        'Cuenta por pagar pendiente',
+        `La compra ${purchaseId} generó una cuenta por pagar de Bs ${state.payableOutcome.amount.toString()}.`,
+      );
+    }
 
     return result;
   }
@@ -687,7 +728,7 @@ export class PurchasesService {
       receivedQuantity: Prisma.Decimal;
       subtotal: Prisma.Decimal;
     }>,
-  ) {
+  ): Promise<{ created: boolean; amount: Prisma.Decimal }> {
     const purchaseLevelFactor = money(purchase.total).div(
       money(purchase.subtotal),
     );
@@ -715,7 +756,7 @@ export class PurchasesService {
           status: 'PENDING',
         },
       });
-      return;
+      return { created: true, amount: newAmount };
     }
 
     const paidSoFar = await this.paidAmountFor(tx, existing.id);
@@ -724,6 +765,7 @@ export class PurchasesService {
       where: { id: existing.id },
       data: { amount: newAmount, status: newStatus },
     });
+    return { created: false, amount: newAmount };
   }
 
   private async paidAmountFor(

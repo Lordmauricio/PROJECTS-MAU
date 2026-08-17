@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { api } from "@/lib/api";
 
 interface NavLeaf {
   label: string;
@@ -67,12 +68,34 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { user, organization, loading, logout } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
     if (!loading && !user) {
       router.replace("/login");
     }
   }, [loading, user, router]);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    async function poll() {
+      try {
+        const { count } = await api<{ count: number }>("/notifications/unread-count");
+        if (!cancelled) setUnreadCount(count);
+      } catch {
+        // Silencioso: un fallo de red al pollear el contador no debe
+        // interrumpir la navegación normal del usuario.
+      }
+    }
+    poll();
+    const interval = setInterval(poll, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // Se refresca también al navegar (p.ej. después de marcar como leídas en /notifications).
+  }, [user, pathname]);
 
   if (loading || !user) {
     return <div className="flex flex-1 items-center justify-center text-zinc-500">Cargando...</div>;
@@ -111,13 +134,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href!}
-                className={`block px-4 py-2.5 text-sm ${
+                className={`flex items-center justify-between px-4 py-2.5 text-sm ${
                   pathname === item.href
                     ? "bg-zinc-800 text-white font-medium"
                     : "text-zinc-300 hover:bg-zinc-800"
                 }`}
               >
-                {item.label}
+                <span>{item.label}</span>
+                {item.href === "/notifications" && unreadCount > 0 && (
+                  <span className="ml-2 rounded-full bg-blue-600 text-white text-[11px] leading-none px-1.5 py-1 min-w-[1.25rem] text-center">
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </span>
+                )}
               </Link>
             )
           )}
