@@ -58,3 +58,19 @@ export async function apiDownload(path: string, filename: string, token?: string
   link.remove();
   URL.revokeObjectURL(url);
 }
+
+/** Trae un archivo autenticado (ej. un PDF) como blob URL para verlo/imprimirlo en una pestaña nueva — el caller es responsable de revocar la URL cuando ya no la necesite. */
+export async function apiBlobUrl(path: string, token?: string): Promise<string> {
+  const authToken = token ?? getToken();
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => undefined);
+    const rawMessage = data?.message ?? data?.error ?? "No se pudo generar el documento";
+    const message = Array.isArray(rawMessage) ? rawMessage.join(", ") : rawMessage;
+    throw new ApiError(res.status, message, data);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}

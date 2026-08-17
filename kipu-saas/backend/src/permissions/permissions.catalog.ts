@@ -112,6 +112,18 @@ export const PERMISSIONS_CATALOG: PermissionDef[] = [
     description: 'Eliminar/cancelar ventas',
   },
 
+  // Recibos comerciales (NO fiscales — ver docs/architecture.md sección 14)
+  {
+    key: 'receipts.manage',
+    module: 'receipts',
+    description: 'Emitir recibos comerciales de venta',
+  },
+  {
+    key: 'receipts.read',
+    module: 'receipts',
+    description: 'Ver y descargar recibos comerciales',
+  },
+
   // Compras
   {
     key: 'purchases.manage',
@@ -235,6 +247,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
     'sales.read',
     'sales.update',
     'sales.delete',
+    'receipts.manage',
+    'receipts.read',
     'purchases.manage',
     'purchases.read',
     'payables.read',
@@ -266,6 +280,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
     'organization.branches.read',
     'sales.create',
     'sales.read',
+    'receipts.manage',
+    'receipts.read',
     'cash.manage',
     'cash.read',
     'invoices.create',
@@ -287,6 +303,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
   SALES: [
     'sales.create',
     'sales.read',
+    'receipts.manage',
+    'receipts.read',
     'customers.manage',
     'customers.read',
     'products.read',

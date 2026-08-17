@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
-import { api } from "@/lib/api";
+import { api, apiBlobUrl, apiDownload } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
 
 interface SaleItem {
@@ -27,6 +27,14 @@ interface Refund {
   amount: string;
   reason?: string | null;
   createdAt: string;
+}
+
+interface CommercialReceipt {
+  id: string;
+  series: string;
+  number: number;
+  issuedAt: string;
+  snapshot: { operation: { fullNumber: string } };
 }
 
 interface Sale {
@@ -70,6 +78,12 @@ export default function SaleDetailPage() {
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("CASH");
 
+  const [receipt, setReceipt] = useState<CommercialReceipt | null>(null);
+  const [receiptLoading, setReceiptLoading] = useState(true);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+  const [issuingReceipt, setIssuingReceipt] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState<string | null>(null);
+
   async function load() {
     setLoading(true);
     setLoadError(null);
@@ -82,10 +96,64 @@ export default function SaleDetailPage() {
     }
   }
 
+  async function loadReceipt() {
+    setReceiptLoading(true);
+    try {
+      setReceipt(await api<CommercialReceipt | null>(`/receipts/by-sale/${params.id}`));
+    } catch (err) {
+      setReceiptError(err instanceof ApiError ? err.message : "No se pudo consultar el recibo");
+    } finally {
+      setReceiptLoading(false);
+    }
+  }
+
   useEffect(() => {
-    if (params.id) load();
+    if (params.id) {
+      load();
+      loadReceipt();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id]);
+
+  async function issueReceipt() {
+    if (issuingReceipt || receipt) return; // nunca emitir dos veces desde la UI
+    setReceiptError(null);
+    setIssuingReceipt(true);
+    try {
+      setReceipt(await api<CommercialReceipt>("/receipts", { method: "POST", body: { saleId: params.id } }));
+    } catch (err) {
+      setReceiptError(err instanceof ApiError ? err.message : "No se pudo emitir el recibo");
+    } finally {
+      setIssuingReceipt(false);
+    }
+  }
+
+  async function viewReceiptPdf(format: "a4" | "thermal80") {
+    if (!receipt) return;
+    setPdfBusy(`view-${format}`);
+    setReceiptError(null);
+    try {
+      const url = await apiBlobUrl(`/receipts/${receipt.id}/pdf?format=${format}`);
+      window.open(url, "_blank");
+    } catch (err) {
+      setReceiptError(err instanceof ApiError ? err.message : "No se pudo generar el PDF");
+    } finally {
+      setPdfBusy(null);
+    }
+  }
+
+  async function downloadReceiptPdf(format: "a4" | "thermal80") {
+    if (!receipt) return;
+    setPdfBusy(`download-${format}`);
+    setReceiptError(null);
+    try {
+      await apiDownload(`/receipts/${receipt.id}/pdf?format=${format}`, `${receipt.snapshot.operation.fullNumber}-${format}.pdf`);
+    } catch (err) {
+      setReceiptError(err instanceof ApiError ? err.message : "No se pudo descargar el PDF");
+    } finally {
+      setPdfBusy(null);
+    }
+  }
 
   async function addPayment(e: React.FormEvent) {
     e.preventDefault();
@@ -155,6 +223,7 @@ export default function SaleDetailPage() {
   const canCancel = sale.status === "DRAFT";
   const canPay = sale.status === "CONFIRMED" || sale.status === "PARTIALLY_PAID";
   const canReturn = ["CONFIRMED", "PARTIALLY_PAID", "PAID"].includes(sale.status);
+  const canIssueReceipt = ["CONFIRMED", "PARTIALLY_PAID", "PAID"].includes(sale.status);
 
   return (
     <AppShell>
@@ -260,6 +329,71 @@ export default function SaleDetailPage() {
             ))}
           </div>
         )}
+
+        <div className="bg-white rounded-lg border border-zinc-200 p-4 space-y-3">
+          <h2 className="font-medium text-sm">Recibo comercial</h2>
+          <p className="text-xs text-zinc-500">
+            Documento comercial NO fiscal. No sustituye la factura exigida por el SIN.
+          </p>
+          {receiptError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{receiptError}</p>}
+
+          {receiptLoading ? (
+            <p className="text-sm text-zinc-400">Consultando...</p>
+          ) : receipt ? (
+            <div className="space-y-2">
+              <p className="text-sm">
+                <span className="text-zinc-500">N.° de recibo: </span>
+                <span className="font-medium">{receipt.snapshot.operation.fullNumber}</span>
+                <span className="text-zinc-400"> — emitido {new Date(receipt.issuedAt).toLocaleString()}</span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => viewReceiptPdf("a4")}
+                  disabled={pdfBusy !== null}
+                  className="rounded border border-zinc-300 px-2.5 py-1 text-xs disabled:opacity-50"
+                >
+                  {pdfBusy === "view-a4" ? "Generando..." : "Ver PDF (A4)"}
+                </button>
+                <button
+                  onClick={() => downloadReceiptPdf("a4")}
+                  disabled={pdfBusy !== null}
+                  className="rounded border border-zinc-300 px-2.5 py-1 text-xs disabled:opacity-50"
+                >
+                  {pdfBusy === "download-a4" ? "Descargando..." : "Descargar A4"}
+                </button>
+                <button
+                  onClick={() => viewReceiptPdf("thermal80")}
+                  disabled={pdfBusy !== null}
+                  className="rounded border border-zinc-300 px-2.5 py-1 text-xs disabled:opacity-50"
+                >
+                  {pdfBusy === "view-thermal80" ? "Generando..." : "Ver ticket 80mm"}
+                </button>
+                <button
+                  onClick={() => downloadReceiptPdf("thermal80")}
+                  disabled={pdfBusy !== null}
+                  className="rounded border border-zinc-300 px-2.5 py-1 text-xs disabled:opacity-50"
+                >
+                  {pdfBusy === "download-thermal80" ? "Descargando..." : "Descargar ticket"}
+                </button>
+              </div>
+              <p className="text-xs text-zinc-400">
+                Para imprimir, abrí el PDF ("Ver") y usá la opción de imprimir del visor del navegador.
+              </p>
+            </div>
+          ) : canIssueReceipt ? (
+            <button
+              onClick={issueReceipt}
+              disabled={issuingReceipt}
+              className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm disabled:opacity-50"
+            >
+              {issuingReceipt ? "Emitiendo..." : "Emitir recibo"}
+            </button>
+          ) : (
+            <p className="text-sm text-zinc-400">
+              Esta venta todavía no admite emitir un recibo (estado: {STATUS_LABELS[sale.status] ?? sale.status}).
+            </p>
+          )}
+        </div>
 
         <div className="flex gap-2">
           {canCancel && (

@@ -205,6 +205,23 @@ Organization
   asigna todavía (`OVERDUE` necesitaría un job por fecha, fuera de
   alcance de esta fase).
 
+### Recibos comerciales NO fiscales (Fase Comercial 8 — implementado)
+- `receipt_sequences` — un contador atómico por organización
+  (`organizationId` `@unique`), `series` (fija, hoy siempre `"REC"`) +
+  `lastNumber`. El siguiente número se obtiene con un único
+  `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` — nunca
+  `MAX(number) + 1` — ver `docs/architecture.md` sección 14.
+- `commercial_receipts` — `saleId` `@unique` (1:1 estricto con `sales`:
+  una venta nunca puede tener dos recibos), `series`+`number` (también
+  `@@unique([organizationId, series, number])`, nunca dos recibos con el
+  mismo número en la misma organización), y `snapshot` (`Json` → `jsonb`
+  en Postgres) con el contenido completo e INMUTABLE del recibo — emisor,
+  operación, cliente, ítems, pagos. Ninguna columna de `commercial_receipts`
+  cambia después de creada la fila; no hay ningún `update()` sobre esta
+  tabla en todo `ReceiptsService`. Completamente separado de `invoices`
+  (abajo): no comparte tabla, FK, ni lógica con la futura facturación
+  fiscal.
+
 ### Facturación / fiscal (esquema listo, sin integración SIN)
 - `invoices` + `invoice_items` + `invoice_events` — el estado (`VALID`/
   `CANCELLED`/`ERROR`) y el evento son genéricos a propósito: los campos
@@ -263,6 +280,20 @@ Organization
 - `refunds` no tiene ningún `@unique` propio — no lo necesita, ver la
   justificación de idempotencia en `docs/architecture.md` sección 11.
 - Montos siempre `Decimal` (`@db.Decimal`), nunca `Float`.
+- `receipt_sequences` tiene `@@unique([organizationId])` (una secuencia
+  por empresa). `commercial_receipts` tiene `@@unique([saleId])` (1:1 con
+  la venta) Y `@@unique([organizationId, series, number])` (nunca dos
+  recibos con el mismo número) — dos constraints únicos independientes
+  protegiendo dos invariantes distintas a la vez.
+
+## Fase Comercial 8 — Recibos comerciales: migración aditiva
+
+Una migración nueva, `20260817191458_commercial_receipts`: dos tablas
+nuevas (`receipt_sequences`, `commercial_receipts`), ninguna columna
+nueva en tablas existentes, ningún dato existente modificado ni
+eliminado. RLS `ENABLE`+`FORCE`+policy `tenant_isolation` en ambas tablas
+nuevas, mismo patrón que el resto del esquema. `prisma migrate status`
+pasa de 8 a 9 migraciones tras esta fase.
 
 ## Fase Comercial 7 — Reportes: sin cambios de esquema
 

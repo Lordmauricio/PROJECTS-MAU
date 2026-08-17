@@ -767,3 +767,157 @@ Igual que el resto del sistema, los 17 reportes y el dashboard leen
 `Inventory` — nunca `Invoice`/`FiscalDocument`. No generan XML, no
 calculan CUF/CUFD/CAFC, no son ni pretenden ser un sustituto de la
 facturación exigida por el SIN; son reportes de gestión comercial interna.
+
+## 14. Fase Comercial 8 — Recibos comerciales NO fiscales: decisiones técnicas
+
+### Separación de código real, no solo documental: `sales/` vs. `receipts/` vs. `fiscal/`
+
+El pedido exige una separación EXPLÍCITA entre ventas, recibos
+comerciales y (a futuro) facturación fiscal — no como una nota en un
+documento, sino como una propiedad verificable del código. Se logró así:
+
+- `backend/src/receipts/` (`ReceiptsModule`) importa `AuditModule`
+  únicamente. NO importa `SalesModule` ni inyecta `SalesService`:
+  `ReceiptsService.issue` lee `Sale` directo vía su propio
+  `TenantPrismaService`, dentro de la MISMA transacción en la que
+  bloquea la numeración y crea el recibo — necesario para que el
+  incremento de la secuencia y el `create` del recibo sean atómicos (ver
+  más abajo), algo que no se puede lograr componiendo dos transacciones
+  independientes de dos servicios distintos.
+- `backend/src/sales/` (`SalesModule`) no importa nada de `receipts/` ni
+  sabe que ese módulo existe. `sales.controller.ts` no tiene ninguna ruta
+  de recibos; la UI de `/sales/[id]` consulta `GET /receipts/by-sale/:saleId`
+  como un recurso independiente.
+- No existe todavía ningún módulo `fiscal/` — ni una carpeta, ni un
+  archivo, ni una importación. El pedido de esta fase prohíbe
+  explícitamente tocar `FiscalDocument`/CUF/CUIS/CUFD/CAFC/SIN, así que
+  no se crea ni siquiera un placeholder: la única superficie
+  fiscal-adyacente que existe en el repo sigue siendo el modelo `Invoice`
+  de Fase 1 (solo esquema, sin lógica), sin cambios en esta fase.
+
+Cuando se autorice Facturación Electrónica, `fiscal/` se construirá como
+un módulo nuevo que lee `Sale` (y opcionalmente `CommercialReceipt`, solo
+para referenciarlo, nunca para mutarlo) de la misma forma en que
+`receipts/` lee `Sale` hoy — sin que `sales/` ni `receipts/` necesiten
+cambiar una sola línea para que eso funcione.
+
+### `CommercialReceipt`: snapshot JSONB, no un JOIN en el momento de imprimir
+
+La decisión central de esta fase: un recibo comercial se construye UNA
+vez, en el momento de emitirlo, leyendo todo lo necesario de `Sale`,
+`SaleItem`/`Product`, `Payment`, `Customer`, `Organization`, `Branch` y
+`POSTerminal` — y ese resultado se congela en
+`commercial_receipts.snapshot` (JSONB). Ni la vista en pantalla ni el PDF
+vuelven a tocar esas tablas después: `ReceiptsController.pdf` y el
+frontend leen exclusivamente `receipt.snapshot`. Esto es deliberado y no
+una optimización: si mañana cambia el nombre de la empresa, el logo, el
+precio de un producto, o el nombre de un cliente, un recibo ya emitido
+hace un año debe verse EXACTAMENTE igual que el día que se imprimió — un
+documento comercial que "cambia solo" retroactivamente no sirve como
+comprobante. Probado explícitamente: se emite un recibo, se cambian
+nombre de cliente (vía `PATCH /customers/:id`), nombre/precio de producto
+(vía `PATCH /products/:id`) y nombre de la organización (directo en la
+base, no hay endpoint de edición todavía), y se vuelve a leer el mismo
+recibo — su snapshot no cambió.
+
+### Numeración: `SERIE-NNNNNN` con un contador atómico por organización, nunca `MAX() + 1`
+
+`receipt_sequences` tiene exactamente una fila por organización
+(`organizationId` `@unique`). Obtener el siguiente número es un único
+statement:
+
+```sql
+INSERT INTO receipt_sequences (id, "organizationId", series, "lastNumber", "updatedAt")
+VALUES ($1, $2, 'REC', 1, now())
+ON CONFLICT ("organizationId")
+DO UPDATE SET "lastNumber" = receipt_sequences."lastNumber" + 1, "updatedAt" = now()
+RETURNING series, "lastNumber"
+```
+
+Bajo concurrencia real, Postgres serializa los `UPDATE`/`INSERT ON
+CONFLICT` sobre la misma fila: la segunda transacción que intenta
+incrementar la secuencia de la misma organización espera a que la
+primera confirme (o revierta) antes de tomar su propio número — nunca
+puede leer el mismo `lastNumber` que otra transacción concurrente
+todavía no confirmada, que es exactamente la clase de bug que
+`MAX(number) + 1` no puede evitar (dos transacciones pueden leer el mismo
+máximo antes de que ninguna haya insertado su fila).
+
+Esto corre DENTRO de la misma transacción que el `create` del recibo — no
+antes, como un paso separado. Es la pieza que hace que la idempotencia y
+la numeración sean consistentes juntas: si dos requests concurrentes
+intentan emitir el recibo de la MISMA venta, ambos pueden entrar a la
+transacción (el pre-check de "¿ya existe?" no alcanzó a ver al otro
+todavía), pero cuando ambos intentan el `INSERT` final en
+`commercial_receipts` (que tiene `@@unique([saleId])`), exactamente uno
+tiene éxito y el otro dispara `P2002` — y como el incremento de secuencia
+ocurrió en la MISMA transacción que ese `INSERT` fallido, Postgres
+revierte AMBOS a la vez: el número nunca se "gasta" en una carrera
+perdida. El perdedor cae al mismo patrón de `runOrResolveConflict` que
+`Sales`/`Purchases`/`Payables` ya usan: una transacción nueva y limpia
+que busca el recibo que sí ganó la carrera (por `saleId`, único) y lo
+devuelve — nunca un error al cliente que solo estaba reintentando.
+Probado con 2, 5 (ventas distintas) y 10 (misma venta) requests
+verdaderamente concurrentes vía `Promise.all`, nunca secuenciales.
+
+Decisión documentada sobre el alcance de la numeración: es POR
+ORGANIZACIÓN completa, no por sucursal ni por punto de venta. A
+diferencia de una futura numeración fiscal (que si se implementa sí
+tendría requisitos normativos de asociarse a un CUFD/punto de venta
+específico), un recibo comercial interno no tiene esa obligación — una
+sola secuencia continua por empresa es más simple de razonar y auditar
+para el dueño del negocio. Si una fase futura necesita numeración por
+sucursal, `receipt_sequences` puede extenderse (agregando `branchId` a la
+clave única) sin romper nada existente.
+
+### Estados de `Sale` que admiten recibo
+
+`ELIGIBLE_SALE_STATUSES = ['CONFIRMED', 'PARTIALLY_PAID', 'PAID']` — los
+mismos tres estados que `RETURNABLE_STATUSES`/`OPEN_FOR_PAYMENT_STATUSES`
+ya usan en `sales.service.ts` desde la Fase Comercial 2 para "esta venta
+es real y está vigente". `DRAFT` nunca calificó (la venta ni se
+concretó). `CANCELLED` nunca calificó (se revirtió antes de completarse).
+`REFUNDED` se excluye deliberadamente solo para EMITIR un recibo nuevo —
+la venta ya se revirtió comercialmente después de concretada — pero un
+recibo emitido ANTES del reembolso sigue siendo un documento histórico
+válido: `SalesService.returnSale()` nunca toca `commercial_receipts`, así
+que ese snapshot sigue reflejando fielmente lo que pasó en el momento de
+la venta.
+
+### PDF: `pdfkit`, A4 y ticket 80mm, siempre desde el snapshot
+
+Dependencia nueva (`pdfkit`, sin dependencias externas de red ni fuentes
+externas — usa las fuentes base de PDF, `Helvetica`/`Helvetica-Bold`).
+`receipt-pdf.util.ts` expone `renderReceiptPdf(snapshot, format)`, que
+arma un PDF completo en memoria (buffer, vía el patrón estándar de
+`pdfkit`: escuchar `data`/`end` y concatenar) — nunca escribe a disco.
+Ambos formatos leen EXCLUSIVAMENTE el objeto `snapshot` ya explicado
+arriba. La etiqueta "DOCUMENTO COMERCIAL NO FISCAL" se dibuja en rojo,
+inmediatamente debajo de "RECIBO DE VENTA", en la posición más prominente
+posible de ambos documentos (arriba de todo) — y se repite, en texto más
+chico, como advertencia al pie. El ticket de 80mm usa un ancho fijo en
+puntos PDF (80mm × 2.8346 pt/mm) y una altura generosa con salto de
+página automático (mismo tamaño de página) si un ticket con muchos ítems
+no entra en una sola hoja continua.
+
+### Frontend: nunca doble emisión, PDF autenticado vía blob
+
+El botón "Emitir recibo" en `/sales/[id]` desaparece en cuanto existe un
+recibo (la sección cambia a mostrar el número y los botones de PDF) — una
+protección de UX adicional sobre la idempotencia que el backend ya
+garantiza. Como los endpoints de recibos requieren `Authorization:
+Bearer`, un `<a href>` normal no serviría para ver/descargar el PDF (la
+navegación del navegador no manda headers custom): el frontend usa
+`fetch` con el token, arma un `Blob`, y lo abre en una pestaña nueva
+(`window.open` sobre una blob URL) para "Ver" o dispara la descarga real
+del navegador para "Descargar" — mismo patrón ya establecido para
+exportar CSV/Excel en la Fase Comercial 7 (`lib/api.ts`).
+
+### Recibos comerciales no son facturación electrónica
+
+Ver la sección "Recibos vs. Facturación" de `docs/PROJECT_PLAN.md` para
+la aclaración completa. En una frase: `CommercialReceipt` no genera XML,
+no calcula CUF/CUIS/CUFD/CAFC, no firma nada, no anula nada fiscalmente,
+y el propio documento (pantalla y PDF) dice explícitamente "DOCUMENTO
+COMERCIAL NO FISCAL" — nunca se presenta ni se puede confundir con una
+factura.

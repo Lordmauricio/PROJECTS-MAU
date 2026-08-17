@@ -137,7 +137,10 @@ Comercial 5: `cash.open`, `cash.close`, `cash.movement.create`,
 tenga su propio rastro de auditoría), `sales.refund.create`. Desde la Fase
 Comercial 7: `reports.export` (cada exportación CSV/Excel, con el formato,
 la cantidad de filas exportadas y los filtros usados — para saber quién
-sacó qué datos de la empresa, cuándo). Cada registro incluye `userId`,
+sacó qué datos de la empresa, cuándo). Desde la Fase Comercial 8:
+`receipts.issue` (emisión de un recibo comercial, con `saleId`/`series`/
+`number`) y `receipts.pdf.download` (cada descarga de PDF, con el
+formato — A4 o ticket 80mm). Cada registro incluye `userId`,
 `organizationId`, `action`, `entityType`/`entityId` cuando aplica, IP y
 user agent cuando están disponibles — nunca montos de tarjeta ni ningún
 otro secreto, solo montos/cantidades de negocio.
@@ -314,6 +317,44 @@ inconsistentes en los 5 flujos comerciales completos.
 - **Auditoría**: cada export queda registrado (`reports.export`, con
   `format`, cantidad de filas y filtros usados) — ver la nota
   "Auditoría" general más abajo, extendida en esta fase.
+
+## Fase Comercial 8 — Recibos comerciales: notas de seguridad específicas
+
+- **Permisos nuevos, mínimos**: `receipts.manage` (emitir) y
+  `receipts.read` (ver/descargar). OWNER/ADMIN los tienen (todos los
+  permisos); MANAGER, CASHIER y SALES los tienen explícitamente (son
+  quienes emiten recibos en la operación real); ACCOUNTANT e INVENTORY
+  NO — probado con un usuario INVENTORY real recibiendo 403 en emitir,
+  consultar por id, consultar por venta, y descargar PDF, y con CASHIER
+  recibiendo 200 en las cuatro (`receipts.security.spec.ts`).
+- **Aislamiento de tenant probado en las cuatro superficies de fuga
+  posibles**: consultar un recibo ajeno por ID (404), descargar su PDF
+  (404), consultarlo por el `saleId` de la venta ajena (sin resultado,
+  nunca el recibo del otro tenant), y emitir un recibo para una venta
+  ajena adivinando su id (404 — RLS hace que `tx.sale.findFirst` con
+  `organizationId` propio simplemente no la encuentre). Ninguna de las
+  cuatro devuelve alguna vez datos de otro tenant, solo "no encontrado".
+- **La numeración nunca se filtra ni se comparte entre tenants**: cada
+  organización tiene su propia fila en `receipt_sequences`
+  (`organizationId` `@unique`, protegida por RLS). Probado explícitamente:
+  el tenant B emite su primer recibo con número 1 aunque el tenant A ya
+  tenga varios — no hay ninguna secuencia global compartida que un tenant
+  pudiera agotar, inflar, o cuya numeración pudiera inferir la actividad
+  de otro.
+- **RLS crudo** (sin pasar por Nest, mismo patrón que
+  `receivables.security.spec.ts`) confirmado en `commercial_receipts` Y
+  en `receipt_sequences` por separado: con contexto de un tenant
+  inexistente, ninguna de las dos tablas devuelve fila alguna
+  (fail-closed); con contexto real, una consulta sin `WHERE` solo trae
+  filas de ese tenant.
+- **`snapshot` (JSONB) nunca contiene secretos**: son los mismos datos
+  comerciales que ya son visibles vía `GET /sales/:id` (montos, nombres,
+  NIT/CI del cliente) — nada de contraseñas, tokens, ni datos de tarjeta
+  (el sistema no procesa ni almacena datos de tarjeta en ningún punto,
+  ver "Datos sensibles" arriba).
+- **Auditoría**: `receipts.issue` (con `saleId`, `series`, `number`) y
+  `receipts.pdf.download` (con `format`) — para poder responder "quién
+  emitió/descargó qué recibo, cuándo" ante cualquier duda operativa.
 
 ## Qué queda pendiente (explícito, no oculto)
 

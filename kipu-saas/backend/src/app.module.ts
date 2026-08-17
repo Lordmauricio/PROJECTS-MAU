@@ -27,6 +27,7 @@ import { PayablesModule } from './payables/payables.module';
 import { CashModule } from './cash/cash.module';
 import { ReceivablesModule } from './receivables/receivables.module';
 import { ReportsModule } from './reports/reports.module';
+import { ReceiptsModule } from './receipts/receipts.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { ReportsModule } from './reports/reports.module';
     CashModule,
     ReceivablesModule,
     ReportsModule,
+    ReceiptsModule,
   ],
   controllers: [AppController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

@@ -273,12 +273,12 @@ model Warehouse {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  inventories         Inventory[]
-  inventoryMovements  InventoryMovement[]
-  sales               Sale[]
-  purchases           Purchase[]
-  transfersOut        InventoryTransfer[] @relation("InventoryTransferFrom")
-  transfersIn         InventoryTransfer[] @relation("InventoryTransferTo")
+  inventories        Inventory[]
+  inventoryMovements InventoryMovement[]
+  sales              Sale[]
+  purchases          Purchase[]
+  transfersOut       InventoryTransfer[] @relation("InventoryTransferFrom")
+  transfersIn        InventoryTransfer[] @relation("InventoryTransferTo")
 
   @@index([organizationId])
   @@index([branchId])
@@ -478,14 +478,14 @@ model InventoryMovement {
   productId      String
   product        Product   @relation(fields: [productId], references: [id])
 
-  type     InventoryMovementType
-  quantity Decimal               @db.Decimal(12, 2)
+  type        InventoryMovementType
+  quantity    Decimal               @db.Decimal(12, 2)
   // Snapshot del stock de este producto en ESTE almacén inmediatamente
   // antes/después de aplicar el movimiento — persistido en el momento
   // (Fase Comercial 4), no recalculado después, para que el kardex pueda
   // mostrar el saldo corriente sin tener que reproducir todo el historial.
-  stockBefore Decimal @db.Decimal(12, 2)
-  stockAfter  Decimal @db.Decimal(12, 2)
+  stockBefore Decimal               @db.Decimal(12, 2)
+  stockAfter  Decimal               @db.Decimal(12, 2)
   reason      String?
   reference   String? // p.ej. id de venta/compra/transferencia relacionada
   userId      String?
@@ -527,7 +527,7 @@ model InventoryTransfer {
   quantity Decimal @db.Decimal(12, 2)
   reason   String?
 
-  idempotencyKey String? @unique
+  idempotencyKey String?  @unique
   createdById    String?
   createdAt      DateTime @default(now())
 
@@ -566,10 +566,10 @@ model Sale {
   // práctica para SaleType.SALE (validado en el service, no acá, para no
   // romper el modelado de QUOTE que no afecta inventario); nulo solo
   // mientras la venta está en DRAFT sin almacén elegido todavía.
-  warehouseId String?
-  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
-  customerId  String?
-  customer    Customer?  @relation(fields: [customerId], references: [id])
+  warehouseId    String?
+  warehouse      Warehouse?   @relation(fields: [warehouseId], references: [id])
+  customerId     String?
+  customer       Customer?    @relation(fields: [customerId], references: [id])
 
   type     SaleType   @default(SALE)
   status   SaleStatus @default(DRAFT)
@@ -585,11 +585,12 @@ model Sale {
   cancelledAt DateTime?
   refundedAt  DateTime?
 
-  items      SaleItem[]
-  payments   Payment[]
-  invoice    Invoice?
-  receivable Receivable?
-  refunds    Refund[]
+  items             SaleItem[]
+  payments          Payment[]
+  invoice           Invoice?
+  receivable        Receivable?
+  refunds           Refund[]
+  commercialReceipt CommercialReceipt?
 
   @@index([organizationId])
   @@index([warehouseId])
@@ -623,15 +624,15 @@ enum PurchaseStatus {
 }
 
 model Purchase {
-  id             String   @id @default(cuid())
+  id             String     @id @default(cuid())
   organizationId String
   supplierId     String
-  supplier       Supplier @relation(fields: [supplierId], references: [id])
+  supplier       Supplier   @relation(fields: [supplierId], references: [id])
   // Almacén donde entra el stock al recibir. Mismo criterio que Sale.warehouseId
   // (Fase Comercial 2): requerido en la práctica desde que se confirma la
   // orden, validado en el service, nulo solo mientras está en DRAFT.
-  warehouseId String?
-  warehouse   Warehouse? @relation(fields: [warehouseId], references: [id])
+  warehouseId    String?
+  warehouse      Warehouse? @relation(fields: [warehouseId], references: [id])
 
   status   PurchaseStatus @default(DRAFT)
   subtotal Decimal        @default(0) @db.Decimal(12, 2)
@@ -647,7 +648,7 @@ model Purchase {
   // Se fija cuando el status pasa a RECEIVED (recepción completa), no en
   // cada recepción parcial — ver PurchaseReceipt para el historial de cada
   // evento de recepción individual.
-  receivedAt DateTime?
+  receivedAt  DateTime?
 
   items    PurchaseItem[]
   payables Payable[]
@@ -667,7 +668,7 @@ model PurchaseItem {
   productId      String
   product        Product  @relation(fields: [productId], references: [id])
 
-  quantity Decimal @db.Decimal(12, 2) // cantidad ordenada
+  quantity         Decimal @db.Decimal(12, 2) // cantidad ordenada
   // Acumulados a través de todas las PurchaseReceiptItem / devoluciones de
   // este ítem — permiten validar "no recibir más de lo pedido" y "no
   // devolver más de lo recibido" sin tener que sumar el historial cada vez.
@@ -815,17 +816,17 @@ model CashRegister {
   posTerminalId  String
   posTerminal    POSTerminal @relation(fields: [posTerminalId], references: [id])
 
-  status        CashRegisterStatus @default(OPEN)
-  openingAmount Decimal            @default(0) @db.Decimal(12, 2)
+  status             CashRegisterStatus @default(OPEN)
+  openingAmount      Decimal            @default(0) @db.Decimal(12, 2)
   // Arqueo de cierre (Fase Comercial 5): `closingAmount` es el efectivo
   // CONTADO físicamente por el usuario al cerrar; `expectedAmount` es el
   // saldo que el sistema esperaba (openingAmount + ingresos - egresos, ver
   // `CashService.close`); `difference` = contado - esperado (positivo =
   // sobrante, negativo = faltante). Los tres quedan null mientras la caja
   // sigue OPEN.
-  closingAmount      Decimal? @db.Decimal(12, 2)
-  expectedAmount     Decimal? @db.Decimal(12, 2)
-  difference         Decimal? @db.Decimal(12, 2)
+  closingAmount      Decimal?           @db.Decimal(12, 2)
+  expectedAmount     Decimal?           @db.Decimal(12, 2)
+  difference         Decimal?           @db.Decimal(12, 2)
   closingObservation String?
 
   openedById String?
@@ -858,15 +859,15 @@ model CashMovement {
   cashRegisterId String
   cashRegister   CashRegister @relation(fields: [cashRegisterId], references: [id], onDelete: Cascade)
 
-  type   String // CASH_IN, CASH_OUT, SALE_PAYMENT, EXPENSE
-  amount Decimal @db.Decimal(12, 2)
-  reason String?
+  type      String // CASH_IN, CASH_OUT, SALE_PAYMENT, EXPENSE
+  amount    Decimal @db.Decimal(12, 2)
+  reason    String?
   // Id de la entidad que originó el movimiento cuando no fue manual (la
   // Sale de un SALE_PAYMENT, el Expense de un EXPENSE) — mismo patrón que
   // `InventoryMovement.reference`.
   reference String?
 
-  createdById String?
+  createdById    String?
   // Nullable: los movimientos SALE_PAYMENT (disparados automáticamente al
   // cobrar en efectivo, ver `CashService.registerSalePaymentMovement`) no
   // pasan por el DTO de movimiento manual y no necesitan una key propia —
@@ -899,7 +900,7 @@ model Expense {
   observation String?
   date        DateTime @default(now())
 
-  createdById String?
+  createdById    String?
   // Protege contra doble click/retry: un gasto y su CashMovement se crean
   // atómicamente en la misma transacción (ver `CashService.registerExpense`).
   idempotencyKey String? @unique
@@ -928,8 +929,8 @@ model Receivable {
   // Receivable duplicado para una misma venta"). Nullable por consistencia
   // con `Payable.purchaseId` (NULLs no colisionan entre sí en Postgres), no
   // porque hoy exista un camino que la deje sin venta asociada.
-  saleId String? @unique
-  sale   Sale?   @relation(fields: [saleId], references: [id])
+  saleId         String?  @unique
+  sale           Sale?    @relation(fields: [saleId], references: [id])
 
   amount  Decimal                 @db.Decimal(12, 2)
   dueDate DateTime
@@ -977,8 +978,8 @@ model Payable {
   // reduce con las devoluciones al proveedor. @@unique sobre una columna
   // nullable es seguro en Postgres: NULLs no colisionan entre sí, solo se
   // exige unicidad cuando purchaseId SÍ está seteado.
-  purchaseId String?   @unique
-  purchase   Purchase? @relation(fields: [purchaseId], references: [id])
+  purchaseId     String?   @unique
+  purchase       Purchase? @relation(fields: [purchaseId], references: [id])
 
   amount  Decimal                 @db.Decimal(12, 2)
   dueDate DateTime
@@ -992,6 +993,68 @@ model Payable {
   @@index([organizationId])
   @@index([supplierId])
   @@map("payables")
+}
+
+// ==========================================================
+// Recibos comerciales (Fase Comercial 8) — NO FISCALES
+// `CommercialReceipt` es un documento comercial interno, completamente
+// independiente de `Invoice`/`FiscalDocument` (sección "Facturación /
+// Fiscal" más abajo). No genera XML, no calcula CUF/CUFD/CAFC, no firma
+// nada, no reemplaza la factura exigida por la normativa tributaria — ver
+// `docs/architecture.md` sección 14 y `docs/PROJECT_PLAN.md`. Una venta
+// podrá eventualmente tener AMBOS documentos a la vez (`Sale` →
+// `CommercialReceipt` y, en una fase futura independiente, `Sale` →
+// `Invoice`/`FiscalDocument`), sin que uno dependa del otro.
+// ==========================================================
+
+// Contador atómico de numeración de recibos, uno por organización. El
+// incremento SIEMPRE pasa por un solo `UPDATE ... RETURNING` (ver
+// `ReceiptsService.nextReceiptNumber`) — nunca `MAX(number) + 1`, que bajo
+// concurrencia real puede leer el mismo máximo dos veces y emitir el mismo
+// número. `series` es un valor fijo por organización (hoy siempre "REC"),
+// guardado en la fila en vez de hardcodeado en el código para poder
+// diferenciarlo a futuro sin migrar datos existentes.
+model ReceiptSequence {
+  id             String @id @default(cuid())
+  organizationId String @unique
+  series         String @default("REC")
+  lastNumber     Int    @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("receipt_sequences")
+}
+
+// Snapshot inmutable de una venta al momento de emitir su recibo
+// comercial. Relación 1:1 estricta con `Sale` (`@@unique([saleId])`): una
+// venta nunca puede tener dos recibos — ver la idempotencia de
+// `ReceiptsService.issue`. `snapshot` (JSONB) es la ÚNICA fuente para
+// regenerar el PDF: si después cambian el nombre/dirección/logo de la
+// empresa, los datos del cliente, o el precio de un producto, el recibo ya
+// emitido nunca cambia, porque el PDF nunca vuelve a leer esas tablas —
+// lee el JSON congelado acá. `series`/`number` quedan también como
+// columnas propias (no solo dentro del JSON) para poder indexar/exponer la
+// numeración sin parsear JSON.
+model CommercialReceipt {
+  id             String @id @default(cuid())
+  organizationId String
+  saleId         String @unique
+  sale           Sale   @relation(fields: [saleId], references: [id])
+
+  series String
+  number Int
+
+  // Snapshot inmutable completo: emisor, sucursal/POS, cliente, ítems,
+  // pagos, totales, cajero — ver `ReceiptsService.buildSnapshot` para la
+  // forma exacta. Nunca se reescribe después de creado.
+  snapshot Json
+
+  issuedById String?
+  issuedAt   DateTime @default(now())
+
+  @@unique([organizationId, series, number])
+  @@index([organizationId])
+  @@map("commercial_receipts")
 }
 
 // ==========================================================

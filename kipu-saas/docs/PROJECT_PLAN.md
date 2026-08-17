@@ -659,21 +659,101 @@ selector de categoría en su propio filtro (no aplica: es precisamente lo
 que agrupa); la utilidad comercial queda sin calcular hasta que exista
 costo histórico por línea de venta (fuera de alcance de esta fase).
 
+## Fase Comercial 8 — Recibos comerciales NO fiscales ✅
+
+Entregable: `CommercialReceipt`, un documento comercial interno (NUNCA
+fiscal) que una venta puede generar, con snapshot inmutable, numeración
+segura bajo concurrencia, y PDF en A4 y ticket térmico 80mm. Ver
+`docs/architecture.md` sección 14 para el detalle técnico completo, y la
+sección "Recibos vs. Facturación" más abajo para la separación
+arquitectónica explícita con el futuro módulo fiscal.
+
+- [x] `CommercialReceipt` 1:1 estricto con `Sale` (`@@unique([saleId])` —
+      una venta nunca puede tener dos recibos) en un módulo propio
+      (`backend/src/receipts/`), completamente separado de `sales/` (que
+      nunca importa nada de `receipts/`) y de cualquier futuro módulo
+      `fiscal/` (que no existe todavía — ver más abajo).
+- [x] Snapshot JSONB inmutable (`commercial_receipts.snapshot`): emisor
+      (nombre, NIT, dirección, teléfono, sucursal, POS), operación
+      (número, fecha, cajero, venta relacionada), cliente (nombre,
+      NIT/CI si existe), detalle de ítems (producto, cantidad, precio,
+      descuento, subtotal), pagos (métodos, mixtos, pagado, saldo). Se
+      arma UNA vez al emitir y nunca se vuelve a escribir — probado
+      explícitamente cambiando después el nombre de la empresa, del
+      cliente y del producto, y confirmando que el recibo ya emitido no
+      cambia.
+- [x] Numeración `SERIE-NNNNNN` (`REC-000001`, ...) — un contador
+      atómico por organización (`receipt_sequences`, `@unique` por
+      `organizationId`), incrementado con un único
+      `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` (nunca
+      `MAX(number) + 1`). Se decidió numeración a nivel de ORGANIZACIÓN
+      completa, no por sucursal/POS: a diferencia de la numeración fiscal
+      (que si se implementa a futuro sí sería por punto de venta/CUFD),
+      un recibo comercial interno no tiene ese requisito normativo, y una
+      sola secuencia continua es más simple de auditar para el dueño del
+      negocio. Documentado como decisión explícita, revisable si una
+      fase futura lo requiere.
+- [x] Idempotencia: emitir el recibo de una venta que ya tiene uno
+      devuelve el mismo recibo, nunca crea un segundo ni consume un
+      número nuevo — probado con dos requests concurrentes reales y con
+      10 requests concurrentes sobre la misma venta (`Promise.all`,
+      nunca secuencial), además de emisión concurrente de recibos para
+      ventas DISTINTAS confirmando numeración sin huecos ni duplicados.
+- [x] Estados de `Sale` que admiten recibo: `CONFIRMED`, `PARTIALLY_PAID`,
+      `PAID` — nunca `DRAFT` (la venta ni se concretó) ni `CANCELLED`
+      (se revirtió). `REFUNDED` se excluye para EMITIR un recibo nuevo,
+      pero un recibo ya emitido antes del reembolso sigue siendo válido
+      como documento histórico (su snapshot no se toca).
+- [x] PDF real en dos formatos (`pdfkit`, dependencia nueva) generado
+      SIEMPRE desde el snapshot guardado — nunca reconsultando `Sale`/
+      `Customer`/`Organization`/`Product`. "DOCUMENTO COMERCIAL NO FISCAL"
+      visible de forma prominente en ambos formatos, además de "RECIBO DE
+      VENTA" (nunca "Factura"). A4 para impresión de oficina, 80mm para
+      impresora térmica de POS.
+- [x] Frontend real en `/sales/[id]`: sección "Recibo comercial" que
+      muestra si existe recibo, botón "Emitir recibo" (desaparece tras
+      emitir — nunca doble emisión desde la UI, más allá de que el
+      backend ya es idempotente), "Ver"/"Descargar" para cada formato de
+      PDF (ver abre el PDF en una pestaña nueva del navegador, desde
+      donde el usuario puede imprimir con el visor nativo).
+- [x] Permisos nuevos: `receipts.manage` (emitir) y `receipts.read` (ver/
+      descargar), asignados a OWNER/ADMIN (todos los permisos), MANAGER,
+      CASHIER y SALES (son quienes emiten recibos en la práctica);
+      ACCOUNTANT e INVENTORY no los tienen; AUDITOR los hereda vía su
+      regla de "todo lo que termina en `.read`".
+- [x] Seguridad: RLS `FORCE` + policy `tenant_isolation` en
+      `commercial_receipts` y `receipt_sequences` (migración
+      `20260817191458_commercial_receipts`, puramente aditiva). Probado
+      con dos tenants reales: B no puede leer/descargar/listar-por-venta
+      un recibo de A (404, nunca datos ajenos), la numeración de B es
+      independiente (empieza en 1 aunque A ya tenga varios), y RLS crudo
+      (sin pasar por Nest) confirma fail-closed con contexto de tenant
+      inexistente.
+- [x] Auditoría: `receipts.issue` (emisión) y `receipts.pdf.download`
+      (cada descarga de PDF, con el formato).
+- [x] Sin integración de email real (`MailService` sigue siendo un stub
+      desde Fase 1) — explícitamente no pedido en esta fase.
+- [x] Tests reales: 29 casos nuevos (`receipts.integration.spec.ts`,
+      `receipts.concurrency.spec.ts`, `receipts.security.spec.ts`)
+      cubriendo emisión/contenido/snapshot/inmutabilidad/numeración/
+      concurrencia real/retry/doble click/tenant/RLS/RBAC/PDF A4/PDF
+      térmico/estados permitidos. Regresión completa: 209/209 tests
+      (180 previos + 29 nuevos), sin cambios destructivos de esquema.
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
-- **Fase Comercial 8 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/
-  `InvoiceEvent`/`TaxConfiguration` ya modelados de forma genérica, **sin**
-  campos específicos del SIN todavía. Antes de tocar código fiscal real,
-  hay que investigar la normativa vigente (RND, Anexo Técnico, algoritmo de
-  CUF, servicios SOAP/REST) tal como exige el prompt — no se inventan
-  reglas fiscales. Fuera de alcance hasta nueva autorización explícita.
-  (Renumerada de nuevo: la Fase Comercial 7 autorizada y construida fue
-  Reportes, arriba — Facturación pasa a este número para no chocar con
-  ella.)
-- **Fase Comercial 9 — Recibos comerciales no fiscales**: numeración
-  comercial segura bajo concurrencia, snapshot inmutable, PDF A4/ticket
-  80mm. Explícitamente distinto de un documento fiscal — ver sección
-  "Recibos vs. Facturación" más abajo.
+- **Fase Comercial 9 — Facturación / Fiscal / SIN**: `Invoice`/
+  `InvoiceItem`/`InvoiceEvent`/`TaxConfiguration` ya modelados de forma
+  genérica, **sin** campos específicos del SIN todavía. Antes de tocar
+  código fiscal real, hay que investigar la normativa vigente (RND, Anexo
+  Técnico, algoritmo de CUF, servicios SOAP/REST) tal como exige el
+  prompt — no se inventan reglas fiscales. Fuera de alcance hasta nueva
+  autorización explícita. (Renumerada de nuevo: la Fase Comercial 8
+  autorizada y construida fue Recibos comerciales, arriba — Facturación
+  pasa a este número para no chocar con ella. Además, `receipts/` y el
+  futuro `fiscal/` quedan explícitamente separados — ver la sección de
+  abajo — así que esta renumeración es solo de orden, no de dependencia:
+  Fiscal podrá construirse sin tocar ni una línea de `receipts/`.)
 - **Fase Comercial 10 — Notificaciones y proveedor de email real**: hoy
   `MailService` es un stub que loguea; `notifications`/`files` tienen
   tabla pero no API.
@@ -683,30 +763,52 @@ costo histórico por línea de venta (fuera de alcance de esta fase).
 
 ## Recibos vs. Facturación (aclaración explícita, sección 3/4 del master spec)
 
-KIPU emite actualmente, y seguirá emitiendo hasta nueva orden, **recibos
-comerciales NO FISCALES** (Fase Comercial 9, todavía no implementada). Un
-recibo:
+KIPU emite, desde la Fase Comercial 8, **recibos comerciales NO
+FISCALES** (`CommercialReceipt`, `backend/src/receipts/`). Un recibo:
 
-- NO es una factura ni un documento fiscal, y nunca se presenta como tal.
-- NO depende del SIN de Bolivia ni de ninguna integración fiscal.
-- NO modifica ni transforma la `Sale` que le da origen.
+- NO es una factura ni un documento fiscal, y nunca se presenta como tal
+  — el propio documento dice "RECIBO DE VENTA" / "DOCUMENTO COMERCIAL NO
+  FISCAL" de forma prominente, en pantalla y en el PDF (A4 y ticket
+  80mm).
+- NO depende del SIN de Bolivia ni de ninguna integración fiscal — cero
+  XML, cero CUF/CUIS/CUFD/CAFC, cero firma digital, cero SOAP/WSDL.
+- NO modifica ni transforma la `Sale` que le da origen — es un documento
+  adicional derivado, nunca reemplaza ni altera el ciclo de vida de la
+  venta.
 
-**`Sale` NO es `Invoice`. `Purchase` NO es `Invoice`.** Ambos son parte del
-núcleo comercial (ventas/compras reales, con su propio ciclo de vida,
-inventario y cuentas) y son completamente independientes del módulo de
-facturación fiscal (`Invoice`/`TaxConfiguration`, todavía solo esquema
-genérico desde Fase 1). Ninguno de los dos fue modificado en la Fase
-Comercial 3 para introducir dependencia alguna hacia el SIN.
+**`Sale` NO es `Invoice`. `Purchase` NO es `Invoice`. `CommercialReceipt`
+tampoco es `Invoice`.** Los tres son parte del núcleo comercial (ventas/
+compras/recibos reales, con su propio ciclo de vida) y son completamente
+independientes del módulo de facturación fiscal (`Invoice`/
+`TaxConfiguration`, todavía solo esquema genérico desde Fase 1). Ninguno
+fue modificado para introducir dependencia alguna hacia el SIN.
 
-La integración de facturación electrónica con el SIN de Bolivia
-(`FiscalDocument`, XML/XSD, CUF/CUIS/CUFD/CAFC, firma digital, XMLDSig,
-SOAP/WSDL, QR fiscal, anulación fiscal) queda para una fase futura
-independiente y explícitamente autorizada — no se implementó nada de esto
-en las Fases Comerciales 2 ni 3, ni se modificó el núcleo comercial
-(`Sale`/`Purchase`) para introducir ninguna dependencia hacia ella. La
-arquitectura prevista para cuando se autorice es `Sale → Fiscal Engine →
-Fiscal Document → SIN Adapter → SIN Bolivia`, pero hoy esa cadena no
-existe más allá del `Sale`/`Purchase` inicial.
+Separación arquitectónica explícita, aplicada desde el código y no solo
+documentada: `backend/src/sales/` nunca importa nada de
+`backend/src/receipts/` (la relación es de un solo sentido — Receipts lee
+Sale, Sales no sabe que Receipts existe), y ninguno de los dos importa ni
+importará nada de un futuro `backend/src/fiscal/` (que no existe
+todavía). Cuando se autorice Facturación Electrónica, el árbol de una
+venta se verá así:
+
+```
+Sale
+├── CommercialReceipt   (Fase Comercial 8 — ya construido, NO fiscal)
+└── FiscalDocument      (Fase Comercial 9 — futuro, SIN Bolivia)
+```
+
+Son documentos DIFERENTES, con ciclos de vida y validez legal distintos:
+`CommercialReceipt` nunca se convierte en `FiscalDocument`, y emitir uno
+no emite ni implica el otro. La integración de facturación electrónica
+con el SIN de Bolivia (`FiscalDocument`, XML/XSD, CUF/CUIS/CUFD/CAFC,
+firma digital, XMLDSig, SOAP/WSDL, QR fiscal, anulación fiscal) queda
+para esa fase futura independiente y explícitamente autorizada — no se
+implementó nada de esto en ninguna fase hasta ahora, ni se modificó el
+núcleo comercial (`Sale`/`Purchase`/`CommercialReceipt`) para introducir
+ninguna dependencia hacia ella. La arquitectura prevista para cuando se
+autorice sigue siendo `Sale → Fiscal Engine → Fiscal Document → SIN
+Adapter → SIN Bolivia`, construida en un módulo `fiscal/` nuevo que
+nunca necesitará modificar `receipts/` para funcionar.
 
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
