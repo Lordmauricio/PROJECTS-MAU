@@ -25,6 +25,7 @@ const NAV: NavGroup[] = [
       { label: "POS", href: "/sales/pos" },
       { label: "Ventas", href: "/sales" },
       { label: "Cotizaciones", href: "/sales/quotes" },
+      { label: "Cuentas por Cobrar", href: "/receivables" },
     ],
   },
   {
@@ -40,6 +41,7 @@ const NAV: NavGroup[] = [
     children: [
       { label: "Compras", href: "/purchases" },
       { label: "Proveedores", href: "/purchases/suppliers" },
+      { label: "Cuentas por Pagar", href: "/payables" },
     ],
   },
   {

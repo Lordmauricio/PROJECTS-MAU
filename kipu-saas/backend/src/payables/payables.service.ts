@@ -7,6 +7,7 @@ import {
 import { Prisma } from '../../generated/prisma/client';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { CashService } from '../cash/cash.service';
 import { money, sumMoney } from '../common/money';
 import { CreatePayablePaymentDto } from './dto/payable-payment.dto';
 import { ListPayablesQueryDto } from './dto/list-payables-query.dto';
@@ -17,6 +18,7 @@ type Tx = Prisma.TransactionClient;
 export class PayablesService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
+    private readonly cash: CashService,
     private readonly audit: AuditService,
   ) {}
 
@@ -103,6 +105,22 @@ export class PayablesService {
             createdById: actorUserId,
           },
         });
+
+        // Si el método es CASH y se indicó una caja OPEN, registra el
+        // egreso correspondiente — atómico con el Payment de arriba (misma
+        // `tx`). A diferencia de Ventas, esto SÍ puede rechazar el pago
+        // completo si el saldo de esa caja no alcanza (ver el comentario en
+        // `CashService.registerPayablePaymentMovement`).
+        if (dto.method === 'CASH') {
+          await this.cash.registerPayablePaymentMovement(tx, {
+            organizationId,
+            posTerminalId: dto.posTerminalId ?? null,
+            payableId,
+            amount,
+            actorUserId,
+            idempotencyKey: dto.idempotencyKey,
+          });
+        }
 
         const newPaid = alreadyPaid.add(amount);
         const newStatus = newPaid.gte(money(locked.amount))

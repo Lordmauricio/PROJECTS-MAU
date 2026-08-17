@@ -127,7 +127,12 @@ cancelación/devolución de ventas (`sales.*`), lo mismo para compras
 (`purchases.*`), recepciones (`purchases.receive`), y pagos sobre cuentas
 por pagar (`payables.payment.create`). Desde la Fase Comercial 4:
 `inventory.movement.create` (entrada/salida manual y ajuste) e
-`inventory.transfer.create` (transferencia entre almacenes). Cada registro
+`inventory.transfer.create` (transferencia entre almacenes). Desde la Fase
+Comercial 5: `cash.open`, `cash.close`, `cash.movement.create`,
+`expenses.create`. Desde la Fase Comercial 6: `receivables.create`
+(al confirmarse una venta a crédito), `receivables.payment.create`
+(además del `sales.payment.create` ya existente, para que una Receivable
+tenga su propio rastro de auditoría), `sales.refund.create`. Cada registro
 incluye `userId`, `organizationId`, `action`, `entityType`/`entityId`
 cuando aplica, IP y user agent cuando están disponibles — nunca montos de
 tarjeta ni ningún otro secreto, solo montos/cantidades de negocio.
@@ -203,6 +208,45 @@ tarjeta ni ningún otro secreto, solo montos/cantidades de negocio.
   y gastos que superarían el saldo disponible se rechazan con `400`,
   calculado bajo lock para que sea correcto incluso bajo dos intentos
   concurrentes.
+
+## Fase Comercial 6 — Pagos y Cuentas: notas de seguridad específicas
+
+- **RLS ya existía para `receivables`** (placeholder desde Fase 1); la
+  tabla nueva `refunds` la agrega igual que el resto del esquema, con
+  policy `tenant_isolation` agregada a mano en la migración
+  `20260817170000_payments_and_accounts_core`. Probado con SQL crudo
+  (contexto de tenant inexistente → cero filas) — ver
+  `receivables.security.spec.ts`.
+- **Reusar `SalesService.addPayment` para Receivables no reabre ninguna
+  superficie**: `ReceivablesService.addPayment` no bypasea ningún control
+  — llama al mismo método que ya valida tenant (vía
+  `TenantPrismaService`/RLS), sobrepago, lock, e idempotencia. No hay un
+  segundo camino de escritura sobre `payments` que pudiera quedar
+  desprotegido.
+- **Un tenant no puede afectar la caja de otro indicando su
+  `posTerminalId`** en un pago de Payable o en una devolución de venta:
+  la búsqueda de la `CashRegister` OPEN correspondiente
+  (`CashService.registerPayablePaymentMovement`/
+  `registerSaleRefundMovement`) siempre corre dentro del mismo `tx` con
+  el `organizationId` del que hace el request — el `posTerminalId` de
+  otro tenant simplemente no encuentra ninguna fila (RLS + filtro
+  explícito), así que el pago/reembolso se aplica igual pero SIN generar
+  ningún movimiento de caja ajeno. Probado explícitamente en
+  `payables.security.spec.ts` y `sales.security.spec.ts` con dos tenants
+  reales y una caja real de por medio (no solo con un id inventado).
+- **Permisos nuevos, solo el necesario**: `receivables.read` (mismo
+  motivo que `payables.read`/`cash.read`/`expenses.read` en fases
+  anteriores — sin él, AUDITOR no tenía visibilidad de Receivables). No
+  se crearon permisos para reembolsos: reusan `sales.delete`, ya que un
+  reembolso es parte integral de `returnSale`.
+- **Asimetría de bloqueo entre Payables y reembolsos, documentada como
+  decisión, no como inconsistencia**: un pago a proveedor que excede el
+  saldo de la caja elegida se rechaza (`400`, nada se aplica); un
+  reembolso que excedería ese saldo NUNCA bloquea la devolución en sí,
+  solo omite el movimiento de caja. Ver `docs/architecture.md` sección 11
+  para la justificación completa — no es una laguna, es la misma
+  distinción "discrecional vs. corrección obligatoria" que ya regía el
+  resto del sistema.
 
 ## Qué queda pendiente (explícito, no oculto)
 

@@ -22,6 +22,13 @@ interface Payment {
   createdAt: string;
 }
 
+interface Refund {
+  id: string;
+  amount: string;
+  reason?: string | null;
+  createdAt: string;
+}
+
 interface Sale {
   id: string;
   status: string;
@@ -35,6 +42,7 @@ interface Sale {
   customer?: { id: string; name: string } | null;
   items: SaleItem[];
   payments: Payment[];
+  refunds?: Refund[];
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -113,7 +121,12 @@ export default function SaleDetailPage() {
     setActionError(null);
     setBusy(true);
     try {
-      setSale(await api<Sale>(`/sales/${params.id}/return`, { method: "POST" }));
+      setSale(
+        await api<Sale>(`/sales/${params.id}/return`, {
+          method: "POST",
+          body: {},
+        })
+      );
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : "No se pudo procesar la devolución");
     } finally {
@@ -229,6 +242,24 @@ export default function SaleDetailPage() {
             </form>
           )}
         </div>
+
+        {sale.status === "REFUNDED" && (
+          <div className="bg-white rounded-lg border border-zinc-200 p-4 space-y-2">
+            <h2 className="font-medium text-sm">Reembolso</h2>
+            {(sale.refunds ?? []).length === 0 && (
+              <p className="text-sm text-zinc-400">
+                No se generó reembolso — la venta no tenía ningún pago registrado al devolverse.
+              </p>
+            )}
+            {(sale.refunds ?? []).map((r) => (
+              <div key={r.id} className="flex justify-between text-sm border-t border-zinc-100 pt-1">
+                <span>{r.reason || "Devolución de venta"}</span>
+                <span>{new Date(r.createdAt).toLocaleString()}</span>
+                <span className="font-medium">Bs. {Number(r.amount).toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="flex gap-2">
           {canCancel && (

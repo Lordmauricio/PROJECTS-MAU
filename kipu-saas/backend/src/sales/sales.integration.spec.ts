@@ -1,14 +1,19 @@
 import { INestApplication } from '@nestjs/common';
 import {
   ApiAuditLog,
+  ApiCashMovement,
+  ApiCashRegister,
   ApiInventoryMovement,
   ApiInventoryRow,
   ApiSale,
   bootTestApp,
   callApi,
   createProductWithStock,
+  createTestPosTerminal,
+  openCashRegister,
   registerTestOrg,
   TestTenant,
+  uniqueSuffix,
 } from '../test-support/integration-app';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 
@@ -346,4 +351,262 @@ describe('Ventas/POS — ciclo de vida (integración, DB real)', () => {
       expect.arrayContaining(['sales.create', 'sales.confirm', 'sales.return']),
     );
   }, 10000);
+
+  it('11)+12) devolver una venta pagada en efectivo con caja abierta genera un Refund y un CashMovement SALE_REFUND', async () => {
+    const posTerminalId = (
+      await createTestPosTerminal(
+        app,
+        tenant,
+        `Devolución Efectivo ${uniqueSuffix()}`,
+      )
+    ).posTerminalId;
+    const register = await openCashRegister(app, tenant, {
+      openingAmount: 100,
+      posTerminalId,
+    });
+    const { productId } = await createProductWithStock(app, tenant, {
+      name: 'Producto Reembolso Efectivo',
+      price: 25,
+      quantity: 10,
+    });
+    const sale = await callApi<ApiSale>(
+      app,
+      'POST',
+      '/sales',
+      {
+        posTerminalId,
+        warehouseId: tenant.warehouseId,
+        items: [{ productId, quantity: 2 }],
+      },
+      tenant.accessToken,
+    );
+    await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/confirm`,
+      {
+        payments: [
+          {
+            method: 'CASH',
+            amount: 50,
+            idempotencyKey: `reembolso-pago-${uniqueSuffix()}`,
+          },
+        ],
+      },
+      tenant.accessToken,
+    );
+
+    const ret = await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/return`,
+      {},
+      tenant.accessToken,
+    );
+    expect(ret.status).toBe(201);
+    expect(ret.body.status).toBe('REFUNDED');
+
+    const detail = await callApi<ApiCashRegister>(
+      app,
+      'GET',
+      `/cash-registers/${register.id}`,
+      undefined,
+      tenant.accessToken,
+    );
+    const refundMovement = detail.body.movements?.find(
+      (m: ApiCashMovement) => m.type === 'SALE_REFUND',
+    );
+    expect(refundMovement).toBeDefined();
+    expect(Number(refundMovement?.amount)).toBe(50);
+    expect(refundMovement?.reference).toBeTruthy();
+  });
+
+  it('una devolución de venta con método CARD no genera CashMovement (no mueve efectivo físico)', async () => {
+    const posTerminalId = (
+      await createTestPosTerminal(
+        app,
+        tenant,
+        `Devolución Tarjeta ${uniqueSuffix()}`,
+      )
+    ).posTerminalId;
+    const register = await openCashRegister(app, tenant, {
+      openingAmount: 100,
+      posTerminalId,
+    });
+    const { productId } = await createProductWithStock(app, tenant, {
+      name: 'Producto Reembolso Tarjeta',
+      price: 40,
+      quantity: 5,
+    });
+    const sale = await callApi<ApiSale>(
+      app,
+      'POST',
+      '/sales',
+      {
+        posTerminalId,
+        warehouseId: tenant.warehouseId,
+        items: [{ productId, quantity: 1 }],
+      },
+      tenant.accessToken,
+    );
+    await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/confirm`,
+      {
+        payments: [
+          {
+            method: 'CARD',
+            amount: 40,
+            idempotencyKey: `reembolso-tarjeta-${uniqueSuffix()}`,
+          },
+        ],
+      },
+      tenant.accessToken,
+    );
+
+    await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/return`,
+      {},
+      tenant.accessToken,
+    );
+
+    const detail = await callApi<ApiCashRegister>(
+      app,
+      'GET',
+      `/cash-registers/${register.id}`,
+      undefined,
+      tenant.accessToken,
+    );
+    expect(detail.body.movements).toHaveLength(0); // ningún movimiento de caja
+  });
+
+  it('devolver una venta a crédito impaga no genera Refund (nada que devolver) y cancela su Receivable', async () => {
+    const { productId } = await createProductWithStock(app, tenant, {
+      name: 'Producto Devolución Sin Pago',
+      price: 15,
+      quantity: 5,
+    });
+    const customerRes = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/customers',
+      { name: `Cliente Devolución ${uniqueSuffix()}` },
+      tenant.accessToken,
+    );
+    const saleWithCustomer = await callApi<ApiSale>(
+      app,
+      'POST',
+      '/sales',
+      {
+        posTerminalId: tenant.posTerminalId,
+        warehouseId: tenant.warehouseId,
+        customerId: customerRes.body.id,
+        items: [{ productId, quantity: 1 }],
+      },
+      tenant.accessToken,
+    );
+    await confirmSale(saleWithCustomer.body.id);
+
+    const receivablesBefore = await callApi<
+      Array<{ saleId: string; status: string }>
+    >(app, 'GET', '/receivables', undefined, tenant.accessToken);
+    expect(
+      receivablesBefore.body.some((r) => r.saleId === saleWithCustomer.body.id),
+    ).toBe(true);
+
+    const ret = await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${saleWithCustomer.body.id}/return`,
+      {},
+      tenant.accessToken,
+    );
+    expect(ret.status).toBe(201);
+
+    const receivablesAfter = await callApi<
+      Array<{ saleId: string; status: string }>
+    >(app, 'GET', '/receivables', undefined, tenant.accessToken);
+    const receivable = receivablesAfter.body.find(
+      (r) => r.saleId === saleWithCustomer.body.id,
+    );
+    expect(receivable?.status).toBe('CANCELLED');
+  });
+
+  it('devolver una venta ya devuelta (retry/doble click) no duplica el Refund ni el movimiento de caja', async () => {
+    const posTerminalId = (
+      await createTestPosTerminal(
+        app,
+        tenant,
+        `Devolución Retry ${uniqueSuffix()}`,
+      )
+    ).posTerminalId;
+    const register = await openCashRegister(app, tenant, {
+      openingAmount: 100,
+      posTerminalId,
+    });
+    const { productId } = await createProductWithStock(app, tenant, {
+      name: 'Producto Devolución Retry',
+      price: 20,
+      quantity: 5,
+    });
+    const sale = await callApi<ApiSale>(
+      app,
+      'POST',
+      '/sales',
+      {
+        posTerminalId,
+        warehouseId: tenant.warehouseId,
+        items: [{ productId, quantity: 1 }],
+      },
+      tenant.accessToken,
+    );
+    await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/confirm`,
+      {
+        payments: [
+          {
+            method: 'CASH',
+            amount: 20,
+            idempotencyKey: `reembolso-retry-${uniqueSuffix()}`,
+          },
+        ],
+      },
+      tenant.accessToken,
+    );
+
+    const first = await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/return`,
+      {},
+      tenant.accessToken,
+    );
+    const second = await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/return`,
+      {},
+      tenant.accessToken,
+    );
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(second.body.status).toBe('REFUNDED');
+
+    const detail = await callApi<ApiCashRegister>(
+      app,
+      'GET',
+      `/cash-registers/${register.id}`,
+      undefined,
+      tenant.accessToken,
+    );
+    const refundMovements = detail.body.movements?.filter(
+      (m: ApiCashMovement) => m.type === 'SALE_REFUND',
+    );
+    expect(refundMovements).toHaveLength(1); // nunca duplicado
+  });
 });

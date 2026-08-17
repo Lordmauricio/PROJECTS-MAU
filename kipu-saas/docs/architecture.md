@@ -449,3 +449,152 @@ unicidad como un replay válido, en el camino feliz y en el fallback de
 Igual que Ventas, Compras e Inventario, la apertura/cierre de caja, los
 movimientos y los gastos no tienen ninguna relación con el SIN: no
 generan XML, no calculan CUF/CUFD, no firman nada.
+
+## 11. Fase Comercial 6 — Pagos y Cuentas: decisiones técnicas
+
+### Receivable: entidad de proyección, NUNCA un segundo ledger de pagos
+
+La decisión más importante de esta fase. `Receivable` nace de una venta a
+crédito (`saleId` único) pero **no tiene su propia tabla de pagos** — a
+propósito, no por omisión. Un pago sobre una Receivable ES literalmente
+un `Payment` con `saleId` (el mismo modelo que Ventas ya usa desde la
+Fase Comercial 2), y `ReceivablesService.addPayment` no hace más que
+delegar en `SalesService.addPayment` ya existente:
+
+```
+POST /receivables/:id/payments → ReceivablesService.addPayment
+                                → SalesService.addPayment(saleId, dto, ...)
+```
+
+Por qué NO se diseñó como un ledger propio (que habría sido el reflejo
+"obvio" del patrón `Payable`/`Payment.payableId` usado en Compras desde
+la Fase Comercial 3): `Payable` es una entidad genuinamente nueva sin
+"dueño" previo que ya manejara sus pagos — Compras nunca tuvo un flujo de
+cobro antes de Fase 3. `Receivable`, en cambio, nace DESPUÉS de que
+Ventas ya tiene, desde la Fase Comercial 2, un `SalesService.addPayment`
+completo, atómico, idempotente, con lock, con sobrepago bloqueado y —
+desde la Fase Comercial 5 — ya integrado con Caja. Bifurcar en un segundo
+camino de pago (`Payment.receivableId`) habría significado: (a) dos
+lugares donde un pago de un cliente puede vivir según si la venta se
+pagó al confirmar o después, una distinción arbitraria de cara al
+dinero; y (b) mantener dos copias de la misma lógica de
+idempotencia/concurrencia/Caja, con el riesgo real de que diverjan. Se
+optó por la opción que no podía desincronizarse porque no hay nada que
+sincronizar: el saldo de la Receivable SIEMPRE se calcula on-demand
+desde `sale.payments` (`ReceivablesService.attachBalance`), igual que
+Sales ya calculaba `paidTotal`/`balance` desde el día uno.
+
+### Por qué `Receivable`/`Payable` no importan sus módulos entre sí (rompiendo un ciclo de dependencias)
+
+`ReceivablesService.addPayment` necesita llamar a `SalesService`, así
+que `ReceivablesModule` importa `SalesModule` — una dependencia real y
+esperada. El problema inverso — que `SalesService` necesitara
+`ReceivablesService` para crear/sincronizar la Receivable al confirmar
+una venta — habría cerrado un ciclo (`SalesModule` ↔ `ReceivablesModule`),
+algo que Nest permite con `forwardRef()` pero que es una señal de diseño
+a evitar cuando hay una salida más simple. La salida: `SalesService`
+manipula `tx.receivable` DIRECTAMENTE vía Prisma dentro de su propia
+transacción (`createOrSyncReceivable`/`syncReceivableStatus`/
+`cancelReceivableIfAny`, todos métodos privados) — exactamente el mismo
+patrón que `PurchasesService.growOrCreatePayable` ya usaba desde la Fase
+Comercial 3 para escribir en `tx.payable` sin depender de
+`PayablesModule`. `SalesModule` nunca importa `ReceivablesModule`; la
+dependencia es estrictamente unidireccional (Receivables → Sales).
+
+### Integración de Caja con Payables: mismo patrón que Ventas, con una asimetría deliberada
+
+`PayablesService.addPayment` ahora llama a
+`CashService.registerPayablePaymentMovement` (nuevo, `CashModule`
+importado por `PayablesModule`) cuando `method === 'CASH'`. A diferencia
+de una venta (donde el `posTerminalId` viene implícito de la propia
+venta), una Payable no tiene un punto de venta natural — el usuario
+elige explícitamente desde qué caja sale el efectivo
+(`CreatePayablePaymentDto.posTerminalId`, opcional). La asimetría
+deliberada frente a `registerSalePaymentMovement`: un pago a proveedor
+en efectivo que supera el saldo de la caja elegida se **rechaza con
+`400`** (bloquea el pago completo, transacción revertida), mientras que
+un cobro de venta en efectivo nunca se bloquea por Caja. Razón: pagar a
+un proveedor "desde esta caja" es una decisión discrecional del usuario
+sobre SU propio efectivo — igual que un `CASH_OUT` o un `Expense`
+manuales, que ya se bloqueaban así desde la Fase Comercial 5 — mientras
+que cobrar una venta es dinero que ENTRA sin ninguna decisión de saldo
+que tomar (una entrada nunca puede "no alcanzar").
+
+### Reembolsos de venta (`Refund`): por qué SÍ se bloquea Payables pero NO se bloquea un reembolso por falta de saldo en caja
+
+Un reembolso (`SalesService.returnSale` → `Refund` + opcionalmente
+`CashService.registerSaleRefundMovement`) es la tercera variante de
+egreso de caja de esta fase, y aplica el criterio opuesto al de
+Payables: si la caja elegida no tiene saldo suficiente, el movimiento de
+caja simplemente **se omite** (`registerSaleRefundMovement` devuelve
+`null`) — la devolución de mercadería, el `Refund` y el cambio de estado
+de la venta a `REFUNDED` se aplican SIEMPRE. Motivo: un reembolso no es
+una decisión discrecional de gasto — es la reversión obligatoria de una
+venta que ya ocurrió, y bloquear la restauración de inventario de un
+cliente porque la caja específica elegida no tiene efectivo en ESE
+momento sería peor que registrar la deuda y dejar el movimiento de caja
+pendiente de un ajuste manual posterior. La regla general "nunca saldo
+negativo" se sigue cumpliendo (nunca se crea el `CashMovement` que lo
+violaría) — lo que cambia es qué falla cuando no alcanza: para Payables,
+todo el pago; para un reembolso, solo el rastro en caja, nunca la
+devolución en sí.
+
+Modelo de reembolso: se agrega un modelo nuevo, `Refund` (`saleId`,
+`amount`, `reason`, `createdById`), ledger análogo a `PurchaseReturn`
+pero para dinero. El monto reembolsado es siempre el `paidTotal` real de
+la venta (nunca más, nunca una cifra inventada) — si la venta no tenía
+ningún pago (crédito puro, impago), no se crea ningún `Refund` ("genera
+reembolso CUANDO CORRESPONDE"). Del monto total reembolsado, solo la
+porción pagada específicamente en `CASH` genera `CashMovement`
+(`type: 'SALE_REFUND'`) — un reembolso de una venta pagada con
+tarjeta/transferencia/QR no saca billetes de ningún cajón, mismo
+criterio que ya distinguía `SALE_PAYMENT`.
+
+Esta fase sigue tratando la devolución como TOTAL (todos los ítems, sin
+cambios respecto a la Fase Comercial 2) — no se diseñó un modelo de
+devolución/reembolso PARCIAL porque no fue pedido explícitamente. Si se
+autoriza a futuro, un reembolso parcial necesitaría su propio DTO
+(cantidades/montos por ítem) y su propia validación de "no reembolsar
+más de lo pagado por ítem", documentado aparte en ese momento.
+
+### Idempotencia del reembolso: sin `idempotencyKey` propia, por el mismo motivo que `cancel()`
+
+`returnSale()` no exige una `idempotencyKey` en el body — sigue
+exactamente el patrón ya usado por `confirm()`/`cancel()` desde la Fase
+Comercial 2: `lockSale` (`SELECT ... FOR UPDATE`) + chequeo de estado
+(`status === 'REFUNDED'` → devuelve el estado actual sin repetir ningún
+efecto). Esto garantiza que el cuerpo de la función — restaurar stock,
+crear el `Refund`, mover caja, cancelar la Receivable — corre A LO SUMO
+UNA VEZ por venta, incluso con dos requests concurrentes: el lock
+serializa, el segundo ve `REFUNDED` tras el commit del primero y no
+repite nada. Probado explícitamente con dos devoluciones simultáneas de
+la misma venta (`sales.concurrency.spec.ts`): exactamente un
+`CashMovement SALE_REFUND`, nunca dos.
+
+### Coherencia de estados entre Sale/Payment/Receivable/Purchase/Payable/CashMovement/CashRegister
+
+Ninguna de estas entidades tiene una máquina de estados que pueda
+contradecir a otra, porque las relaciones son de una sola dirección y
+mayormente derivadas, no de sincronización bidireccional:
+- `Receivable.status` se deriva y se escribe SOLO desde eventos de
+  `Sale` (crear al confirmar con saldo pendiente, `PENDING`↔`PAID` en
+  cada pago, `CANCELLED` al devolver) — nunca al revés.
+- `Payable.status` sigue siendo autónomo (no deriva de nada, es la
+  fuente de verdad de Compras), sin cambios en esta fase salvo la
+  integración de Caja.
+- `CashMovement` nunca es mutable una vez creado (ledger append-only,
+  igual que `InventoryMovement`/`Payment` desde fases anteriores) — un
+  reembolso o un pago no "corrigen" un movimiento anterior, generan uno
+  nuevo.
+- `CashRegister.status` (`OPEN`/`CLOSED`) es independiente de
+  Sale/Purchase/Receivable/Payable: una caja cerrada simplemente deja de
+  aceptar NUEVOS movimientos (incluidos los automáticos de
+  Ventas/Payables/reembolsos, que se omiten en silencio en vez de
+  fallar), pero nunca revierte ni bloquea la operación de negocio que
+  los originó.
+
+### Pagos y Cuentas no son facturación electrónica
+
+Igual que el resto del sistema, Receivables, la integración de Caja con
+Payables, y los reembolsos de venta no tienen ninguna relación con el
+SIN: no generan XML, no calculan CUF/CUFD, no firman nada.

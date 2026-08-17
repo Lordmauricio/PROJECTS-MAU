@@ -21,9 +21,17 @@ type Tx = Prisma.TransactionClient;
 
 // Qué tipos de `CashMovement` suman o restan del saldo de la caja. El
 // signo NUNCA vive en `amount` (siempre positivo, igual que en
-// `InventoryMovement`/`Payment`) — vive en `type`.
+// `InventoryMovement`/`Payment`) — vive en `type`. `PAYABLE_PAYMENT`
+// (Fase Comercial 6, pago a proveedor en efectivo) y `SALE_REFUND` (Fase
+// Comercial 6, reembolso de venta en efectivo) se suman a los cuatro tipos
+// ya existentes desde la Fase Comercial 5.
 const CASH_INCREASE_TYPES = new Set(['CASH_IN', 'SALE_PAYMENT']);
-const CASH_DECREASE_TYPES = new Set(['CASH_OUT', 'EXPENSE']);
+const CASH_DECREASE_TYPES = new Set([
+  'CASH_OUT',
+  'EXPENSE',
+  'PAYABLE_PAYMENT',
+  'SALE_REFUND',
+]);
 
 interface LockedCashRegister {
   id: string;
@@ -461,6 +469,137 @@ export class CashService {
         reference: params.saleId,
         createdById: params.actorUserId,
         idempotencyKey: params.idempotencyKey,
+      },
+    });
+  }
+
+  /**
+   * Llamado por `PayablesService.addPayment` cuando un pago a un proveedor
+   * es en efectivo. A diferencia de `registerSalePaymentMovement` (un
+   * ingreso, nunca necesita chequeo de saldo), esto es un EGRESO
+   * discretionary — el usuario eligió explícitamente pagar desde ESTA
+   * caja — así que se trata igual que un `CASH_OUT`/`EXPENSE` manual:
+   * si el saldo de la caja no alcanza, se rechaza con `BadRequestException`
+   * y el pago completo se revierte (misma `tx`), en vez de aplicar el pago
+   * sin dejar rastro en caja. Decisión documentada en
+   * `docs/architecture.md` sección 11. Si no hay caja OPEN para el
+   * `posTerminalId` indicado, el pago se aplica igual sin movimiento de
+   * caja (mismo criterio que Ventas desde la Fase Comercial 5).
+   */
+  async registerPayablePaymentMovement(
+    tx: Tx,
+    params: {
+      organizationId: string;
+      posTerminalId: string | null;
+      payableId: string;
+      amount: Prisma.Decimal;
+      actorUserId?: string;
+      idempotencyKey: string;
+    },
+  ) {
+    if (!params.posTerminalId) return null;
+
+    const register = await tx.cashRegister.findFirst({
+      where: {
+        organizationId: params.organizationId,
+        posTerminalId: params.posTerminalId,
+        status: 'OPEN',
+      },
+    });
+    if (!register) return null;
+
+    const locked = await this.lockCashRegister(
+      tx,
+      params.organizationId,
+      register.id,
+    );
+    if (!locked || locked.status !== 'OPEN') return null; // se cerró justo entre el findFirst y acá
+
+    const balance = await this.computeBalance(
+      tx,
+      params.organizationId,
+      register.id,
+      locked.openingAmount,
+    );
+    if (params.amount.gt(balance)) {
+      throw new BadRequestException(
+        `El pago en efectivo (${params.amount.toFixed(2)}) supera el saldo disponible en la caja seleccionada (${balance.toFixed(2)})`,
+      );
+    }
+
+    return tx.cashMovement.create({
+      data: {
+        organizationId: params.organizationId,
+        cashRegisterId: register.id,
+        type: 'PAYABLE_PAYMENT',
+        amount: params.amount,
+        reason: 'Pago a proveedor en efectivo',
+        reference: params.payableId,
+        createdById: params.actorUserId,
+        idempotencyKey: params.idempotencyKey,
+      },
+    });
+  }
+
+  /**
+   * Llamado por `SalesService.returnSale` cuando una devolución reembolsa
+   * dinero pagado en efectivo. A diferencia de `registerPayablePaymentMovement`,
+   * ESTO NO bloquea la operación que lo originó si el saldo no alcanza: una
+   * devolución de mercadería (restaurar inventario, anular la venta) debe
+   * completarse siempre, nunca depender de que la caja tenga
+   * suficiente efectivo en ESE momento — es un ajuste corrector, no un
+   * egreso discrecional. Si el saldo no alcanza, o no hay caja OPEN, se
+   * omite el movimiento de caja (se devuelve `null`) pero el `Refund` en sí
+   * y el resto de la devolución SIEMPRE se aplican. Decisión documentada en
+   * `docs/architecture.md` sección 11.
+   */
+  async registerSaleRefundMovement(
+    tx: Tx,
+    params: {
+      organizationId: string;
+      posTerminalId: string | null;
+      saleId: string;
+      refundId: string;
+      amount: Prisma.Decimal;
+      actorUserId?: string;
+    },
+  ) {
+    if (!params.posTerminalId) return null;
+
+    const register = await tx.cashRegister.findFirst({
+      where: {
+        organizationId: params.organizationId,
+        posTerminalId: params.posTerminalId,
+        status: 'OPEN',
+      },
+    });
+    if (!register) return null;
+
+    const locked = await this.lockCashRegister(
+      tx,
+      params.organizationId,
+      register.id,
+    );
+    if (!locked || locked.status !== 'OPEN') return null;
+
+    const balance = await this.computeBalance(
+      tx,
+      params.organizationId,
+      register.id,
+      locked.openingAmount,
+    );
+    if (params.amount.gt(balance)) return null; // ver comentario del método: se omite, no se bloquea la devolución
+
+    return tx.cashMovement.create({
+      data: {
+        organizationId: params.organizationId,
+        cashRegisterId: register.id,
+        type: 'SALE_REFUND',
+        amount: params.amount,
+        reason: 'Reembolso de venta en efectivo',
+        reference: params.refundId,
+        createdById: params.actorUserId,
+        idempotencyKey: `sale-refund-${params.saleId}`,
       },
     });
   }

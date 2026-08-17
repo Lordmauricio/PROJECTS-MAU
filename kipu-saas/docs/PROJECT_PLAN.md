@@ -153,8 +153,8 @@ concurrencia. Ver `docs/architecture.md` (sección "Fase Comercial 2") y
       visibles).
 - [x] **`Sale` NO es `Invoice`.** El modelo `Invoice`/`TaxConfiguration`
       sigue existiendo solo como placeholder genérico desde Fase 1 (ver
-      Fase Comercial 6 más abajo) — Ventas/POS de esta fase no lo toca ni
-      depende de él. Una `Sale` podrá generar en el futuro un documento
+      Fase Comercial 7 — Facturación/Fiscal/SIN más abajo) — Ventas/POS de
+      esta fase no lo toca ni depende de él. Una `Sale` podrá generar en el futuro un documento
       fiscal a través de un Fiscal Engine independiente, pero esa
       integración NO se implementó acá y no está en el alcance de esta
       fase.
@@ -436,32 +436,127 @@ devolución a un proveedor dejaría la `Payable` por debajo de lo ya
 pagado, es decir, el proveedor terminaría debiéndonos) — sigue
 rechazándose explícitamente, sin cambios.
 
+## Fase Comercial 6 — Pagos y Cuentas ✅
+
+Entregable: cierra el núcleo de pagos y cuentas del SaaS comercial —
+Receivables reales (antes solo esquema), la integración de Caja con los
+pagos a proveedores (Payables) que faltaba desde la Fase Comercial 5, y
+la devolución de venta ahora genera un reembolso real y trazable,
+integrado con Caja cuando corresponde. Ver `docs/architecture.md`
+sección 11 para el detalle técnico completo.
+
+- [x] `Receivable` — módulo de negocio real (`backend/src/receivables/`),
+      antes placeholder de esquema desde la Fase 1. Se crea automáticamente
+      al confirmar una venta a crédito (con cliente, con saldo pendiente)
+      dentro de la MISMA transacción de `SalesService.confirm` — mismo
+      momento en que Compras genera la `Payable` al recibir mercadería.
+      `@@unique([saleId])` + chequeo previo garantizan que nunca se
+      duplique para la misma venta.
+- [x] **Decisión de diseño central**: una Receivable NO tiene su propio
+      ledger de pagos — pagarla delega íntegramente en
+      `SalesService.addPayment` (el mismo `Payment.saleId` de siempre), así
+      que reusa automáticamente TODA su idempotencia, su lock, su rechazo de
+      sobrepago, y su integración con Caja de las Fases Comerciales 2 y 5,
+      sin duplicar ni un ápice de esa lógica.
+- [x] Payables ↔ Caja: `PayablesService.addPayment` ahora acepta un
+      `posTerminalId` opcional; un pago en efectivo con caja abierta genera
+      su `CashMovement` (`type: PAYABLE_PAYMENT`) atómicamente. A diferencia
+      de Ventas, un pago a proveedor que supera el saldo de la caja elegida
+      SÍ se rechaza (`400`, transacción completa revertida) — decisión
+      explícita documentada antes de implementarla (ver architecture.md).
+- [x] Devolución de venta → Reembolso: `SalesService.returnSale` ahora
+      calcula lo efectivamente pagado, crea un `Refund` (modelo nuevo,
+      ledger análogo a `PurchaseReturn`) cuando corresponde (nunca si la
+      venta no tenía pagos), y genera un `CashMovement`
+      (`type: SALE_REFUND`) por la porción pagada en efectivo — que a
+      diferencia de Payables, SE OMITE (no bloquea la devolución) si la
+      caja elegida no tiene saldo suficiente, decisión explícita distinta y
+      documentada. La Receivable asociada (si existía) pasa a `CANCELLED`.
+      Idempotente por el mismo mecanismo de lock que `cancel()` — sin
+      `idempotencyKey` propia, probado con dos devoluciones concurrentes de
+      la misma venta (exactamente un `Refund`, un `CashMovement`).
+- [x] Idempotencia y concurrencia con el mismo rigor de siempre: dos pagos
+      concurrentes que juntos superarían un saldo (Receivable o Payable),
+      retry/doble click en cada operación, pago concurrente con cierre de
+      caja, dos reembolsos simultáneos — todo probado, nunca doble efecto,
+      nunca saldo negativo.
+- [x] Coherencia de estados entre `Sale`/`Payment`/`Receivable`/
+      `Purchase`/`Payable`/`CashMovement`/`CashRegister`: `Receivable.status`
+      se deriva y escribe únicamente desde eventos de `Sale` (nunca al
+      revés), y ningún `CashMovement` es mutable — nunca puede haber un
+      estado contradictorio entre estas entidades por construcción.
+- [x] Multi-tenant: RLS ya cubría `receivables` desde la migración inicial;
+      la tabla nueva `refunds` la agrega igual que el resto del esquema.
+      Probado con HTTP real y SQL crudo, incluyendo el caso específico de
+      esta fase (un tenant no puede mover la caja de otro indicando su
+      `posTerminalId` en un pago/reembolso — la query queda scoped por RLS
+      al organizationId del que hace el request, así que simplemente no
+      encuentra ninguna caja y el movimiento se omite).
+- [x] Permisos: se agregó `receivables.read` (antes solo `receivables.manage`
+      existía, mismo motivo que llevó a agregar `payables.read`/`cash.read`/
+      `expenses.read` en fases anteriores — sin él, AUDITOR no podía ver
+      nada de Receivables). No se crearon permisos nuevos para Payables ni
+      para reembolsos: se reutilizan `payables.manage`/`sales.delete`.
+- [x] Frontend real: `/receivables` (listado con filtro por estado) y
+      `/receivables/[id]` (detalle, historial de pagos, formulario de
+      cobro); `/payables` (listado, enlaza al detalle de la compra donde ya
+      vivía el formulario de pago, ahora con selector de caja); el
+      formulario de pago de `/purchases/[id]` gana el selector de caja
+      abierta; `/sales/[id]` muestra una sección "Reembolso" cuando la
+      venta está `REFUNDED`.
+- [x] Auditoría: `receivables.create`, `receivables.payment.create`,
+      `payables.payment.create` (ya existía), `sales.refund.create`.
+- [x] Regresión verificada: los 102 tests de Ventas+Compras+Inventario+Caja
+      de las Fases Comerciales 2-5 siguen pasando sin cambios (138 tests en
+      total con los 36 nuevos de esta fase), y un recorrido en navegador
+      real confirmó el flujo completo: venta a crédito → Receivable →
+      cobro en efectivo → `CashMovement` visible en Caja; y por separado,
+      venta pagada en efectivo → devolución → `Refund` visible en el
+      detalle de la venta → `CashMovement SALE_REFUND` visible en Caja.
+      También se verificó visualmente el rechazo correcto (mensaje de error
+      claro en la UI) de un pago a proveedor que superaba el saldo de la
+      caja elegida.
+
+**Pendiente explícito (NO pedido en esta fase)**: los pagos de `Payable`
+solo se enlazan a Caja cuando el usuario indica explícitamente una caja —
+no hay una noción de "caja por defecto" para Compras (Compras no tiene un
+punto de venta como Ventas). Tampoco se resolvió la dependencia
+documentada en la Fase Comercial 3 (devolución a proveedor que dejaría la
+Payable por debajo de lo ya pagado, es decir, el proveedor terminaría
+debiéndonos) — sigue rechazándose explícitamente, sin cambios; no fue
+pedida en esta fase tampoco. Un modelo de devolución/reembolso PARCIAL
+(por ítem) queda fuera de alcance — la devolución sigue siendo total,
+como desde la Fase Comercial 2.
+
 ## Fases siguientes (dependen de la Parte 2 del prompt para el detalle fino)
 
-- **Fase Comercial 6 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/
+- **Fase Comercial 7 — Facturación / Fiscal / SIN**: `Invoice`/`InvoiceItem`/
   `InvoiceEvent`/`TaxConfiguration` ya modelados de forma genérica, **sin**
   campos específicos del SIN todavía. Antes de tocar código fiscal real,
   hay que investigar la normativa vigente (RND, Anexo Técnico, algoritmo de
   CUF, servicios SOAP/REST) tal como exige el prompt — no se inventan
   reglas fiscales. Fuera de alcance hasta nueva autorización explícita.
-- **Fase Comercial 7 — Reportes**: depende de que exista actividad real en
+  (Renumerada: este documento la listaba antes como "Fase Comercial 6",
+  pero la Fase Comercial 6 autorizada y construida fue Pagos y Cuentas,
+  arriba — Facturación pasa a este número para no chocar con ella.)
+- **Fase Comercial 8 — Reportes**: depende de que exista actividad real en
   ventas/compras/inventario/caja/facturación para tener algo que reportar
   (ventas ya generan esa actividad desde esta fase).
-- **Fase Comercial 8 — Recibos comerciales no fiscales**: numeración
+- **Fase Comercial 9 — Recibos comerciales no fiscales**: numeración
   comercial segura bajo concurrencia, snapshot inmutable, PDF A4/ticket
   80mm. Explícitamente distinto de un documento fiscal — ver sección
   "Recibos vs. Facturación" más abajo.
-- **Fase Comercial 9 — Notificaciones y proveedor de email real**: hoy
+- **Fase Comercial 10 — Notificaciones y proveedor de email real**: hoy
   `MailService` es un stub que loguea; `notifications`/`files` tienen
   tabla pero no API.
-- **Fase Comercial 10 — Suscripciones y pagos reales**: hoy existe un plan
+- **Fase Comercial 11 — Suscripciones y pagos reales**: hoy existe un plan
   "Gratis" automático y la página de Suscripción es de solo lectura; falta
   pasarela de pago para cambiar de plan.
 
 ## Recibos vs. Facturación (aclaración explícita, sección 3/4 del master spec)
 
 KIPU emite actualmente, y seguirá emitiendo hasta nueva orden, **recibos
-comerciales NO FISCALES** (Fase Comercial 8, todavía no implementada). Un
+comerciales NO FISCALES** (Fase Comercial 9, todavía no implementada). Un
 recibo:
 
 - NO es una factura ni un documento fiscal, y nunca se presenta como tal.

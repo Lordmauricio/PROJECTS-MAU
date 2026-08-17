@@ -585,9 +585,11 @@ model Sale {
   cancelledAt DateTime?
   refundedAt  DateTime?
 
-  items    SaleItem[]
-  payments Payment[]
-  invoice  Invoice?
+  items      SaleItem[]
+  payments   Payment[]
+  invoice    Invoice?
+  receivable Receivable?
+  refunds    Refund[]
 
   @@index([organizationId])
   @@index([warehouseId])
@@ -921,6 +923,13 @@ model Receivable {
   organizationId String
   customerId     String
   customer       Customer @relation(fields: [customerId], references: [id])
+  // Una Receivable nace SIEMPRE de una venta a crédito (Fase Comercial 6) —
+  // @unique porque a lo sumo puede haber una por venta ("No crear
+  // Receivable duplicado para una misma venta"). Nullable por consistencia
+  // con `Payable.purchaseId` (NULLs no colisionan entre sí en Postgres), no
+  // porque hoy exista un camino que la deje sin venta asociada.
+  saleId String? @unique
+  sale   Sale?   @relation(fields: [saleId], references: [id])
 
   amount  Decimal                 @db.Decimal(12, 2)
   dueDate DateTime
@@ -932,6 +941,30 @@ model Receivable {
   @@index([organizationId])
   @@index([customerId])
   @@map("receivables")
+}
+
+// Reembolso de una venta devuelta (Fase Comercial 6): registra CUÁNTO se le
+// debe devolver al cliente (lo efectivamente pagado hasta la devolución),
+// separado del `Payment` original — mismo principio de ledger que
+// `PurchaseReturn` respecto de `PurchaseReceipt`. No lleva `idempotencyKey`
+// propia: `SalesService.returnSale()` ya es idempotente por lock +
+// chequeo de estado (mismo patrón que `cancel()`), así que esta fila se
+// crea a lo sumo una vez por venta.
+model Refund {
+  id             String @id @default(cuid())
+  organizationId String
+  saleId         String
+  sale           Sale   @relation(fields: [saleId], references: [id])
+
+  amount Decimal @db.Decimal(12, 2)
+  reason String?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([saleId])
+  @@map("refunds")
 }
 
 model Payable {

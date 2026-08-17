@@ -147,6 +147,11 @@ export const PERMISSIONS_CATALOG: PermissionDef[] = [
     description: 'Gestionar cuentas por cobrar',
   },
   {
+    key: 'receivables.read',
+    module: 'finance',
+    description: 'Ver cuentas por cobrar',
+  },
+  {
     key: 'payables.manage',
     module: 'finance',
     description: 'Registrar pagos sobre cuentas por pagar',
@@ -233,6 +238,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
     'purchases.manage',
     'purchases.read',
     'payables.read',
+    'receivables.read',
     'cash.manage',
     'cash.read',
     'expenses.manage',
@@ -245,6 +251,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
   ACCOUNTANT: [
     'reports.read',
     'receivables.manage',
+    'receivables.read',
     'payables.manage',
     'payables.read',
     'cash.read',

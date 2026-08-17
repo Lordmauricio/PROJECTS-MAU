@@ -83,9 +83,17 @@ export interface ApiPayment {
   idempotencyKey?: string | null;
 }
 
+export interface ApiRefund {
+  id: string;
+  saleId: string;
+  amount: string;
+  reason?: string | null;
+}
+
 export interface ApiSale {
   id: string;
   status: string;
+  customerId?: string | null;
   subtotal: string;
   discount: string;
   total: string;
@@ -93,6 +101,17 @@ export interface ApiSale {
   balance: string;
   items: ApiSaleItem[];
   payments: ApiPayment[];
+}
+
+export interface ApiReceivable {
+  id: string;
+  customerId: string;
+  saleId: string | null;
+  amount: string;
+  status: string;
+  paidTotal?: string;
+  balance?: string;
+  sale?: { id: string; total: string; status: string; payments?: ApiPayment[] };
 }
 
 export interface ApiInventoryRow {
@@ -446,6 +465,27 @@ export async function createTestSupplier(
     );
   }
   return { supplierId: res.body.id };
+}
+
+/** Crea un cliente (usado por los tests de Receivables — una venta a crédito necesita cliente). */
+export async function createTestCustomer(
+  app: INestApplication,
+  tenant: TestTenant,
+  name: string,
+): Promise<{ customerId: string }> {
+  const res = await callApi<{ id: string }>(
+    app,
+    'POST',
+    '/customers',
+    { name },
+    tenant.accessToken,
+  );
+  if (res.status !== 201) {
+    throw new Error(
+      `crear cliente debía dar 201, dio ${res.status}: ${JSON.stringify(res.body)}`,
+    );
+  }
+  return { customerId: res.body.id };
 }
 
 /** Crea un producto sin stock (para tests de Compras, donde el stock lo genera la recepción, no una carga manual). */

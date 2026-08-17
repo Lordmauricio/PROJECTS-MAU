@@ -17,6 +17,7 @@ import {
   SalePaymentDto,
 } from './dto/payment.dto';
 import { ListSalesQueryDto } from './dto/list-sales-query.dto';
+import { ReturnSaleDto } from './dto/return-sale.dto';
 
 type Tx = Prisma.TransactionClient;
 
@@ -192,6 +193,7 @@ export class SalesService {
     actorUserId: string,
   ) {
     const candidateKeys = (dto.payments ?? []).map((p) => p.idempotencyKey);
+    let receivableCreated = false;
     const result = await this.runOrResolvePaymentConflict(
       organizationId,
       saleId,
@@ -260,6 +262,23 @@ export class SalesService {
           data: { status, confirmedAt: new Date() },
         });
 
+        // Venta a crédito (saldo pendiente al confirmar): genera su
+        // Receivable automáticamente, mismo momento en que Compras genera
+        // la Payable (cuando la obligación se vuelve real) — ver
+        // `createOrSyncReceivable`. Se guarda en una variable de closure en
+        // vez de devolverla junto al Sale para no cambiar la forma de
+        // retorno que espera `runOrResolvePaymentConflict` (compartida con
+        // `addPayment`) — si este intento resulta ser un replay (P2002 o
+        // "ya estaba confirmada"), `receivableCreated` simplemente queda en
+        // `false`, que es la respuesta correcta (no se creó nada nuevo).
+        const receivableOutcome = await this.createOrSyncReceivable(
+          tx,
+          organizationId,
+          { id: saleId, customerId: locked.customerId, total: locked.total },
+          status,
+        );
+        receivableCreated = receivableOutcome?.created ?? false;
+
         return this.loadFull(tx, organizationId, saleId);
       },
     );
@@ -272,6 +291,22 @@ export class SalesService {
       entityId: saleId,
       metadata: { status: result.status },
     });
+
+    if (receivableCreated) {
+      const receivable = await this.tenantPrisma.run(organizationId, (tx) =>
+        tx.receivable.findUnique({ where: { saleId } }),
+      );
+      if (receivable) {
+        await this.audit.log({
+          organizationId,
+          userId: actorUserId,
+          action: 'receivables.create',
+          entityType: 'Receivable',
+          entityId: receivable.id,
+          metadata: { saleId, amount: receivable.amount.toString() },
+        });
+      }
+    }
 
     return this.attachBalance(result);
   }
@@ -332,6 +367,7 @@ export class SalesService {
           where: { id: saleId },
           data: { status: newStatus },
         });
+        await this.syncReceivableStatus(tx, saleId, newStatus);
 
         return this.loadFull(tx, organizationId, saleId);
       },
@@ -380,20 +416,40 @@ export class SalesService {
 
   /**
    * Devolución total de una venta confirmada: restaura el stock (movimiento
-   * RETURN) y pasa la venta a REFUNDED. Nunca borra ni reescribe la venta
-   * original — items y pagos históricos quedan intactos para trazabilidad.
-   * Devolución de dinero (caja/cuentas) queda fuera de esta fase.
+   * RETURN), genera el reembolso correspondiente si se había pagado algo, y
+   * pasa la venta a REFUNDED. Nunca borra ni reescribe la venta original —
+   * items, pagos y el Payment histórico quedan intactos para trazabilidad;
+   * el reembolso es una fila nueva (`Refund`), nunca una resta sobre el
+   * Payment original.
+   *
+   * Idempotencia: mismo patrón que `cancel()` — el lock + chequeo de estado
+   * (`status === 'REFUNDED'` → responde el estado actual sin repetir ningún
+   * efecto) ya garantiza que esto corre A LO SUMO UNA VEZ por venta, incluso
+   * con dos requests concurrentes (el lock serializa, el segundo ve
+   * `REFUNDED` tras el commit del primero). Por eso `Refund` no necesita su
+   * propia `idempotencyKey`: nunca hay una carrera real que pueda crear dos.
+   *
+   * Modelo de reembolso: esta fase sigue tratando la devolución como
+   * TOTAL (todos los ítems, ver `RETURNABLE_STATUSES`/el bucle de abajo) —
+   * no se diseñó un modelo de devolución PARCIAL (ni de stock ni de dinero)
+   * porque no fue pedido explícitamente; si se autoriza a futuro, el
+   * reembolso parcial necesitaría su propio DTO con cantidades/montos por
+   * ítem, documentado aparte.
    */
   async returnSale(
     organizationId: string,
     saleId: string,
+    dto: ReturnSaleDto,
     actorUserId: string,
   ) {
     const result = await this.tenantPrisma.run(organizationId, async (tx) => {
       const locked = await this.lockSale(tx, organizationId, saleId);
       if (!locked) throw new NotFoundException('Venta no encontrada');
       if (locked.status === 'REFUNDED')
-        return this.loadFull(tx, organizationId, saleId);
+        return {
+          sale: await this.loadFull(tx, organizationId, saleId),
+          refund: null,
+        };
       if (!RETURNABLE_STATUSES.includes(locked.status)) {
         throw new ConflictException(
           `Solo se puede devolver una venta confirmada (estado actual: ${locked.status})`,
@@ -419,11 +475,49 @@ export class SalesService {
         });
       }
 
+      // Reembolso: se le debe devolver al cliente lo efectivamente pagado
+      // (nunca más que eso — no se "reembolsa" una venta a crédito impaga).
+      const payments = await tx.payment.findMany({
+        where: { saleId, organizationId },
+      });
+      const paidTotal = sumMoney(payments.map((p) => p.amount));
+      let refund: { id: string; amount: Prisma.Decimal } | null = null;
+      if (paidTotal.gt(ZERO_MONEY)) {
+        refund = await tx.refund.create({
+          data: {
+            organizationId,
+            saleId,
+            amount: paidTotal,
+            reason: dto.reason,
+            createdById: actorUserId,
+          },
+        });
+
+        // Del total reembolsado, solo la porción pagada en EFECTIVO mueve
+        // caja física — un reembolso de una venta pagada con tarjeta no
+        // saca billetes del cajón.
+        const cashPortion = sumMoney(
+          payments.filter((p) => p.method === 'CASH').map((p) => p.amount),
+        );
+        if (cashPortion.gt(ZERO_MONEY)) {
+          await this.cash.registerSaleRefundMovement(tx, {
+            organizationId,
+            posTerminalId: dto.posTerminalId ?? locked.posTerminalId,
+            saleId,
+            refundId: refund.id,
+            amount: cashPortion,
+            actorUserId,
+          });
+        }
+      }
+
       await tx.sale.update({
         where: { id: saleId },
         data: { status: 'REFUNDED', refundedAt: new Date() },
       });
-      return this.loadFull(tx, organizationId, saleId);
+      await this.cancelReceivableIfAny(tx, saleId);
+
+      return { sale: await this.loadFull(tx, organizationId, saleId), refund };
     });
 
     await this.audit.log({
@@ -434,7 +528,18 @@ export class SalesService {
       entityId: saleId,
     });
 
-    return this.attachBalance(result);
+    if (result.refund) {
+      await this.audit.log({
+        organizationId,
+        userId: actorUserId,
+        action: 'sales.refund.create',
+        entityType: 'Refund',
+        entityId: result.refund.id,
+        metadata: { saleId, amount: result.refund.amount.toString() },
+      });
+    }
+
+    return this.attachBalance(result.sale);
   }
 
   // ---------------------------------------------------------------------
@@ -446,9 +551,10 @@ export class SalesService {
         status: string;
         warehouseId: string | null;
         posTerminalId: string | null;
+        customerId: string | null;
         total: Prisma.Decimal;
       }>
-    >`SELECT id, status, "warehouseId", "posTerminalId", total FROM sales WHERE id = ${saleId} AND "organizationId" = ${organizationId} FOR UPDATE`;
+    >`SELECT id, status, "warehouseId", "posTerminalId", "customerId", total FROM sales WHERE id = ${saleId} AND "organizationId" = ${organizationId} FOR UPDATE`;
     return rows[0] ?? null;
   }
 
@@ -460,6 +566,7 @@ export class SalesService {
           include: { product: { select: { id: true, name: true, sku: true } } },
         },
         payments: { orderBy: { createdAt: 'asc' } },
+        refunds: { orderBy: { createdAt: 'asc' } },
         customer: { select: { id: true, name: true } },
       },
     });
@@ -593,5 +700,84 @@ export class SalesService {
     });
 
     return amount;
+  }
+
+  /**
+   * Crea o sincroniza la Receivable de una venta, dentro de la MISMA
+   * transacción que confirma la venta — mismo patrón que
+   * `PurchasesService.growOrCreatePayable` (manipula `tx.receivable`
+   * directamente vía Prisma, sin depender de un `ReceivablesModule`: evita
+   * una dependencia circular, ya que `ReceivablesService.addPayment`
+   * necesita llamar a `SalesService.addPayment`, nunca al revés).
+   *
+   * Solo se crea/mantiene si: (a) la venta tiene cliente asociado (una
+   * Receivable siempre le pertenece a alguien) y (b) todavía queda saldo
+   * pendiente (`status !== 'PAID'`) — una venta pagada por completo al
+   * confirmar no es "a crédito", no genera Receivable. `@@unique([saleId])`
+   * en el schema es la garantía de "nunca duplicada para la misma venta" a
+   * nivel de base — acá además se verifica antes de insertar para no
+   * depender solo del catch de un error.
+   */
+  private async createOrSyncReceivable(
+    tx: Tx,
+    organizationId: string,
+    sale: { id: string; customerId: string | null; total: Prisma.Decimal },
+    saleStatus: string,
+  ): Promise<{ created: boolean } | null> {
+    if (!sale.customerId) return null;
+    if (saleStatus === 'PAID') return null;
+
+    const existing = await tx.receivable.findUnique({
+      where: { saleId: sale.id },
+    });
+    if (existing) {
+      if (existing.status !== 'PENDING') {
+        await tx.receivable.update({
+          where: { id: existing.id },
+          data: { status: 'PENDING' },
+        });
+      }
+      return { created: false };
+    }
+
+    await tx.receivable.create({
+      data: {
+        organizationId,
+        customerId: sale.customerId,
+        saleId: sale.id,
+        amount: sale.total,
+        dueDate: new Date(),
+        status: 'PENDING',
+      },
+    });
+    return { created: true };
+  }
+
+  /** Refleja en la Receivable (si existe) el nuevo status de la venta tras un pago adicional. Nunca crea una Receivable nueva acá — eso solo pasa al confirmar. */
+  private async syncReceivableStatus(
+    tx: Tx,
+    saleId: string,
+    saleStatus: string,
+  ) {
+    const existing = await tx.receivable.findUnique({ where: { saleId } });
+    if (!existing) return;
+    const newStatus = saleStatus === 'PAID' ? 'PAID' : 'PENDING';
+    if (existing.status !== newStatus) {
+      await tx.receivable.update({
+        where: { id: existing.id },
+        data: { status: newStatus },
+      });
+    }
+  }
+
+  /** Al devolver una venta, su Receivable (si existía) deja de tener sentido — la deuda quedó anulada, no pagada. */
+  private async cancelReceivableIfAny(tx: Tx, saleId: string) {
+    const existing = await tx.receivable.findUnique({ where: { saleId } });
+    if (!existing) return;
+    if (existing.status === 'CANCELLED') return;
+    await tx.receivable.update({
+      where: { id: existing.id },
+      data: { status: 'CANCELLED' },
+    });
   }
 }

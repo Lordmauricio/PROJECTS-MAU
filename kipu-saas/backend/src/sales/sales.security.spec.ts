@@ -1,12 +1,16 @@
 import { INestApplication } from '@nestjs/common';
 import {
+  ApiCashRegister,
   ApiSale,
   bootTestApp,
   callApi,
   createProductWithStock,
+  createTestPosTerminal,
   createUserWithRole,
+  openCashRegister,
   registerTestOrg,
   TestTenant,
+  uniqueSuffix,
 } from '../test-support/integration-app';
 
 describe('Ventas/POS — tenant isolation, RLS y RBAC (integración, DB real)', () => {
@@ -178,5 +182,59 @@ describe('Ventas/POS — tenant isolation, RLS y RBAC (integración, DB real)', 
   it('un usuario sin ningún token no puede acceder a /sales (401, no 200 ni 500)', async () => {
     const res = await callApi<ApiSale[]>(app, 'GET', '/sales');
     expect(res.status).toBe(401);
+  });
+
+  it('Tenant B no puede hacer que el reembolso de SU PROPIA venta mueva la caja de Tenant A indicando su posTerminalId', async () => {
+    const posTerminalIdA = (
+      await createTestPosTerminal(
+        app,
+        tenantA,
+        `Terminal Reembolso A ${uniqueSuffix()}`,
+      )
+    ).posTerminalId;
+    const registerA = await openCashRegister(app, tenantA, {
+      openingAmount: 200,
+      posTerminalId: posTerminalIdA,
+    });
+
+    const { productId } = await createProductWithStock(app, tenantB, {
+      name: 'Producto Reembolso Cross Tenant',
+      price: 35,
+      quantity: 5,
+    });
+    const sale = await createSaleAs(tenantB, tenantB.accessToken, productId);
+    await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/confirm`,
+      {
+        payments: [
+          {
+            method: 'CASH',
+            amount: 35,
+            idempotencyKey: `cross-reembolso-pago-${uniqueSuffix()}`,
+          },
+        ],
+      },
+      tenantB.accessToken,
+    );
+
+    const ret = await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/return`,
+      { posTerminalId: posTerminalIdA }, // terminal de OTRO tenant
+      tenantB.accessToken,
+    );
+    expect(ret.status).toBe(201); // la devolución de SU PROPIA venta es válida
+
+    const registerAAfter = await callApi<ApiCashRegister>(
+      app,
+      'GET',
+      `/cash-registers/${registerA.id}`,
+      undefined,
+      tenantA.accessToken,
+    );
+    expect(registerAAfter.body.movements).toHaveLength(0); // nunca se tocó la caja de A
   });
 });

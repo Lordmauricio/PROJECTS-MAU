@@ -64,12 +64,21 @@ export default function PurchaseDetailPage() {
   const [returnQty, setReturnQty] = useState<Record<string, string>>({});
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("CASH");
+  const [payPosTerminalId, setPayPosTerminalId] = useState("");
+  const [openRegisters, setOpenRegisters] = useState<{ id: string; posTerminalId: string; posTerminal?: { name: string } }[]>([]);
 
   async function load() {
     setLoading(true);
     setLoadError(null);
     try {
-      setPurchase(await api<Purchase>(`/purchases/${params.id}`));
+      const [p, registers] = await Promise.all([
+        api<Purchase>(`/purchases/${params.id}`),
+        api<{ id: string; posTerminalId: string; posTerminal?: { name: string } }[]>(
+          "/cash-registers?status=OPEN"
+        ).catch(() => []),
+      ]);
+      setPurchase(p);
+      setOpenRegisters(registers);
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la compra");
     } finally {
@@ -164,7 +173,12 @@ export default function PurchaseDetailPage() {
     try {
       await api(`/payables/${purchase.payables[0].id}/payments`, {
         method: "POST",
-        body: { method: payMethod, amount: Number(payAmount), idempotencyKey: newIdempotencyKey() },
+        body: {
+          method: payMethod,
+          amount: Number(payAmount),
+          posTerminalId: payMethod === "CASH" && payPosTerminalId ? payPosTerminalId : undefined,
+          idempotencyKey: newIdempotencyKey(),
+        },
       });
       setPayAmount("");
       load();
@@ -330,13 +344,27 @@ export default function PurchaseDetailPage() {
               · <span className="text-xs bg-zinc-100 rounded px-2 py-0.5">{payable.status}</span>
             </p>
             {Number(payable.balance ?? 0) > 0 && (
-              <form onSubmit={submitPayment} className="flex gap-2 items-center pt-2">
+              <form onSubmit={submitPayment} className="flex flex-wrap gap-2 items-center pt-2">
                 <select value={payMethod} onChange={(e) => setPayMethod(e.target.value)} className="rounded border border-zinc-300 px-2 py-1 text-sm">
                   <option value="CASH">Efectivo</option>
                   <option value="CARD">Tarjeta</option>
                   <option value="TRANSFER">Transferencia</option>
                   <option value="QR">QR</option>
                 </select>
+                {payMethod === "CASH" && (
+                  <select
+                    value={payPosTerminalId}
+                    onChange={(e) => setPayPosTerminalId(e.target.value)}
+                    className="rounded border border-zinc-300 px-2 py-1 text-sm"
+                  >
+                    <option value="">Sin caja (no registra movimiento)</option>
+                    {openRegisters.map((r) => (
+                      <option key={r.id} value={r.posTerminalId}>
+                        {r.posTerminal?.name ?? r.posTerminalId}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <input
                   type="number"
                   min={0.01}

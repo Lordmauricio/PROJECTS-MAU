@@ -1,12 +1,17 @@
 import { INestApplication } from '@nestjs/common';
 import {
+  ApiCashMovement,
+  ApiCashRegister,
   ApiInventoryRow,
   ApiSale,
   bootTestApp,
   callApi,
   createProductWithStock,
+  createTestPosTerminal,
+  openCashRegister,
   registerTestOrg,
   TestTenant,
+  uniqueSuffix,
 } from '../test-support/integration-app';
 
 describe('Ventas/POS — concurrencia e idempotencia (integración, DB real)', () => {
@@ -148,5 +153,83 @@ describe('Ventas/POS — concurrencia e idempotencia (integración, DB real)', (
     );
     const row = stock.body.find((r) => r.productId === productId);
     expect(Number(row?.quantity)).toBe(0); // ni negativo ni sobrevendido: exactamente 1 unidad descontada
+  }, 15000);
+
+  it('dos reembolsos simultáneos de la MISMA venta: exactamente uno se aplica, nunca doble Refund ni doble movimiento de caja', async () => {
+    const posTerminalId = (
+      await createTestPosTerminal(
+        app,
+        tenant,
+        `Reembolso Concurrente ${uniqueSuffix()}`,
+      )
+    ).posTerminalId;
+    const register = await openCashRegister(app, tenant, {
+      openingAmount: 100,
+      posTerminalId,
+    });
+    const { productId } = await createProductWithStock(app, tenant, {
+      name: 'Producto Reembolso Concurrente',
+      price: 30,
+      quantity: 5,
+    });
+    const sale = await callApi<ApiSale>(
+      app,
+      'POST',
+      '/sales',
+      {
+        posTerminalId,
+        warehouseId: tenant.warehouseId,
+        items: [{ productId, quantity: 1 }],
+      },
+      tenant.accessToken,
+    );
+    await callApi<ApiSale>(
+      app,
+      'POST',
+      `/sales/${sale.body.id}/confirm`,
+      {
+        payments: [
+          {
+            method: 'CASH',
+            amount: 30,
+            idempotencyKey: `reembolso-conc-${uniqueSuffix()}`,
+          },
+        ],
+      },
+      tenant.accessToken,
+    );
+
+    const [a, b] = await Promise.all([
+      callApi<ApiSale>(
+        app,
+        'POST',
+        `/sales/${sale.body.id}/return`,
+        {},
+        tenant.accessToken,
+      ),
+      callApi<ApiSale>(
+        app,
+        'POST',
+        `/sales/${sale.body.id}/return`,
+        {},
+        tenant.accessToken,
+      ),
+    ]);
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    expect(a.body.status).toBe('REFUNDED');
+    expect(b.body.status).toBe('REFUNDED');
+
+    const detail = await callApi<ApiCashRegister>(
+      app,
+      'GET',
+      `/cash-registers/${register.id}`,
+      undefined,
+      tenant.accessToken,
+    );
+    const refundMovements = detail.body.movements?.filter(
+      (m: ApiCashMovement) => m.type === 'SALE_REFUND',
+    );
+    expect(refundMovements).toHaveLength(1); // el lock de la venta serializa: solo el primero aplica el reembolso
   }, 15000);
 });

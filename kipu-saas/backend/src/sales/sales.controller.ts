@@ -16,6 +16,7 @@ import { SalesService } from './sales.service';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { ConfirmSaleDto, CreatePaymentDto } from './dto/payment.dto';
 import { ListSalesQueryDto } from './dto/list-sales-query.dto';
+import { ReturnSaleDto } from './dto/return-sale.dto';
 
 @Controller('sales')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -71,7 +72,11 @@ export class SalesController {
 
   @Post(':id/return')
   @RequirePermissions('sales.delete')
-  returnSale(@CurrentAuth() auth: AccessTokenPayload, @Param('id') id: string) {
-    return this.sales.returnSale(auth.organizationId, id, auth.sub);
+  returnSale(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Param('id') id: string,
+    @Body() dto: ReturnSaleDto,
+  ) {
+    return this.sales.returnSale(auth.organizationId, id, dto, auth.sub);
   }
 }

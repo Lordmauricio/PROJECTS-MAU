@@ -143,18 +143,23 @@ Organization
     nunca haya dos cajas `OPEN` para el mismo `posTerminalId`, incluso
     bajo dos `INSERT` concurrentes.
 - `cash_movements` — historial de movimientos de una caja (`type`:
-  `CASH_IN`/`CASH_OUT`/`SALE_PAYMENT`/`EXPENSE`, `String` libre en el
-  schema pero validado por DTO en el endpoint manual). `amount` siempre
+  `CASH_IN`/`CASH_OUT`/`SALE_PAYMENT`/`EXPENSE` desde Fase Comercial 5, más
+  `PAYABLE_PAYMENT`/`SALE_REFUND` desde Fase Comercial 6 — `String` libre
+  en el schema pero validado por DTO en el endpoint manual, que solo
+  acepta `CASH_IN`/`CASH_OUT`: los otros cuatro tipos los genera el
+  sistema, nunca se aceptan como input directo). `amount` siempre
   positivo — el signo (suma o resta al saldo) lo decide `type`, nunca el
   valor, mismo criterio que `InventoryMovement.quantity`. `reference`
-  (nullable): id de la `Sale` (si `SALE_PAYMENT`) o del `Expense` (si
-  `EXPENSE`) que originó el movimiento, cuando no fue manual — mismo
-  patrón que `InventoryMovement.reference`. `idempotencyKey` (`@unique`,
-  nullable): obligatoria para movimientos manuales (`CASH_IN`/`CASH_OUT`)
-  y gastos; los `SALE_PAYMENT` que dispara Ventas también la llevan (la
-  misma que el `Payment` que los originó) pero su idempotencia real ya
-  viene heredada de esa `Payment.idempotencyKey`. Módulo de negocio real
-  desde la Fase Comercial 5.
+  (nullable): id de la `Sale` (`SALE_PAYMENT`), del `Expense` (`EXPENSE`),
+  de la `Payable` (`PAYABLE_PAYMENT`) o del `Refund` (`SALE_REFUND`) que
+  originó el movimiento, cuando no fue manual — mismo patrón que
+  `InventoryMovement.reference`. `idempotencyKey` (`@unique`, nullable):
+  obligatoria para movimientos manuales (`CASH_IN`/`CASH_OUT`) y gastos;
+  los `SALE_PAYMENT`/`PAYABLE_PAYMENT` heredan la del `Payment` que los
+  originó; `SALE_REFUND` usa una key derivada (`sale-refund-<saleId>`,
+  ver `docs/architecture.md` sección 11) ya que `returnSale()` no recibe
+  una del cliente. Módulo de negocio real desde la Fase Comercial 5,
+  ampliado en la Fase Comercial 6.
 - `expenses` — gasto asociado a una caja abierta, módulo de negocio real
   desde la Fase Comercial 5 (antes placeholder desde Fase 1, sin ningún
   endpoint). `cashRegisterId` (nuevo, `NOT NULL`): un gasto siempre
@@ -164,19 +169,41 @@ Organization
   protege contra doble click — el `Expense` y su `CashMovement` (tipo
   `EXPENSE`) se crean atómicamente en la misma transacción, así que
   basta con la `idempotencyKey` del `Expense`.
-- `receivables` — cuentas por cobrar, esquema listo, sin módulo de
-  negocio todavía (Fase Comercial 6+, no pedida explícitamente en la
-  Fase Comercial 5).
+- `receivables` — cuenta por cobrar a un cliente, módulo de negocio real
+  desde la Fase Comercial 6 (antes placeholder desde Fase 1). `saleId`
+  (nuevo, `String?` `@unique`): a lo sumo una Receivable por venta — se
+  crea automáticamente al confirmar una venta a crédito
+  (`SalesService.createOrSyncReceivable`, dentro de la misma transacción
+  de `confirm`). A propósito NO tiene su propia relación de `payments` —
+  sus pagos son los mismos `Payment.saleId` de la venta asociada; el
+  saldo se calcula siempre on-demand sumando `sale.payments`, nunca
+  almacenado ni duplicado (ver `docs/architecture.md` sección 11 para la
+  justificación completa de esta decisión). `status` SÍ se escribe
+  (`PENDING`/`PAID`/`CANCELLED`), pero se deriva enteramente de eventos de
+  `Sale` — nunca es una fuente de verdad independiente.
+- `refunds` — reembolso de una venta devuelta, tabla **nueva** desde la
+  Fase Comercial 6. `saleId` (`String`, no único — nada impide
+  conceptualmente más de un reembolso por venta a futuro, aunque hoy
+  `SalesService.returnSale` crea a lo sumo uno por ser una devolución
+  total de una sola vez). `amount`: siempre el `paidTotal` real de la
+  venta al momento de devolverse, nunca una cifra manual. Sin
+  `idempotencyKey` propia — `returnSale()` es idempotente por lock +
+  chequeo de estado (mismo patrón que `Sale.cancel`), así que esta fila
+  se crea a lo sumo una vez por venta sin necesitar ese mecanismo. RLS
+  agregada a mano en la migración `20260817170000_payments_and_accounts_core`
+  (tabla nueva, mismo patrón que el resto del esquema).
 - `payables` — cuenta por pagar a un proveedor, módulo de negocio real
-  desde Fase Comercial 3. `purchaseId` es `@unique` (a lo sumo una Payable
-  por compra) cuando no es null — NULLs no colisionan entre sí en
-  Postgres, así que esto no bloquea un futuro Payable sin compra asociada.
-  `amount` crece con cada recepción (nunca antes de que llegue mercadería
-  real) y se reduce con las devoluciones — ver
-  `docs/architecture.md` sección 8 para la fórmula de prorrateo exacta.
-  `status`: `PENDING`/`PAID` en uso real hoy; `OVERDUE`/`CANCELLED`
-  existen en el enum pero ningún código los asigna todavía (`OVERDUE`
-  necesitaría un job por fecha, fuera de alcance de esta fase).
+  desde Fase Comercial 3, con integración de Caja agregada en la Fase
+  Comercial 6 (ver `cash_movements` arriba, `type: PAYABLE_PAYMENT`).
+  `purchaseId` es `@unique` (a lo sumo una Payable por compra) cuando no
+  es null — NULLs no colisionan entre sí en Postgres, así que esto no
+  bloquea un futuro Payable sin compra asociada. `amount` crece con cada
+  recepción (nunca antes de que llegue mercadería real) y se reduce con
+  las devoluciones — ver `docs/architecture.md` sección 8 para la
+  fórmula de prorrateo exacta. `status`: `PENDING`/`PAID` en uso real
+  hoy; `OVERDUE`/`CANCELLED` existen en el enum pero ningún código los
+  asigna todavía (`OVERDUE` necesitaría un job por fecha, fuera de
+  alcance de esta fase).
 
 ### Facturación / fiscal (esquema listo, sin integración SIN)
 - `invoices` + `invoice_items` + `invoice_events` — el estado (`VALID`/
@@ -231,4 +258,8 @@ Organization
   status = 'OPEN'`, agregado a mano — a lo sumo una caja OPEN por
   terminal, garantizado por Postgres, no por un chequeo de aplicación).
 - `cash_movements` y `expenses` tienen cada una `@@unique([idempotencyKey])`.
+- `receivables` tiene `@@unique([saleId])` (a lo sumo una Receivable por
+  venta, columna nullable — mismo criterio que `payables.purchaseId`).
+- `refunds` no tiene ningún `@unique` propio — no lo necesita, ver la
+  justificación de idempotencia en `docs/architecture.md` sección 11.
 - Montos siempre `Decimal` (`@db.Decimal`), nunca `Float`.
