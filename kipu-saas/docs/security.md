@@ -108,6 +108,36 @@ filas de otro tenant, y que sin contexto de tenant fijado no devuelve nada
   `lockPayableByPurchase` en `purchases.service.ts` (agregado en la
   auditoría post-Fase 6, ver sección "Auditoría post-Fase 6" más abajo).
 
+## Credenciales de la base de datos
+
+Ninguna contraseña vive en el repositorio — ni en las migraciones, ni en
+`docker-compose.yml`, ni en `.env.example`:
+
+- **Migraciones**: crean los roles `app_user` y `app_superadmin` sin
+  contraseña. Están versionadas, así que cualquier credencial escrita ahí
+  sería pública e idéntica en todos los despliegues. Hasta la auditoría
+  final pre-producción sí la tenían (`app_user_dev_password` /
+  `app_superadmin_dev_password`); la migración
+  `20260817230000_db_roles_no_hardcoded_passwords` remedia también las bases
+  que ya habían aplicado esa versión, quitándoles la contraseña filtrada.
+- **Asignación y rotación**: `npm run db:provision-roles`
+  (`scripts/provision-db-roles.ts`) lee `APP_USER_PASSWORD` del entorno y se
+  la asigna al rol. Correrlo de nuevo con otro valor es la forma de rotar.
+  El script rechaza contraseñas de menos de 16 caracteres y los valores de
+  ejemplo conocidos, y nunca imprime el secreto (ni siquiera en el stack de
+  error, que se recorta al mensaje para no exponer la cadena de conexión).
+- **Fail-closed**: mientras no se provisione, `app_user` existe con sus
+  GRANTs y sujeto a las policies, pero no puede autenticarse bajo
+  `scram-sha-256`/`md5`. La aplicación falla al conectar en vez de arrancar
+  con una credencial conocida.
+- **`app_superadmin` queda `NOLOGIN`**: es el único rol con `BYPASSRLS`
+  (ve y escribe datos de cualquier tenant) y ningún módulo lo usa todavía,
+  así que ni siquiera puede conectarse salvo que alguien defina
+  explícitamente `APP_SUPERADMIN_PASSWORD` al provisionar.
+- **`PrismaService` verifica en el arranque** que `RUNTIME_DATABASE_URL` no
+  apunte a un rol con `BYPASSRLS`, para que un error de configuración no
+  desactive el aislamiento en silencio.
+
 ## Transporte y cabeceras
 
 - CORS habilitado explícitamente en `main.ts` (a restringir a los orígenes

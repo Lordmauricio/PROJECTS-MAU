@@ -31,12 +31,53 @@ const RECEIVABLE_PAYABLE_STATUSES = [
 ] as const;
 const CASH_REGISTER_STATUSES = ['OPEN', 'CLOSED'] as const;
 
+/**
+ * Qué cuenta como una venta/compra REAL cuando el usuario no filtra por
+ * estado. No es un criterio nuevo: es exactamente el que el Dashboard ya
+ * aplicaba desde la Fase Comercial 7 (`getDashboardSummary`), extraído acá
+ * para que exista UNA sola definición y Reportes no pueda divergir del
+ * Dashboard — mismo enfoque que `CASH_INCREASE_TYPES`/`CASH_DECREASE_TYPES`,
+ * que Reportes importa de `cash.service.ts` en vez de reimplementar.
+ *
+ * Entran: `CONFIRMED`, `PARTIALLY_PAID`, `PAID` (ventas) y `CONFIRMED`,
+ * `PARTIALLY_RECEIVED`, `RECEIVED` (compras) — operaciones efectivamente
+ * cerradas con el cliente/proveedor.
+ *
+ * Quedan fuera:
+ *  - `DRAFT`: un carrito/orden que nunca se confirmó. No descontó stock ni
+ *    generó obligación; no es una operación, es una intención.
+ *  - `CANCELLED`: anulada, sus efectos ya fueron revertidos.
+ *  - `REFUNDED` (solo ventas): el dinero ya se devolvió, no es ingreso neto
+ *    del período. El Dashboard documenta esta exclusión explícitamente.
+ *
+ * Si el usuario pide un estado explícito (`?status=CANCELLED`), ese filtro
+ * gana y se muestra exactamente lo pedido — incluidos DRAFT/CANCELLED/
+ * REFUNDED, que siguen siendo auditables a propósito.
+ */
+export const REAL_SALE_STATUSES = [
+  'CONFIRMED',
+  'PARTIALLY_PAID',
+  'PAID',
+] as const;
+export const REAL_PURCHASE_STATUSES = [
+  'CONFIRMED',
+  'PARTIALLY_RECEIVED',
+  'RECEIVED',
+] as const;
+
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 20;
 /** Techo de filas devueltas por un export — evita cargar un dataset ilimitado en memoria (sección RENDIMIENTO del pedido). */
 export const REPORT_EXPORT_MAX_ROWS = 20_000;
 const DEFAULT_TOP_LIMIT = 10;
 const MAX_LIMIT = 500;
+/**
+ * Tamaño de lote al recorrer ventas para los reportes agregados que no
+ * pueden resolverse con un `groupBy` de Prisma (ver `forEachSaleBatch`).
+ * Acota la memoria: el proceso nunca tiene más de estas filas a la vez,
+ * sin importar cuántas ventas matcheen el filtro.
+ */
+const SALE_SCAN_BATCH_SIZE = 1_000;
 
 function assertStatus<T extends readonly string[]>(
   value: string | undefined,
@@ -183,6 +224,50 @@ export class ReportsService {
     });
   }
 
+  /**
+   * Recorre las ventas que matchean `where` en lotes acotados, sin cargarlas
+   * todas en memoria. Se usa en los reportes agregados cuyo criterio de
+   * agrupación NO existe como columna de `sales` (día calendario, categoría
+   * del producto), donde `groupBy` de Prisma no alcanza.
+   *
+   * Por qué lotes y no una consulta cruda con GROUP BY: el `where` lo arma
+   * `buildSalesWhere`, que es la ÚNICA definición de qué ventas entran en un
+   * reporte (filtros + criterio de estado por defecto). Reescribir ese filtro
+   * a mano en SQL para poder agrupar del lado del servidor duplicaría esa
+   * lógica y abriría la puerta a que ambos caminos diverjan — justo lo que el
+   * resto del módulo evita. Recorriendo por lotes, las cifras salen del mismo
+   * `where` por construcción y la memoria queda acotada a
+   * `SALE_SCAN_BATCH_SIZE` filas + el mapa de grupos (días/categorías, que son
+   * pocos por naturaleza).
+   *
+   * Pagina por cursor sobre `id` (no `skip`/`take`): con desplazamiento, una
+   * venta insertada durante el recorrido correría las páginas y podría
+   * duplicar o saltear filas.
+   */
+  private async forEachSaleBatch<Row extends { id: string }>(
+    tx: Tx,
+    where: Prisma.SaleWhereInput,
+    select: Prisma.SaleSelect,
+    onBatch: (batch: Row[]) => void | Promise<void>,
+  ): Promise<void> {
+    let cursor: string | undefined;
+    for (;;) {
+      const batch = (await tx.sale.findMany({
+        where,
+        // `id` siempre se selecciona: es la clave del cursor.
+        select: { ...select, id: true },
+        orderBy: { id: 'asc' },
+        take: SALE_SCAN_BATCH_SIZE,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      })) as unknown as Row[];
+      if (batch.length === 0) return;
+      await onBatch(batch);
+      // Un lote incompleto significa que no quedan más filas.
+      if (batch.length < SALE_SCAN_BATCH_SIZE) return;
+      cursor = batch[batch.length - 1].id;
+    }
+  }
+
   private async buildSalesWhere(
     tx: Tx,
     organizationId: string,
@@ -205,7 +290,10 @@ export class ReportsService {
     return {
       organizationId,
       type: 'SALE',
-      ...(status ? { status } : {}),
+      // Estado explícito del usuario > criterio por defecto (ver
+      // REAL_SALE_STATUSES). Sin filtro, "ventas" significa ventas reales,
+      // no borradores ni anuladas ni devueltas.
+      ...(status ? { status } : { status: { in: [...REAL_SALE_STATUSES] } }),
       ...(filters.warehouseId ? { warehouseId: filters.warehouseId } : {}),
       ...(filters.posTerminalId
         ? { posTerminalId: filters.posTerminalId }
@@ -242,7 +330,11 @@ export class ReportsService {
       );
       const where: Prisma.PurchaseWhereInput = {
         organizationId,
-        ...(status ? { status } : {}),
+        // Mismo criterio que en ventas (ver REAL_PURCHASE_STATUSES): sin
+        // filtro explícito, una compra en DRAFT o CANCELLED no cuenta.
+        ...(status
+          ? { status }
+          : { status: { in: [...REAL_PURCHASE_STATUSES] } }),
         ...(filters.warehouseId ? { warehouseId: filters.warehouseId } : {}),
         ...(filters.userId ? { createdById: filters.userId } : {}),
         ...(filters.productId
@@ -839,41 +931,84 @@ export class ReportsService {
         filters,
         undefined,
       );
-      const saleIds = await tx.sale.findMany({ where, select: { id: true } });
-      const ids = saleIds.map((s) => s.id);
-      if (ids.length === 0) {
-        return {
-          rows: [],
-          summary: { categories: 0, quantity: ZERO_MONEY, total: ZERO_MONEY },
-        };
-      }
-      const rows = await tx.$queryRaw<
-        Array<{
+      // Antes se materializaba el id de TODAS las ventas que matchean el
+      // filtro para meterlas en un único `IN (...)`: con años de historial ese
+      // array (y la sentencia SQL resultante) crecía sin techo. Ahora se
+      // recorre por lotes acotados y se agrega cada lote en Postgres,
+      // fusionando los parciales acá.
+      //
+      // Sumar los parciales es exacto, no una aproximación: los lotes
+      // particionan las ventas (cada venta cae en uno solo), así que tanto los
+      // `SUM` como el `COUNT(DISTINCT si."saleId")` por categoría se suman sin
+      // riesgo de contar dos veces la misma venta.
+      const byCategory = new Map<
+        string,
+        {
           categoryId: string | null;
           categoryName: string | null;
           quantity: Prisma.Decimal;
           total: Prisma.Decimal;
-          salesCount: bigint;
-        }>
-      >`
-        SELECT p."categoryId" AS "categoryId", cat.name AS "categoryName",
-               SUM(si.quantity) AS quantity, SUM(si.subtotal) AS total,
-               COUNT(DISTINCT si."saleId") AS "salesCount"
-        FROM sale_items si
-        JOIN products p ON p.id = si."productId"
-        LEFT JOIN product_categories cat ON cat.id = p."categoryId"
-        WHERE si."organizationId" = ${organizationId}
-          AND si."saleId" IN (${Prisma.join(ids)})
-        GROUP BY p."categoryId", cat.name
-        ORDER BY total DESC
-      `;
-      const normalized = rows.map((r) => ({
-        categoryId: r.categoryId,
-        categoryName: r.categoryName ?? 'Sin categoría',
-        quantity: money(r.quantity),
-        total: money(r.total),
-        salesCount: Number(r.salesCount),
-      }));
+          salesCount: number;
+        }
+      >();
+
+      await this.forEachSaleBatch<{ id: string }>(
+        tx,
+        where,
+        {},
+        async (batch) => {
+          const ids = batch.map((s) => s.id);
+          const partial = await tx.$queryRaw<
+            Array<{
+              categoryId: string | null;
+              categoryName: string | null;
+              quantity: Prisma.Decimal;
+              total: Prisma.Decimal;
+              salesCount: bigint;
+            }>
+          >`
+          SELECT p."categoryId" AS "categoryId", cat.name AS "categoryName",
+                 SUM(si.quantity) AS quantity, SUM(si.subtotal) AS total,
+                 COUNT(DISTINCT si."saleId") AS "salesCount"
+          FROM sale_items si
+          JOIN products p ON p.id = si."productId"
+          LEFT JOIN product_categories cat ON cat.id = p."categoryId"
+          WHERE si."organizationId" = ${organizationId}
+            AND si."saleId" IN (${Prisma.join(ids)})
+          GROUP BY p."categoryId", cat.name
+        `;
+          for (const r of partial) {
+            const key = r.categoryId ?? 'sin-categoria';
+            const prev = byCategory.get(key);
+            if (prev) {
+              prev.quantity = prev.quantity.add(r.quantity);
+              prev.total = prev.total.add(r.total);
+              prev.salesCount += Number(r.salesCount);
+            } else {
+              byCategory.set(key, {
+                categoryId: r.categoryId,
+                categoryName: r.categoryName,
+                quantity: money(r.quantity),
+                total: money(r.total),
+                salesCount: Number(r.salesCount),
+              });
+            }
+          }
+        },
+      );
+
+      const normalized = [...byCategory.values()]
+        .map((r) => ({
+          categoryId: r.categoryId,
+          categoryName: r.categoryName ?? 'Sin categoría',
+          quantity: money(r.quantity),
+          total: money(r.total),
+          salesCount: r.salesCount,
+        }))
+        // El ORDER BY vivía en el SQL; al fusionar lotes hay que ordenar acá
+        // para conservar el mismo resultado (mayor facturación primero).
+        .sort((a, b) => Number(b.total.sub(a.total)));
+
       return {
         rows: normalized,
         summary: {
@@ -896,44 +1031,73 @@ export class ReportsService {
         filters,
         undefined,
       );
-      const sales = await tx.sale.findMany({
+      // La suma la hace Postgres, no Node: antes se traían TODAS las ventas
+      // que matcheaban el filtro para sumarlas en JavaScript, lo que en una
+      // organización con años de historial (y sin filtro de fecha, que es
+      // opcional) podía significar cargar la tabla entera en memoria.
+      //
+      // `sales` no tiene columna `branchId` — la sucursal se deriva del punto
+      // de venta o, si no hay, del almacén — así que se agrupa por ese par.
+      // La cardinalidad del resultado está acotada por la cantidad de
+      // terminales × almacenes que existen, no por la cantidad de ventas.
+      const grouped = await tx.sale.groupBy({
+        by: ['posTerminalId', 'warehouseId'],
         where,
-        select: {
-          id: true,
-          total: true,
-          warehouse: { select: { branchId: true } },
-          posTerminal: { select: { branchId: true } },
-        },
+        _sum: { total: true },
+        _count: true,
       });
-      const branchIds = [
-        ...new Set(
-          sales
-            .map((s) => s.posTerminal?.branchId ?? s.warehouse?.branchId)
-            .filter((id): id is string => Boolean(id)),
-        ),
-      ];
-      const branches = await tx.branch.findMany({
-        where: { organizationId, id: { in: branchIds } },
-        select: { id: true, name: true },
-      });
-      const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
+
+      const posIds = grouped
+        .map((g) => g.posTerminalId)
+        .filter((id): id is string => Boolean(id));
+      const warehouseIds = grouped
+        .map((g) => g.warehouseId)
+        .filter((id): id is string => Boolean(id));
+      // Dos consultas acotadas (no una por fila): sin N+1.
+      const [terminals, warehouses] = await Promise.all([
+        tx.pOSTerminal.findMany({
+          where: { organizationId, id: { in: posIds } },
+          select: { id: true, branchId: true },
+        }),
+        tx.warehouse.findMany({
+          where: { organizationId, id: { in: warehouseIds } },
+          select: { id: true, branchId: true },
+        }),
+      ]);
+      const branchByPos = new Map(terminals.map((t) => [t.id, t.branchId]));
+      const branchByWarehouse = new Map(
+        warehouses.map((w) => [w.id, w.branchId]),
+      );
 
       const totalsByBranch = new Map<
         string,
         { total: Prisma.Decimal; count: number }
       >();
-      for (const s of sales) {
+      let salesCount = 0;
+      for (const g of grouped) {
+        // Misma precedencia que antes: manda el punto de venta; el almacén
+        // es el respaldo cuando la venta no tiene POS.
         const branchId =
-          s.posTerminal?.branchId ?? s.warehouse?.branchId ?? 'sin-sucursal';
+          (g.posTerminalId ? branchByPos.get(g.posTerminalId) : null) ??
+          (g.warehouseId ? branchByWarehouse.get(g.warehouseId) : null) ??
+          'sin-sucursal';
         const prev = totalsByBranch.get(branchId) ?? {
           total: ZERO_MONEY,
           count: 0,
         };
         totalsByBranch.set(branchId, {
-          total: prev.total.add(s.total),
-          count: prev.count + 1,
+          total: prev.total.add(g._sum.total ?? 0),
+          count: prev.count + g._count,
         });
+        salesCount += g._count;
       }
+
+      const branches = await tx.branch.findMany({
+        where: { organizationId, id: { in: [...totalsByBranch.keys()] } },
+        select: { id: true, name: true },
+      });
+      const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
+
       const rows = [...totalsByBranch.entries()]
         .map(([branchId, v]) => ({
           branchId,
@@ -948,7 +1112,7 @@ export class ReportsService {
         summary: {
           branches: rows.length,
           total: sumMoney(rows.map((r) => r.total)),
-          salesCount: sales.length,
+          salesCount,
         },
       };
     });
@@ -1041,6 +1205,20 @@ export class ReportsService {
   // =========================================================================
   // 16) Métodos de pago (sobre Payment de Ventas — cobros a clientes)
   // =========================================================================
+  /**
+   * A diferencia del resto de los reportes de ventas, este NO aplica
+   * `REAL_SALE_STATUSES`, y es deliberado: agrupa filas de `Payment`, es
+   * decir dinero efectivamente cobrado, no ventas. Los dos estados que el
+   * criterio por defecto excluye no pueden distorsionar esta cifra:
+   *  - `DRAFT`/`CANCELLED`: una venta solo puede cancelarse estando en
+   *    borrador (`SalesService.cancel`), y un borrador todavía no tiene
+   *    pagos — recién se cobran al confirmar o después. Nunca hay `Payment`
+   *    colgando de una venta cancelada.
+   *  - `REFUNDED`: ese pago SÍ entró por ese método en su momento; la
+   *    reversa se registra aparte como `Refund` + movimiento de caja
+   *    `SALE_REFUND`. Filtrarlo acá haría desaparecer un cobro que
+   *    realmente ocurrió.
+   */
   async paymentMethodsReport(organizationId: string, filters: ReportQueryDto) {
     return this.tenantPrisma.run(organizationId, async (tx) => {
       const where: Prisma.PaymentWhereInput = {
@@ -1111,19 +1289,29 @@ export class ReportsService {
         filters,
         undefined,
       );
-      const sales = await tx.sale.findMany({
-        where,
-        select: { id: true, total: true, createdAt: true },
-      });
+      // El día calendario no es una columna de `sales` (se deriva de
+      // `createdAt`), así que `groupBy` de Prisma no sirve acá. Se recorre por
+      // lotes acotados en vez de traer todas las ventas de una: la memoria
+      // queda en el tamaño del lote + un día por entrada del mapa, en lugar de
+      // crecer con la cantidad total de ventas. Las cifras son idénticas — es
+      // la misma acumulación, sobre el mismo `where`.
       const byDay = new Map<string, { total: Prisma.Decimal; count: number }>();
-      for (const s of sales) {
-        const day = s.createdAt.toISOString().slice(0, 10);
-        const prev = byDay.get(day) ?? { total: ZERO_MONEY, count: 0 };
-        byDay.set(day, {
-          total: prev.total.add(s.total),
-          count: prev.count + 1,
-        });
-      }
+      let salesCount = 0;
+      await this.forEachSaleBatch<{
+        id: string;
+        total: Prisma.Decimal;
+        createdAt: Date;
+      }>(tx, where, { total: true, createdAt: true }, (batch) => {
+        for (const s of batch) {
+          const day = s.createdAt.toISOString().slice(0, 10);
+          const prev = byDay.get(day) ?? { total: ZERO_MONEY, count: 0 };
+          byDay.set(day, {
+            total: prev.total.add(s.total),
+            count: prev.count + 1,
+          });
+          salesCount += 1;
+        }
+      });
       const rows = [...byDay.entries()]
         .map(([date, v]) => ({
           date,
@@ -1137,7 +1325,7 @@ export class ReportsService {
         summary: {
           days: rows.length,
           total: sumMoney(rows.map((r) => r.total)),
-          salesCount: sales.length,
+          salesCount,
         },
       };
     });

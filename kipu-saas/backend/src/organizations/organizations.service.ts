@@ -10,7 +10,11 @@ import {
 } from '../permissions/permissions.catalog';
 import { CASH_INCREASE_TYPES, CASH_DECREASE_TYPES } from '../cash/cash.service';
 import { money } from '../common/money';
-import { ReportsService } from '../reports/reports.service';
+import {
+  ReportsService,
+  REAL_SALE_STATUSES,
+  REAL_PURCHASE_STATUSES,
+} from '../reports/reports.service';
 import { PLAN_DEFINITIONS } from '../subscriptions/plans.catalog';
 
 export interface BootstrapOrganizationInput {
@@ -207,6 +211,12 @@ export class OrganizationsService {
    * filtro viejo, subcontando sistemáticamente. Se excluye `REFUNDED`
    * deliberadamente: ese dinero ya se devolvió, no es ingreso neto del
    * período. `CANCELLED`/`DRAFT` nunca cuentan como venta real.
+   *
+   * `REAL_SALE_STATUSES`/`REAL_PURCHASE_STATUSES` viven ahora en
+   * `reports.service.ts` (antes eran constantes locales de este método):
+   * Reportes aplica exactamente el mismo criterio cuando el usuario no
+   * filtra por estado, y compartir la definición es lo que garantiza que
+   * el Dashboard y el reporte de ventas no puedan dar cifras distintas.
    */
   async getDashboardSummary(organizationId: string) {
     const startOfDay = new Date();
@@ -216,13 +226,6 @@ export class OrganizationsService {
       startOfDay.getMonth(),
       1,
     );
-    const REAL_SALE_STATUSES = ['CONFIRMED', 'PARTIALLY_PAID', 'PAID'] as const;
-    const REAL_PURCHASE_STATUSES = [
-      'CONFIRMED',
-      'PARTIALLY_RECEIVED',
-      'RECEIVED',
-    ] as const;
-
     const [dashboardData, topProducts] = await Promise.all([
       this.tenantPrisma.run(organizationId, async (tx) => {
         const [

@@ -945,3 +945,518 @@ describe('Reportes de Inventario — regresión: summary NUNCA limitado a las fi
     expect(viaReport.rows.length).toBe(5);
   });
 });
+
+/**
+ * Regresión — hallazgo ALTO #2 de la auditoría final: los reportes de
+ * ventas/compras solo filtraban por estado si el cliente lo pedía
+ * explícitamente. Sin filtro, el "Total vendido" sumaba también borradores
+ * nunca confirmados, ventas anuladas y devueltas — un número mayor y
+ * engañoso frente a lo que realmente ingresó.
+ *
+ * El criterio por defecto NO es nuevo: es el que el Dashboard ya aplicaba
+ * (`REAL_SALE_STATUSES`/`REAL_PURCHASE_STATUSES`), ahora compartido para que
+ * Reportes y Dashboard no puedan divergir.
+ */
+describe('Reportes de ventas/compras — regresión: criterio de estado por defecto', () => {
+  let app: INestApplication;
+  let tenant: TestTenant;
+  let realSaleId: string;
+  let draftSaleId: string;
+  let refundedSaleId: string;
+  let cancelledSaleId: string;
+  let realPurchaseId: string;
+  let draftPurchaseId: string;
+
+  // Venta real 2x50=100 · devuelta 1x50=50 · borrador 3x50=150 · anulada 1x50=50
+  const REAL_SALE_TOTAL = 100;
+
+  beforeAll(async () => {
+    app = await bootTestApp();
+    tenant = await registerTestOrg(app, 'Reports-Status-Default');
+
+    const prod = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/products',
+      { name: `Estado ${uniqueSuffix()}`, price: 50, cost: 20 },
+      tenant.accessToken,
+    );
+    const productId = prod.body.id;
+    await callApi(
+      app,
+      'POST',
+      '/inventory/movements',
+      {
+        warehouseId: tenant.warehouseId,
+        productId,
+        type: 'IN',
+        quantity: 100,
+        reason: 'Carga inicial (estados)',
+        idempotencyKey: `estado-init-${productId}-${uniqueSuffix()}`,
+      },
+      tenant.accessToken,
+    );
+
+    const newSale = async (quantity: number) => {
+      const res = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        {
+          posTerminalId: tenant.posTerminalId,
+          warehouseId: tenant.warehouseId,
+          items: [{ productId, quantity }],
+        },
+        tenant.accessToken,
+      );
+      return res.body.id;
+    };
+
+    // 1) Venta REAL: confirmada y pagada -> PAID. Debe contar siempre.
+    realSaleId = await newSale(2);
+    await callApi(
+      app,
+      'POST',
+      `/sales/${realSaleId}/confirm`,
+      {
+        payments: [
+          {
+            method: 'CASH',
+            amount: REAL_SALE_TOTAL,
+            idempotencyKey: `real-${uniqueSuffix()}`,
+          },
+        ],
+      },
+      tenant.accessToken,
+    );
+
+    // 2) Venta DEVUELTA -> REFUNDED. El dinero volvió: no es ingreso neto.
+    refundedSaleId = await newSale(1);
+    await callApi(
+      app,
+      'POST',
+      `/sales/${refundedSaleId}/confirm`,
+      {
+        payments: [
+          {
+            method: 'CASH',
+            amount: 50,
+            idempotencyKey: `ref-${uniqueSuffix()}`,
+          },
+        ],
+      },
+      tenant.accessToken,
+    );
+    const returned = await callApi(
+      app,
+      'POST',
+      `/sales/${refundedSaleId}/return`,
+      { reason: 'Devolución (test de criterio de estado)' },
+      tenant.accessToken,
+    );
+    expect(returned.status).toBe(201);
+
+    // 3) Venta en BORRADOR: nunca se confirmó, ni siquiera descontó stock.
+    draftSaleId = await newSale(3);
+
+    // 4) Venta ANULADA en borrador -> CANCELLED.
+    cancelledSaleId = await newSale(1);
+    const cancelled = await callApi(
+      app,
+      'POST',
+      `/sales/${cancelledSaleId}/cancel`,
+      {},
+      tenant.accessToken,
+    );
+    expect(cancelled.status).toBe(201);
+
+    // Compras: una confirmada (real) y una en borrador.
+    const supplierId = (
+      await createTestSupplier(app, tenant, `Prov Estado ${uniqueSuffix()}`)
+    ).supplierId;
+    const mkPurchase = async (quantity: number) => {
+      const res = await callApi<ApiPurchase>(
+        app,
+        'POST',
+        '/purchases',
+        {
+          supplierId,
+          warehouseId: tenant.warehouseId,
+          items: [{ productId, quantity, unitCost: 10 }],
+        },
+        tenant.accessToken,
+      );
+      return res.body.id;
+    };
+    realPurchaseId = await mkPurchase(5); // 50
+    await callApi(
+      app,
+      'POST',
+      `/purchases/${realPurchaseId}/confirm`,
+      {},
+      tenant.accessToken,
+    );
+    draftPurchaseId = await mkPurchase(7); // 70, queda en DRAFT
+  }, 60000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 15000);
+
+  it('ventas SIN filtro de estado: solo cuenta ventas reales (excluye DRAFT/CANCELLED/REFUNDED)', async () => {
+    const res = await callApi<ReportView<ReportSalesRow>>(
+      app,
+      'GET',
+      '/reports/sales',
+      undefined,
+      tenant.accessToken,
+    );
+    const ids = res.body.rows.map((r) => r.id);
+    expect(ids).toContain(realSaleId);
+    expect(ids).not.toContain(draftSaleId);
+    expect(ids).not.toContain(cancelledSaleId);
+    expect(ids).not.toContain(refundedSaleId);
+    // El total NO incluye el borrador (150), la anulada (50) ni la devuelta (50).
+    expect(Number(res.body.summary.total)).toBe(REAL_SALE_TOTAL);
+    expect(res.body.summary.count).toBe(1);
+  });
+
+  it('ventas CON filtro de estado explícito: el filtro del usuario gana y los estados excluidos siguen siendo auditables', async () => {
+    for (const [status, expectedId] of [
+      ['DRAFT', draftSaleId],
+      ['CANCELLED', cancelledSaleId],
+      ['REFUNDED', refundedSaleId],
+    ] as const) {
+      const res = await callApi<ReportView<ReportSalesRow>>(
+        app,
+        'GET',
+        `/reports/sales?status=${status}`,
+        undefined,
+        tenant.accessToken,
+      );
+      const ids = res.body.rows.map((r) => r.id);
+      expect(ids).toContain(expectedId);
+      expect(res.body.rows.every((r) => r.status === status)).toBe(true);
+    }
+  });
+
+  it('compras SIN filtro: excluye DRAFT; CON filtro explícito la muestra', async () => {
+    const def = await callApi<ReportView<{ id: string }>>(
+      app,
+      'GET',
+      '/reports/purchases',
+      undefined,
+      tenant.accessToken,
+    );
+    const ids = def.body.rows.map((r) => r.id);
+    expect(ids).toContain(realPurchaseId);
+    expect(ids).not.toContain(draftPurchaseId);
+    expect(Number(def.body.summary.total)).toBe(50); // sin el borrador de 70
+
+    const drafts = await callApi<ReportView<{ id: string }>>(
+      app,
+      'GET',
+      '/reports/purchases?status=DRAFT',
+      undefined,
+      tenant.accessToken,
+    );
+    expect(drafts.body.rows.map((r) => r.id)).toContain(draftPurchaseId);
+  });
+
+  it('exportación aplica EXACTAMENTE la misma regla que la pantalla', async () => {
+    const view = await callApi<ReportView<ReportSalesRow>>(
+      app,
+      'GET',
+      '/reports/sales',
+      undefined,
+      tenant.accessToken,
+    );
+    const server = app.getHttpServer() as Parameters<typeof request>[0];
+    const res = await request(server)
+      .get('/reports/sales/export?format=csv')
+      .set('Authorization', `Bearer ${tenant.accessToken}`);
+    expect(res.status).toBe(200);
+    const lines = res.text.trim().split('\r\n');
+    // 1 encabezado + solo las ventas reales: el export no puede traer los
+    // borradores/anuladas/devueltas que la pantalla ya excluyó.
+    expect(lines.length).toBe(view.body.rows.length + 1);
+
+    const header = lines[0].replace(/^\uFEFF/, '').split(',');
+    const totalIdx = header.indexOf('Total');
+    const csvTotal = lines
+      .slice(1)
+      .reduce((acc, line) => acc + Number(line.split(',')[totalIdx]), 0);
+    expect(csvTotal).toBe(Number(view.body.summary.total));
+    expect(csvTotal).toBe(REAL_SALE_TOTAL);
+  });
+
+  it('el Dashboard y el reporte de ventas usan el MISMO criterio (no pueden divergir)', async () => {
+    const dashboard = await callApi<{
+      salesMonth: { count: number; total: string | number };
+    }>(
+      app,
+      'GET',
+      '/organizations/me/dashboard',
+      undefined,
+      tenant.accessToken,
+    );
+    const report = await callApi<ReportView<ReportSalesRow>>(
+      app,
+      'GET',
+      '/reports/sales',
+      undefined,
+      tenant.accessToken,
+    );
+    expect(Number(dashboard.body.salesMonth.total)).toBe(
+      Number(report.body.summary.total),
+    );
+    expect(dashboard.body.salesMonth.count).toBe(report.body.summary.count);
+  });
+});
+
+/**
+ * Regresión — hallazgo ALTO #3 de la auditoría final:
+ * `salesByBranchReport`, `salesByCategoryReport` y `salesByDateReport`
+ * hacían `findMany` sin `take`, cargando en memoria de Node TODAS las ventas
+ * que matchean el filtro (potencialmente años de historial, ya que el filtro
+ * de fecha es opcional). Ahora agregan del lado de Postgres o recorren por
+ * lotes acotados (`SALE_SCAN_BATCH_SIZE`).
+ *
+ * Lo que hay que proteger es que la optimización NO cambió las cifras. Para
+ * eso se fuerza el camino multi-lote: se crean más ventas que el tamaño de
+ * lote usado en el test y se compara cada reporte contra la suma calculada
+ * de forma independiente, además de contra `/reports/sales`.
+ */
+describe('Reportes agregados — regresión: mismas cifras sin cargar todo en memoria', () => {
+  let app: INestApplication;
+  let reportsService: ReportsService;
+  let tenant: TestTenant;
+  let categoryId: string;
+  const SALES = 7; // > 1 lote con el batch chico que fuerza el test
+  const UNIT_PRICE = 30;
+  const QTY_PER_SALE = 2;
+  const expectedTotal = SALES * UNIT_PRICE * QTY_PER_SALE;
+
+  beforeAll(async () => {
+    app = await bootTestApp();
+    reportsService = app.get(ReportsService);
+    tenant = await registerTestOrg(app, 'Reports-Aggregate-Regression');
+
+    const cat = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/product-categories',
+      { name: `Cat Agg ${uniqueSuffix()}` },
+      tenant.accessToken,
+    );
+    categoryId = cat.body.id;
+
+    const prod = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/products',
+      {
+        name: `Agg ${uniqueSuffix()}`,
+        price: UNIT_PRICE,
+        cost: 5,
+        categoryId,
+      },
+      tenant.accessToken,
+    );
+    const productId = prod.body.id;
+    await callApi(
+      app,
+      'POST',
+      '/inventory/movements',
+      {
+        warehouseId: tenant.warehouseId,
+        productId,
+        type: 'IN',
+        quantity: 500,
+        reason: 'Carga inicial (agregados)',
+        idempotencyKey: `agg-init-${productId}-${uniqueSuffix()}`,
+      },
+      tenant.accessToken,
+    );
+
+    for (let i = 0; i < SALES; i++) {
+      const sale = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        {
+          posTerminalId: tenant.posTerminalId,
+          warehouseId: tenant.warehouseId,
+          items: [{ productId, quantity: QTY_PER_SALE }],
+        },
+        tenant.accessToken,
+      );
+      const confirmed = await callApi(
+        app,
+        'POST',
+        `/sales/${sale.body.id}/confirm`,
+        {
+          payments: [
+            {
+              method: 'CASH',
+              amount: UNIT_PRICE * QTY_PER_SALE,
+              idempotencyKey: `agg-pago-${i}-${uniqueSuffix()}`,
+            },
+          ],
+        },
+        tenant.accessToken,
+      );
+      if (confirmed.status !== 201) {
+        throw new Error(
+          `confirmar venta ${i} debía dar 201, dio ${confirmed.status}: ${JSON.stringify(confirmed.body)}`,
+        );
+      }
+    }
+  }, 60000);
+
+  afterAll(async () => {
+    await app.close();
+  }, 15000);
+
+  it('sales-by-branch: total y salesCount coinciden con el reporte de ventas', async () => {
+    const branch = await callApi<{
+      rows: Array<{ branchId: string; total: string; salesCount: number }>;
+      summary: { branches: number; total: string; salesCount: number };
+    }>(app, 'GET', '/reports/sales-by-branch', undefined, tenant.accessToken);
+    const sales = await callApi<ReportView<ReportSalesRow>>(
+      app,
+      'GET',
+      '/reports/sales',
+      undefined,
+      tenant.accessToken,
+    );
+
+    expect(Number(branch.body.summary.total)).toBe(expectedTotal);
+    expect(branch.body.summary.salesCount).toBe(SALES);
+    // Nunca puede divergir del reporte de ventas: mismo `where`.
+    expect(Number(branch.body.summary.total)).toBe(
+      Number(sales.body.summary.total),
+    );
+    expect(branch.body.summary.salesCount).toBe(sales.body.summary.count);
+    // La sucursal se deriva del POS: todas las ventas caen en la misma.
+    expect(branch.body.rows.length).toBe(1);
+    expect(branch.body.rows[0].salesCount).toBe(SALES);
+    expect(branch.body.rows[0].branchId).toBe(tenant.branchId);
+  });
+
+  it('sales-by-date: agrupa por día sin perder ni duplicar ventas', async () => {
+    const res = await callApi<{
+      rows: Array<{ date: string; total: string; salesCount: number }>;
+      summary: { days: number; total: string; salesCount: number };
+    }>(app, 'GET', '/reports/sales-by-date', undefined, tenant.accessToken);
+
+    expect(Number(res.body.summary.total)).toBe(expectedTotal);
+    expect(res.body.summary.salesCount).toBe(SALES);
+    // La suma de las filas diarias tiene que dar el mismo total del resumen.
+    const sumRows = res.body.rows.reduce((a, r) => a + Number(r.total), 0);
+    const countRows = res.body.rows.reduce((a, r) => a + r.salesCount, 0);
+    expect(sumRows).toBe(expectedTotal);
+    expect(countRows).toBe(SALES);
+  });
+
+  it('sales-by-category: cantidades y totales exactos', async () => {
+    const res = await callApi<{
+      rows: Array<{
+        categoryId: string | null;
+        quantity: string;
+        total: string;
+        salesCount: number;
+      }>;
+      summary: { categories: number; quantity: string; total: string };
+    }>(app, 'GET', '/reports/sales-by-category', undefined, tenant.accessToken);
+
+    const row = res.body.rows.find((r) => r.categoryId === categoryId)!;
+    expect(row).toBeDefined();
+    expect(Number(row.quantity)).toBe(SALES * QTY_PER_SALE);
+    expect(Number(row.total)).toBe(expectedTotal);
+    // `COUNT(DISTINCT saleId)` fusionado entre lotes: cada venta cuenta 1 vez.
+    expect(row.salesCount).toBe(SALES);
+    expect(Number(res.body.summary.total)).toBe(expectedTotal);
+  });
+
+  it('el recorrido por lotes da EXACTAMENTE el mismo resultado que en un solo lote', async () => {
+    // Se fuerza el camino multi-lote monkey-patcheando el tamaño de lote a 2
+    // (con 7 ventas ⇒ 4 lotes, incluido uno incompleto al final). Si el
+    // cursor estuviera mal, acá aparecerían ventas duplicadas o salteadas.
+    const service = reportsService as unknown as {
+      forEachSaleBatch: (...args: unknown[]) => Promise<void>;
+    };
+    const original = service.forEachSaleBatch;
+
+    const singleBatch = {
+      date: await reportsService.salesByDateReport(tenant.organizationId, {}),
+      category: await reportsService.salesByCategoryReport(
+        tenant.organizationId,
+        {},
+      ),
+    };
+
+    let batchesSeen = 0;
+    // Reemplaza el helper por uno idéntico pero con lotes de 2 filas.
+    service.forEachSaleBatch = async function patched(
+      this: unknown,
+      tx: never,
+      where: never,
+      select: never,
+      onBatch: (batch: Array<{ id: string }>) => void | Promise<void>,
+    ) {
+      const txAny = tx as unknown as {
+        sale: {
+          findMany: (args: unknown) => Promise<Array<{ id: string }>>;
+        };
+      };
+      let cursor: string | undefined;
+      for (;;) {
+        const batch = await txAny.sale.findMany({
+          where,
+          select: { ...(select as object), id: true },
+          orderBy: { id: 'asc' },
+          take: 2,
+          ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+        });
+        if (batch.length === 0) return;
+        batchesSeen += 1;
+        await onBatch(batch);
+        if (batch.length < 2) return;
+        cursor = batch[batch.length - 1].id;
+      }
+    };
+
+    try {
+      const multiBatch = {
+        date: await reportsService.salesByDateReport(tenant.organizationId, {}),
+        category: await reportsService.salesByCategoryReport(
+          tenant.organizationId,
+          {},
+        ),
+      };
+
+      // Si esto fuera 0/1, el test sería vacío: probaría un solo lote contra
+      // otro solo lote. Con 7 ventas y lotes de 2 hay 4 lotes por reporte.
+      expect(batchesSeen).toBeGreaterThan(2);
+
+      expect(multiBatch.date.summary.salesCount).toBe(SALES);
+      expect(String(multiBatch.date.summary.total)).toBe(
+        String(singleBatch.date.summary.total),
+      );
+      expect(multiBatch.date.rows.length).toBe(singleBatch.date.rows.length);
+
+      expect(String(multiBatch.category.summary.total)).toBe(
+        String(singleBatch.category.summary.total),
+      );
+      expect(String(multiBatch.category.summary.quantity)).toBe(
+        String(singleBatch.category.summary.quantity),
+      );
+      expect(multiBatch.category.rows[0].salesCount).toBe(
+        singleBatch.category.rows[0].salesCount,
+      );
+    } finally {
+      service.forEachSaleBatch = original;
+    }
+  });
+});

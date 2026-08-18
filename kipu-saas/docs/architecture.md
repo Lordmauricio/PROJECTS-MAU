@@ -59,7 +59,34 @@ no solo un filtro en la capa de aplicación.**
   dos queries sucesivas podrían caer en conexiones distintas y perder el
   contexto de tenant).
 - Existe un segundo rol, `app_superadmin` (con `BYPASSRLS`), reservado para
-  el futuro backoffice del SaaS. Ningún código lo usa todavía en esta fase.
+  el futuro backoffice del SaaS. Ningún código lo usa todavía en esta fase,
+  y por eso se crea **`NOLOGIN` y sin contraseña**: siendo el único rol que
+  puede leer y escribir los datos de cualquier tenant, no tiene por qué
+  poder conectarse hasta que exista el backoffice que lo necesite. Se
+  habilita definiendo `APP_SUPERADMIN_PASSWORD` y corriendo
+  `npm run db:provision-roles`.
+
+### Contraseñas de los roles Postgres
+
+Las migraciones **crean los roles sin contraseña**. Una migración está
+versionada en el repositorio, así que cualquier credencial escrita ahí sería
+pública e idéntica en todos los despliegues; es exactamente el problema que
+`20260817230000_db_roles_no_hardcoded_passwords` vino a remediar (esa
+migración además le quita la contraseña a las bases que ya habían aplicado
+la versión anterior de `init`).
+
+La contraseña se asigna en un paso aparte, desde variables de entorno:
+
+```bash
+APP_USER_PASSWORD='...' npm run db:provision-roles   # scripts/provision-db-roles.ts
+```
+
+Ese mismo comando es el mecanismo de **rotación** (correrlo de nuevo con
+otro valor). Es fail-closed a propósito: hasta que corra, `app_user` existe
+—con sus GRANTs y sujeto a las policies— pero no puede autenticarse bajo
+`scram-sha-256`/`md5`, así que la aplicación falla al conectar en vez de
+arrancar con una credencial conocida. En Docker, `docker-entrypoint.sh` lo
+ejecuta automáticamente después de `prisma migrate deploy`.
 
 ### Por qué RLS y no solo `WHERE organizationId = ...` en cada query
 

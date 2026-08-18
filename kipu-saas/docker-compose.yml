@@ -1,9 +1,20 @@
+# Ningún secreto está escrito en este archivo: todos se leen del entorno
+# (o de un archivo `.env` junto a este compose, que está en .gitignore).
+# La sintaxis `${VAR:?mensaje}` hace que `docker compose` falle de entrada
+# si la variable no está definida, en vez de arrancar con un valor por
+# defecto que sería idéntico y público en todos los despliegues.
+#
+# Para levantar el stack, creá un `.env` en la raíz con:
+#   POSTGRES_PASSWORD=...        # openssl rand -base64 32
+#   APP_USER_PASSWORD=...        # openssl rand -base64 32
+#   JWT_ACCESS_SECRET=...        # openssl rand -base64 32
+#   JWT_REFRESH_SECRET=...       # openssl rand -base64 32
 services:
   postgres:
     image: postgres:16
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?definí POSTGRES_PASSWORD en el .env de la raíz}
       POSTGRES_DB: kipu_saas
     ports:
       - "5432:5432"
@@ -33,11 +44,15 @@ services:
     ports:
       - "4200:4200"
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/kipu_saas?schema=public
-      RUNTIME_DATABASE_URL: postgresql://app_user:app_user_dev_password@postgres:5432/kipu_saas?schema=public
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?definí POSTGRES_PASSWORD en el .env de la raíz}@postgres:5432/kipu_saas?schema=public
+      # `app_user` es el rol SIN BYPASSRLS con el que corre la aplicación.
+      # La migración lo crea sin contraseña; `docker-entrypoint.sh` se la
+      # asigna con `db:provision-roles` a partir de APP_USER_PASSWORD.
+      APP_USER_PASSWORD: ${APP_USER_PASSWORD:?definí APP_USER_PASSWORD en el .env de la raíz}
+      RUNTIME_DATABASE_URL: postgresql://app_user:${APP_USER_PASSWORD:?definí APP_USER_PASSWORD en el .env de la raíz}@postgres:5432/kipu_saas?schema=public
       REDIS_URL: redis://redis:6379
-      JWT_ACCESS_SECRET: change-me-long-random-secret
-      JWT_REFRESH_SECRET: change-me-different-long-random-secret
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?definí JWT_ACCESS_SECRET en el .env de la raíz}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?definí JWT_REFRESH_SECRET en el .env de la raíz}
       JWT_ACCESS_EXPIRES_IN: 15m
       JWT_REFRESH_EXPIRES_IN: 30d
       PORT: 4200

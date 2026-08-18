@@ -19,7 +19,8 @@
     "test:cov": "NODE_OPTIONS=--experimental-vm-modules jest --coverage --forceExit",
     "test:debug": "node --inspect-brk --experimental-vm-modules -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "NODE_OPTIONS=--experimental-vm-modules jest --config ./test/jest-e2e.json --forceExit",
-    "verify:tenant-isolation": "npm run build && node dist/scripts/verify-tenant-isolation.js"
+    "verify:tenant-isolation": "npm run build && node dist/scripts/verify-tenant-isolation.js",
+    "db:provision-roles": "tsx scripts/provision-db-roles.ts"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.5",

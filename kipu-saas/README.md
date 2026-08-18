@@ -31,13 +31,22 @@ npm install
 createdb kipu_saas
 cp .env.example .env   # ajusta DATABASE_URL si tu setup de Postgres difiere
 
+# Generá los secretos (NO hay valores por defecto: ninguna contraseña vive
+# en el repositorio) y pegalos en .env — APP_USER_PASSWORD, JWT_ACCESS_SECRET
+# y JWT_REFRESH_SECRET:
+openssl rand -base64 32
+
 # Aplica el esquema + crea el rol app_user (sin BYPASSRLS) y las policies
 # de RLS en 32 tablas + organizations (todo en la migración inicial).
 npx prisma migrate dev
 
-# Actualiza RUNTIME_DATABASE_URL en .env con la password que uses para
-# app_user (por defecto en la migración: app_user_dev_password — CAMBIAR
-# en cualquier ambiente que no sea tu máquina local).
+# Asigna la contraseña de app_user desde APP_USER_PASSWORD. Las migraciones
+# crean el rol SIN contraseña a propósito, así que este paso es obligatorio:
+# hasta que corra, la app no puede conectarse (fail-closed deliberado).
+# Correrlo de nuevo con otro valor es también la forma de ROTAR la clave.
+npm run db:provision-roles
+
+# Copiá esa misma contraseña dentro de RUNTIME_DATABASE_URL en .env.
 
 # Siembra el catálogo global de permisos y el plan "Gratis".
 npx prisma db seed
@@ -56,9 +65,23 @@ npm run dev          # http://localhost:3000
 
 ### Con Docker
 
+`docker-compose.yml` no contiene ningún secreto: los toma del entorno y
+falla de entrada si falta alguno. Creá un `.env` en la raíz del repo
+(está en `.gitignore`) con valores generados por vos:
+
 ```bash
+cat > .env <<EOF
+POSTGRES_PASSWORD=$(openssl rand -base64 32)
+APP_USER_PASSWORD=$(openssl rand -base64 32)
+JWT_ACCESS_SECRET=$(openssl rand -base64 32)
+JWT_REFRESH_SECRET=$(openssl rand -base64 32)
+EOF
+
 docker compose up --build
 ```
+
+El `docker-entrypoint.sh` del backend aplica las migraciones y luego asigna
+la contraseña de `app_user` con `db:provision-roles` automáticamente.
 
 > Nota: el build de las imágenes Docker no se pudo probar en el entorno de
 > desarrollo de esta sesión (sin daemon de Docker disponible ahí). La

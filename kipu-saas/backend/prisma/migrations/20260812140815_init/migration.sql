@@ -948,10 +948,17 @@ ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_organizationId_fkey" FOREIGN
 -- app se conecta como superusuario, Postgres ignora las policies.
 -- ============================================================
 
+-- El rol se crea SIN contrasena: nunca debe existir una credencial literal en
+-- una migracion versionada (quedaria publicada en el repositorio y seria
+-- identica en todos los despliegues). La contrasena se asigna aparte, desde
+-- variables de entorno, con `npm run db:provision-roles`
+-- (scripts/provision-db-roles.ts), que es tambien el mecanismo de rotacion.
+-- Hasta que ese paso corra, el rol existe (para GRANTs y policies) pero no
+-- puede autenticarse bajo scram-sha-256/md5: es fail-closed a proposito.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_user') THEN
-    CREATE ROLE app_user LOGIN PASSWORD 'app_user_dev_password' NOBYPASSRLS NOSUPERUSER;
+    CREATE ROLE app_user LOGIN NOBYPASSRLS NOSUPERUSER;
   END IF;
 END
 $$;
@@ -962,10 +969,16 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE O
 
 -- Rol reservado para el backoffice del SaaS (fase futura): puede leer/
 -- escribir sin restriccion de tenant. Ningun modulo lo usa todavia.
+--
+-- Se crea NOLOGIN y sin contrasena: al tener BYPASSRLS es el rol mas
+-- peligroso del sistema (ve y modifica los datos de CUALQUIER tenant), y
+-- mientras ningun modulo lo use no tiene por que poder conectarse. Para
+-- habilitarlo cuando llegue el backoffice, `npm run db:provision-roles`
+-- le asigna LOGIN + contrasena solo si se define APP_SUPERADMIN_PASSWORD.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_superadmin') THEN
-    CREATE ROLE app_superadmin LOGIN PASSWORD 'app_superadmin_dev_password' BYPASSRLS NOSUPERUSER;
+    CREATE ROLE app_superadmin NOLOGIN BYPASSRLS NOSUPERUSER;
   END IF;
 END
 $$;
