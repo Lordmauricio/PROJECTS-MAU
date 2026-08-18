@@ -9,6 +9,25 @@
 #   APP_USER_PASSWORD=...        # openssl rand -base64 32
 #   JWT_ACCESS_SECRET=...        # openssl rand -base64 32
 #   JWT_REFRESH_SECRET=...       # openssl rand -base64 32
+#   EMAIL_SMTP_HOST=...
+#
+# PUERTOS: Postgres y Redis se publican SOLO en 127.0.0.1. En un servidor con
+# IP pública, `"5432:5432"` (que es lo que Docker entiende como 0.0.0.0)
+# habría dejado la base de datos accesible desde internet — y Redis, que no
+# tiene contraseña, todavía peor. Siguen siendo alcanzables desde el host
+# (psql/redis-cli) y entre contenedores por la red interna de compose.
+# `HTTP_BIND_ADDR` hace lo mismo con backend y frontend: por defecto solo
+# loopback, pensado para tener un reverse proxy con TLS en el mismo host.
+# Poner 0.0.0.0 únicamente si se decide exponerlos directo, sin proxy.
+# El driver de logs por defecto de Docker (json-file) crece sin límite: en un
+# servidor de larga vida, los logs terminan llenando el disco y tirando abajo
+# todo el stack. 3 archivos de 10 MB por servicio acotan eso.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: postgres:16
@@ -17,7 +36,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?definí POSTGRES_PASSWORD en el .env de la raíz}
       POSTGRES_DB: kipu_saas
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - kipu_postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -26,11 +45,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging: *default-logging
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - kipu_redis_data:/data
     # `appendonly yes`: sin AOF, un reinicio del contenedor pierde los jobs
@@ -43,12 +63,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging: *default-logging
 
   backend:
     build:
       context: ./backend
     ports:
-      - "4200:4200"
+      - "${HTTP_BIND_ADDR:-127.0.0.1}:4200:4200"
     environment:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?definí POSTGRES_PASSWORD en el .env de la raíz}@postgres:5432/kipu_saas?schema=public
       # `app_user` es el rol SIN BYPASSRLS con el que corre la aplicación.
@@ -88,6 +109,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
+    logging: *default-logging
 
   frontend:
     build:
@@ -95,11 +117,12 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4200}
     ports:
-      - "3000:3000"
+      - "${HTTP_BIND_ADDR:-127.0.0.1}:3000:3000"
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
+    logging: *default-logging
 
 volumes:
   kipu_postgres_data:

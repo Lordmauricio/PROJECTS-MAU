@@ -1,0 +1,23 @@
+# Mismo motivo que en `backend/.dockerignore`: sin esto, el `COPY . .` de la
+# etapa de build sube al contexto el `node_modules` del host (cientos de MB,
+# con binarios compilados para otra arquitectura) y cualquier `.env.local`
+# con configuración de la máquina de quien construye.
+
+# Secretos / configuración local
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+# Dependencias: las instala `npm ci` dentro de la imagen
+node_modules
+
+# Artefactos que la propia build regenera
+.next
+out
+coverage
+*.tsbuildinfo
+
+.git
+.gitignore
+*.log

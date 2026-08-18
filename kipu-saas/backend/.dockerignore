@@ -1,0 +1,31 @@
+# Sin este archivo, el `COPY . .` de la etapa de build mete en la imagen todo
+# lo que haya en el directorio, con dos consecuencias graves:
+#
+#  1. `.env` — con la contraseña real de `app_user` y los secretos JWT —
+#     quedaría horneado en una capa de la imagen. Aunque la etapa de runtime
+#     no lo copie hacia adelante, sigue siendo recuperable de la capa
+#     intermedia por cualquiera que tenga la imagen.
+#  2. `node_modules` del host (cientos de MB) se subiría como contexto de
+#     build y pisaría el `node_modules` que instaló `npm ci` dentro del
+#     contenedor. Los binarios nativos (argon2, prisma) compilados para la
+#     arquitectura del host pueden no funcionar en la imagen.
+
+# Secretos
+.env
+.env.*
+!.env.example
+
+# Dependencias: las instala `npm ci` dentro de la imagen
+node_modules
+
+# Artefactos que la propia build regenera
+dist
+generated
+coverage
+*.tsbuildinfo
+
+# Nada de esto hace falta para construir
+.git
+.gitignore
+*.log
+README.md

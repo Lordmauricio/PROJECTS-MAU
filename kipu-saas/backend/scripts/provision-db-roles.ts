@@ -108,13 +108,47 @@ async function main(): Promise<void> {
       await client.query(built.rows[0].stmt);
     };
 
+    /**
+     * Re-aplica los GRANTs sobre el schema `public`.
+     *
+     * Por qué hace falta acá y no alcanza con la migración inicial: los
+     * GRANTs son POR BASE DE DATOS, y no viajan en un `pg_dump
+     * --no-privileges` (que es el que documenta el runbook, para no arrastrar
+     * los owners del servidor de origen). Después de restaurar un backup, el
+     * rol `app_user` existe a nivel de cluster pero no tiene ningún permiso
+     * sobre las tablas restauradas: la aplicación levanta y falla con
+     * "permission denied for table organizations".
+     *
+     * Correr `prisma migrate deploy` NO lo arregla: las migraciones ya vienen
+     * registradas en `_prisma_migrations` dentro del dump, así que no se
+     * vuelven a ejecutar. Por eso el paso de provisioning —que el runbook y
+     * el entrypoint ya ejecutan siempre— es el lugar correcto para esto.
+     *
+     * Es idempotente: volver a otorgar un permiso que ya existe no falla.
+     */
+    const grantSchemaPrivileges = async (role: string) => {
+      const stmts = await client.query<{ stmt: string }>(
+        `SELECT unnest(ARRAY[
+           format('GRANT USAGE ON SCHEMA public TO %I', $1::text),
+           format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', $1::text),
+           format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', $1::text)
+         ]) AS stmt`,
+        [role],
+      );
+      for (const { stmt } of stmts.rows) {
+        await client.query(stmt);
+      }
+    };
+
     await alterRole('app_user', appUserPassword);
+    await grantSchemaPrivileges('app_user');
     console.log(
-      '✔ app_user: contraseña asignada (rol sin BYPASSRLS, RLS activo).',
+      '✔ app_user: contraseña asignada y permisos sobre public re-aplicados (rol sin BYPASSRLS, RLS activo).',
     );
 
     if (superadminPassword) {
       await alterRole('app_superadmin', superadminPassword);
+      await grantSchemaPrivileges('app_superadmin');
       console.log(
         '✔ app_superadmin: HABILITADO con contraseña. Atención: este rol tiene BYPASSRLS y accede a los datos de todos los tenants.',
       );
