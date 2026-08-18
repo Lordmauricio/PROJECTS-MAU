@@ -49,7 +49,7 @@ export class MembersService {
     dto: InviteMemberDto,
     actorUserId: string,
   ) {
-    const membership = await this.tenantPrisma.run(
+    const { membership, pendingInvite } = await this.tenantPrisma.run(
       organizationId,
       async (tx) => {
         const role = await tx.role.findFirst({
@@ -100,20 +100,37 @@ export class MembersService {
           include: { user: true, role: true },
         });
 
-        if (isNewUser) {
-          const organization = await tx.organization.findUniqueOrThrow({
-            where: { id: organizationId },
-          });
-          await this.mail.sendInvite(
-            user.email,
-            organization.name,
-            organizationId,
-          );
-        }
+        // El email NO se encola acá: encolar es un efecto externo
+        // (Redis/BullMQ) que no participa de esta transacción de Postgres.
+        // Si el COMMIT fallara después de encolar, se enviaría igual y el
+        // destinatario recibiría una invitación para una membresía que nunca
+        // quedó persistida. Por eso el dato se DEVUELVE y el envío se difiere
+        // hasta después del commit (ver abajo).
+        const invite = isNewUser
+          ? {
+              email: user.email,
+              organizationName: (
+                await tx.organization.findUniqueOrThrow({
+                  where: { id: organizationId },
+                })
+              ).name,
+            }
+          : null;
 
-        return created;
+        return { membership: created, pendingInvite: invite };
       },
     );
+
+    // A partir de acá la membresía está committeada: recién ahora tiene
+    // sentido avisarle a la persona. `sendInvite` traga sus propios errores
+    // de encolado, así que un Redis caído no revierte una invitación válida.
+    if (pendingInvite) {
+      await this.mail.sendInvite(
+        pendingInvite.email,
+        pendingInvite.organizationName,
+        organizationId,
+      );
+    }
 
     await this.audit.log({
       organizationId,

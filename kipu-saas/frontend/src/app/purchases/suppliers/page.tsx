@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
 
 interface Supplier {
@@ -36,7 +37,7 @@ export default function SuppliersPage() {
     load();
   }, []);
 
-  async function addSupplier(e: React.FormEvent) {
+  async function addSupplierRequest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     try {
@@ -47,6 +48,11 @@ export default function SuppliersPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el proveedor");
     }
   }
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: addSupplierSubmitting, onSubmit: addSupplier } =
+    useSubmitGuard(addSupplierRequest);
 
   return (
     <AppShell>
@@ -85,7 +91,7 @@ export default function SuppliersPage() {
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
             />
           </div>
-          <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar proveedor</button>
+          <button disabled={addSupplierSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar proveedor</button>
         </form>
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">

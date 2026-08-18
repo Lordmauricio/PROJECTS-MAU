@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
 
 interface Organization {
@@ -64,7 +65,7 @@ export default function SettingsPage() {
     load();
   }, []);
 
-  async function addBranch(e: React.FormEvent) {
+  async function addBranchRequest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     try {
@@ -85,6 +86,11 @@ export default function SettingsPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el punto de venta");
     }
   }
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: addBranchSubmitting, onSubmit: addBranch } =
+    useSubmitGuard(addBranchRequest);
 
   return (
     <AppShell>
@@ -138,7 +144,7 @@ export default function SettingsPage() {
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
             />
           </div>
-          <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar sucursal</button>
+          <button disabled={addBranchSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar sucursal</button>
         </form>
 
         <div className="space-y-4">

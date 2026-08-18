@@ -63,6 +63,17 @@ cp .env.local.example .env.local
 npm run dev          # http://localhost:3000
 ```
 
+### Despliegue en producción
+
+Ver **[docs/deployment.md](docs/deployment.md)**: variables obligatorias,
+health checks (`/health` liveness, `/health/ready` readiness), backups con
+`pg_dump` y procedimiento de restauración, y endurecimiento aplicado
+(CORS, helmet, rate limiting, manejo de errores).
+
+El backend **valida su configuración al arrancar** y se niega a levantar si
+falta un secreto, si `CORS_ORIGINS` no está definido en producción o si
+`EMAIL_PROVIDER=console` en producción.
+
 ### Con Docker
 
 `docker-compose.yml` no contiene ningún secreto: los toma del entorno y

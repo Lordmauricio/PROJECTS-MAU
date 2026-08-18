@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
 
 interface Product {
@@ -138,7 +139,7 @@ export default function InventoryMovementsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters.warehouseId, filters.productId, filters.type, filters.dateFrom, filters.dateTo]);
 
-  async function registerMovement(e: React.FormEvent) {
+  async function registerMovementRequest(e: React.FormEvent) {
     e.preventDefault();
     setMoveError(null);
     setMoveOk(null);
@@ -163,7 +164,7 @@ export default function InventoryMovementsPage() {
     }
   }
 
-  async function registerTransfer(e: React.FormEvent) {
+  async function registerTransferRequest(e: React.FormEvent) {
     e.preventDefault();
     setTransferError(null);
     setTransferOk(null);
@@ -216,6 +217,16 @@ export default function InventoryMovementsPage() {
   function warehouseName(id: string) {
     return warehouses.find((w) => w.id === id)?.name ?? "-";
   }
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: registerMovementSubmitting, onSubmit: registerMovement } =
+    useSubmitGuard(registerMovementRequest);
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: registerTransferSubmitting, onSubmit: registerTransfer } =
+    useSubmitGuard(registerTransferRequest);
 
   return (
     <AppShell>
@@ -407,7 +418,7 @@ export default function InventoryMovementsPage() {
                 className="rounded border border-zinc-300 px-3 py-1.5 text-sm col-span-2"
               />
             </div>
-            <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Registrar</button>
+            <button disabled={registerMovementSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Registrar</button>
           </form>
 
           <form onSubmit={registerTransfer} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
@@ -471,7 +482,7 @@ export default function InventoryMovementsPage() {
                 className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
               />
             </div>
-            <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Transferir</button>
+            <button disabled={registerTransferSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Transferir</button>
           </form>
         </div>
 

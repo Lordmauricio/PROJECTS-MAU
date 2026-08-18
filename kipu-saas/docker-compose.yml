@@ -20,6 +20,7 @@ services:
       - "5432:5432"
     volumes:
       - kipu_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -32,6 +33,11 @@ services:
       - "6379:6379"
     volumes:
       - kipu_redis_data:/data
+    # `appendonly yes`: sin AOF, un reinicio del contenedor pierde los jobs
+    # de BullMQ que estuvieran en cola (emails, auditoría) desde el último
+    # snapshot RDB.
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -56,21 +62,44 @@ services:
       JWT_ACCESS_EXPIRES_IN: 15m
       JWT_REFRESH_EXPIRES_IN: 30d
       PORT: 4200
+      NODE_ENV: ${NODE_ENV:-production}
+      # Orígenes del frontend habilitados. En este compose el frontend corre
+      # en localhost:3000; en un despliegue real hay que apuntarlo al dominio.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # Este compose expone el backend directo, sin reverse proxy delante.
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}
+      EMAIL_FROM: ${EMAIL_FROM:-no-reply@kipu-saas.local}
+      EMAIL_SMTP_HOST: ${EMAIL_SMTP_HOST:?definí EMAIL_SMTP_HOST (con NODE_ENV=production el backend exige SMTP real; para una prueba local poné NODE_ENV=development y EMAIL_PROVIDER=console)}
+      EMAIL_SMTP_PORT: ${EMAIL_SMTP_PORT:-587}
+      EMAIL_SMTP_USER: ${EMAIL_SMTP_USER:-}
+      EMAIL_SMTP_PASSWORD: ${EMAIL_SMTP_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # Readiness: incluye Postgres y Redis, así el frontend no arranca
+      # apuntando a un backend que todavía no puede responder.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4200/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
   frontend:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:4200
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4200}
     ports:
       - "3000:3000"
+    restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   kipu_postgres_data:

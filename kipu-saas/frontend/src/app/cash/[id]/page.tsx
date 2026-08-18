@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
 
 interface CashMovement {
@@ -96,7 +97,7 @@ export default function CashRegisterDetailPage() {
       )
     : 0;
 
-  async function registerMovement(e: React.FormEvent) {
+  async function registerMovementRequest(e: React.FormEvent) {
     e.preventDefault();
     setMovError(null);
     try {
@@ -116,7 +117,7 @@ export default function CashRegisterDetailPage() {
     }
   }
 
-  async function registerExpense(e: React.FormEvent) {
+  async function registerExpenseRequest(e: React.FormEvent) {
     e.preventDefault();
     setExpenseError(null);
     try {
@@ -138,7 +139,7 @@ export default function CashRegisterDetailPage() {
     }
   }
 
-  async function closeRegister(e: React.FormEvent) {
+  async function closeRegisterRequest(e: React.FormEvent) {
     e.preventDefault();
     setCloseError(null);
     try {
@@ -156,11 +157,29 @@ export default function CashRegisterDetailPage() {
     }
   }
 
+  // Los hooks van ANTES de los early returns de abajo: llamarlos después
+  // rompería las reglas de hooks (el orden cambiaría entre renders).
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: registerMovementSubmitting, onSubmit: registerMovement } =
+    useSubmitGuard(registerMovementRequest);
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: registerExpenseSubmitting, onSubmit: registerExpense } =
+    useSubmitGuard(registerExpenseRequest);
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: closeRegisterSubmitting, onSubmit: closeRegister } =
+    useSubmitGuard(closeRegisterRequest);
+
   if (loading) return <AppShell><div className="p-6 text-sm text-zinc-500">Cargando...</div></AppShell>;
   if (loadError) return <AppShell><div className="p-6 text-sm text-red-600 bg-red-50 rounded m-6 p-2">{loadError}</div></AppShell>;
   if (!register) return <AppShell><div className="p-6 text-sm text-zinc-500">Caja no encontrada</div></AppShell>;
 
   const isOpen = register.status === "OPEN";
+
 
   return (
     <AppShell>
@@ -234,7 +253,7 @@ export default function CashRegisterDetailPage() {
                   className="rounded border border-zinc-300 px-3 py-1.5 text-sm col-span-2"
                 />
               </div>
-              <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Registrar</button>
+              <button disabled={registerMovementSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Registrar</button>
             </form>
 
             <form onSubmit={registerExpense} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
@@ -270,7 +289,7 @@ export default function CashRegisterDetailPage() {
                   className="rounded border border-zinc-300 px-3 py-1.5 text-sm col-span-2"
                 />
               </div>
-              <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Registrar gasto</button>
+              <button disabled={registerExpenseSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Registrar gasto</button>
             </form>
           </div>
         )}
@@ -297,7 +316,7 @@ export default function CashRegisterDetailPage() {
                 className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
               />
             </div>
-            <button className="bg-red-600 text-white rounded px-3 py-1.5 text-sm">Cerrar caja</button>
+            <button disabled={closeRegisterSubmitting} className="bg-red-600 text-white rounded px-3 py-1.5 text-sm">Cerrar caja</button>
           </form>
         )}
 

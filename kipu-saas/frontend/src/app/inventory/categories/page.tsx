@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
 
 interface Category {
@@ -34,7 +35,7 @@ export default function CategoriesPage() {
     load();
   }, []);
 
-  async function addCategory(e: React.FormEvent) {
+  async function addCategoryRequest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     if (!name.trim()) return;
@@ -46,6 +47,11 @@ export default function CategoriesPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo crear la categoría");
     }
   }
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: addCategorySubmitting, onSubmit: addCategory } =
+    useSubmitGuard(addCategoryRequest);
 
   return (
     <AppShell>
@@ -60,7 +66,7 @@ export default function CategoriesPage() {
             placeholder="Nueva categoría"
             className="rounded border border-zinc-300 px-3 py-1.5 text-sm flex-1"
           />
-          <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar</button>
+          <button disabled={addCategorySubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar</button>
         </form>
         <div className="bg-white rounded-lg border border-zinc-200 divide-y divide-zinc-100">
           {categories.map((c) => (

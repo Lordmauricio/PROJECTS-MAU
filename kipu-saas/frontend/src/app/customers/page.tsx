@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
 
 interface Customer {
@@ -39,7 +40,7 @@ export default function CustomersPage() {
     load();
   }, []);
 
-  async function addCustomer(e: React.FormEvent) {
+  async function addCustomerRequest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     try {
@@ -50,6 +51,11 @@ export default function CustomersPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo crear el cliente");
     }
   }
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: addCustomerSubmitting, onSubmit: addCustomer } =
+    useSubmitGuard(addCustomerRequest);
 
   return (
     <AppShell>
@@ -88,7 +94,7 @@ export default function CustomersPage() {
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
             />
           </div>
-          <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar cliente</button>
+          <button disabled={addCustomerSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar cliente</button>
         </form>
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">

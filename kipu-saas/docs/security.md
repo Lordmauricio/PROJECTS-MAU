@@ -27,9 +27,7 @@ filas de otro tenant, y que sin contexto de tenant fijado no devuelve nada
   revoca todos los refresh tokens activos del usuario.
 - **Enumeración de usuarios**: `POST /auth/password-reset/request` responde
   igual exista o no el email — no revela qué cuentas existen.
-- **Rate limiting**: `@nestjs/throttler` global (120 req/min por IP) más
-  límites específicos en `/auth/login` (10/min) y
-  `/auth/password-reset/request` (5/min) para dificultar fuerza bruta.
+- **Rate limiting**: ver la sección "Rate limiting" más abajo.
 - **MFA**: no implementado en esta fase. El modelo de `User` no tiene
   todavía los campos necesarios (secret TOTP, códigos de recuperación);
   se agrega en una fase posterior sin romper el flujo de auth actual (el
@@ -140,13 +138,57 @@ Ninguna contraseña vive en el repositorio — ni en las migraciones, ni en
 
 ## Transporte y cabeceras
 
-- CORS habilitado explícitamente en `main.ts` (a restringir a los orígenes
-  reales del frontend cuando haya un dominio de producción definido).
-- HTTPS/CSP/secure headers: responsabilidad de la capa de despliegue
-  (reverse proxy / plataforma) en esta fase; no hay terminación TLS propia
-  en el backend NestJS. Se documenta como pendiente de configurar en el
-  entorno de producción real, no como "hecho" — no se quiere dar una falsa
-  sensación de seguridad.
+- **CORS restringido por configuración** (`CORS_ORIGINS`): lista explícita de
+  orígenes, sin comodín. Vacío o `none` = ningún navegador puede consumir la
+  API. En producción la variable es obligatoria y `*` se rechaza al arrancar.
+  Reemplaza al `enableCors()` sin argumentos, que aceptaba cualquier origen.
+- **`helmet`**: `X-Content-Type-Options: nosniff`, `X-Frame-Options`, HSTS,
+  CSP y eliminación de `X-Powered-By`. `crossOriginResourcePolicy` queda en
+  `cross-origin` a propósito: el PDF del recibo se sirve `inline` y el
+  frontend está en otro origen. Verificado con aserciones sobre las
+  cabeceras reales en `src/app.hardening.spec.ts`.
+- **`trust proxy`** (`TRUST_PROXY`): opt-in explícito. Sin él, detrás de un
+  reverse proxy `req.ip` sería la del proxy y el rate limiting metería a
+  todos los usuarios en el mismo bucket; con él activado *sin* proxy
+  delante, cualquiera podría falsear su IP vía `X-Forwarded-For`. Por eso no
+  se deduce: se declara.
+- **HTTPS**: el backend no termina TLS; es responsabilidad del reverse proxy
+  o la plataforma. Sigue documentado como pendiente de infraestructura, no
+  como "hecho".
+
+## Rate limiting
+
+Límite global de 120 req/min y límites propios más estrictos donde el abuso
+tiene un costo real:
+
+| Endpoint | Límite | Motivo |
+|---|---|---|
+| `POST /auth/login` | 10/min | Vector clásico de fuerza bruta. No se bajó a 5 a propósito: el límite es por IP y en un comercio varios cajeros comparten una NAT — 5/min dejaría afuera al cuarto empleado del minuto. Con `TRUST_PROXY=true` e IPs reales por usuario, se puede bajar. |
+| `POST /auth/register` | 10/min | Alta de organizaciones. |
+| `POST /auth/password-reset/request` | 5/min | Evita usar el sistema para spam por email. |
+| `POST /auth/password-reset/confirm` | 5/min | Consume un token de un solo uso. |
+| `POST /auth/email-verification/confirm` | 5/min | Ídem. |
+| `POST /auth/refresh`, `POST /auth/logout` | 30/min | Defensa en profundidad; el token ya tiene 256 bits de entropía. |
+| `GET /health`, `GET /health/ready` | sin límite | Las sondas llegan todas desde la IP del balanceador y consumirían la cuota compartida. |
+
+## Manejo de errores
+
+`AllExceptionsFilter` es el único punto de salida de errores. Las
+`HttpException` que la aplicación lanza a propósito se devuelven tal cual
+(son mensajes escritos para el usuario); cualquier otra excepción se
+convierte en un `500` genérico con un `errorId`, y el detalle real —que
+puede incluir nombres de tablas, constraints o fragmentos de SQL— va solo al
+log del servidor bajo ese mismo id. En producción, además, `ValidationPipe`
+deja de devolver el detalle campo por campo.
+
+## Validación de configuración al arranque
+
+`src/config/env.validation.ts` corre antes de instanciar cualquier provider
+y **aborta el arranque** si: falta una conexión o un secreto; un secreto
+tiene un valor de ejemplo conocido; los dos secretos JWT son iguales;
+`RUNTIME_DATABASE_URL` es igual a `DATABASE_URL` (rompería RLS); falta
+`CORS_ORIGINS` en producción o vale `*`; o `EMAIL_PROVIDER=console` en
+producción. Los mensajes nunca incluyen el valor de un secreto.
 
 ## Auditoría
 

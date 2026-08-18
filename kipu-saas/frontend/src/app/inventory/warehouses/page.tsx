@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
 
 interface Branch {
@@ -44,7 +45,7 @@ export default function WarehousesPage() {
     load();
   }, []);
 
-  async function addWarehouse(e: React.FormEvent) {
+  async function addWarehouseRequest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     try {
@@ -59,6 +60,11 @@ export default function WarehousesPage() {
   function branchName(id: string) {
     return branches.find((b) => b.id === id)?.name ?? "-";
   }
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: addWarehouseSubmitting, onSubmit: addWarehouse } =
+    useSubmitGuard(addWarehouseRequest);
 
   return (
     <AppShell>
@@ -90,7 +96,7 @@ export default function WarehousesPage() {
               ))}
             </select>
           </div>
-          <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar</button>
+          <button disabled={addWarehouseSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar</button>
         </form>
         <div className="bg-white rounded-lg border border-zinc-200 divide-y divide-zinc-100">
           {warehouses.map((w) => (

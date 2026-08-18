@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
 
 interface Category {
@@ -49,7 +50,7 @@ export default function ProductsPage() {
     load();
   }, []);
 
-  async function addProduct(e: React.FormEvent) {
+  async function addProductRequest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     try {
@@ -88,6 +89,11 @@ export default function ProductsPage() {
       setError(err instanceof ApiError ? err.message : "No se pudo duplicar el producto");
     }
   }
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: addProductSubmitting, onSubmit: addProduct } =
+    useSubmitGuard(addProductRequest);
 
   return (
     <AppShell>
@@ -134,7 +140,7 @@ export default function ProductsPage() {
               ))}
             </select>
           </div>
-          <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar producto</button>
+          <button disabled={addProductSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Agregar producto</button>
         </form>
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">

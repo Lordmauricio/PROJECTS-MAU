@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
+import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
 
 interface Role {
@@ -45,7 +46,7 @@ export default function UsersPage() {
     load();
   }, []);
 
-  async function invite(e: React.FormEvent) {
+  async function inviteRequest(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     try {
@@ -81,6 +82,11 @@ export default function UsersPage() {
       );
     }
   }
+
+  // Doble click: sin esto, dos clicks seguidos creaban dos registros
+  // (ver `useSubmitGuard`).
+  const { submitting: inviteSubmitting, onSubmit: invite } =
+    useSubmitGuard(inviteRequest);
 
   return (
     <AppShell>
@@ -118,7 +124,7 @@ export default function UsersPage() {
               ))}
             </select>
           </div>
-          <button className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Invitar</button>
+          <button disabled={inviteSubmitting} className="bg-zinc-900 text-white rounded px-3 py-1.5 text-sm">Invitar</button>
         </form>
 
         <div className="bg-white rounded-lg border border-zinc-200 divide-y divide-zinc-100">

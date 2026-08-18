@@ -1227,9 +1227,12 @@ model SubscriptionEvent {
 // Fase 1 ni bloquear una futura ampliación real (tabla de destinatarios
 // separada) si hiciera falta notificación multi-usuario de verdad.
 model Notification {
-  id             String  @id @default(cuid())
+  id             String @id @default(cuid())
   organizationId String
-  userId         String?
+  // NOT NULL desde `20260818040000_notifications_userid_not_null`: una
+  // notificación sin dueño es inalcanzable (no se lista ni se puede marcar
+  // como leída) y rompería la verificación de pertenencia de `markRead`.
+  userId         String
 
   type    String
   title   String

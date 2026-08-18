@@ -206,7 +206,15 @@ export class InventoryService {
           product: { select: { id: true, name: true, sku: true } },
           warehouse: { select: { id: true, name: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        // Desempate por `id`: `createdAt` se fija con el DEFAULT de Postgres,
+        // que es el timestamp del BEGIN de la transacción, no el del INSERT.
+        // Dos movimientos concurrentes sobre el mismo producto pueden
+        // compartir `createdAt` (o incluso quedar invertidos respecto del
+        // orden real de aplicación), y sin un segundo criterio el orden entre
+        // ellos lo decide Postgres, que puede devolverlos distinto en cada
+        // consulta — con paginación eso significa filas repetidas o
+        // salteadas. `id` es un cuid monotónico, así que estabiliza el orden.
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
@@ -246,7 +254,11 @@ export class InventoryService {
           product: { select: { id: true, name: true, sku: true } },
           warehouse: { select: { id: true, name: true } },
         },
-        orderBy: { createdAt: 'asc' },
+        // Mismo desempate que en `listMovements`, acá además es lo que hace
+        // legible la cadena `stockAfter[n] == stockBefore[n+1]`: sin él, dos
+        // movimientos del mismo instante podían mostrarse en un orden que no
+        // era el de aplicación y la cuenta corriente parecía inconsistente.
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         take: 500,
       }),
     );
