@@ -512,8 +512,61 @@ inconsistentes en los 5 flujos comerciales completos.
   fase (ver `docs/architecture.md` sección 16 para la arquitectura de
   billing futura, desacoplada de cualquier proveedor concreto).
 
+## Fase Offline 1 — Preparación del backend: notas de seguridad específicas
+
+Ver `docs/architecture.md` sección 17 para el detalle técnico completo.
+Alcance de esta fase: solo backend (idempotencia de `POST /sales` +
+revocación de sesiones) — nada de Tauri/Capacitor/IndexedDB/impresión/
+sincronización completa todavía.
+
+- **Idempotencia de `POST /sales`**: `idempotencyKey` opcional (no rompe al
+  POS web actual, que no la envía) pero cuando se usa sigue el mismo
+  criterio ya auditado del resto del sistema — `assertMatches` rechaza con
+  `409` una key reusada con datos distintos, y la resolución de la carrera
+  real (P2002) ocurre fuera de la transacción abortada. No introduce
+  ninguna superficie nueva de fuga entre tenants: el `create` sigue
+  validando `posTerminalId`/`warehouseId`/`customerId`/productos contra
+  `organizationId` exactamente como antes, con o sin `idempotencyKey`.
+- **Revocación de sesiones — aislamiento de tenant probado explícitamente**:
+  un usuario miembro de dos organizaciones tiene sesiones (`RefreshToken`)
+  independientes por organización (`organizationId` se fija en cada
+  `issueTokens` y se preserva en cada rotación desde la corrección de Fase
+  1). Revocar en la organización A nunca toca la sesión de ese mismo
+  usuario en la organización B — probado con un usuario real compartido
+  entre dos tenants, ambas sesiones activas, revocando solo una
+  (`members.revoke-sessions.spec.ts`, caso "aislamiento entre tenants con
+  un usuario compartido"). También probado: un OWNER no puede revocar una
+  membresía que pertenece a otra organización (`404`, la query ya está
+  scoped por `organizationId` vía `TenantPrismaService`/RLS, nunca revela
+  si el id existe en otro tenant).
+- **RBAC**: `POST /members/:id/revoke-sessions` exige `users.manage` (mismo
+  permiso que invitar/cambiar rol/suspender) — probado que un rol sin ese
+  permiso recibe `403` y que la sesión objetivo sigue intacta.
+- **No hay revocación instantánea de un access token ya emitido**: es una
+  limitación aceptada del diseño stateless de JWT que ya regía desde Fase
+  1 (el access token nunca se valida contra una lista de revocación en
+  cada request — eso sería un cambio de arquitectura mucho mayor, no
+  "infraestructura mínima"). El dispositivo revocado deja de poder
+  refrescar/loguearse de nuevo de inmediato, y su último access token
+  emitido expira solo (máximo 15 minutos) — el mismo techo de exposición
+  que ya aplicaba a cualquier credencial comprometida antes de esta fase.
+- **Suspender revoca sesiones, ahora sí**: `MembersService.setStatus(...,
+  'SUSPENDED', ...)` cierra un hueco real preexistente desde Fase 1 — antes
+  de esta fase, suspender a un usuario no le cerraba ninguna sesión ya
+  abierta (seguía pudiendo refrescar su access token y operar hasta que su
+  refresh token expirara solo, hasta 30 días después). Ahora la revocación
+  ocurre en la MISMA transacción que el cambio de estado.
+- **Nada nuevo que gestionar como secreto**: ni la idempotencia de ventas
+  ni la revocación de sesiones agregan variables de entorno, credenciales
+  ni tablas con datos sensibles nuevas — `RefreshToken` ya existía con
+  todos los campos necesarios desde Fase 1.
+
 ## Qué queda pendiente (explícito, no oculto)
 
+- Administrador de dispositivos (UI + endpoint de solo lectura para listar
+  sesiones activas por `userAgent`/`ip`/`createdAt`) — la revocación de la
+  Fase Offline 1 revoca todas las sesiones de un usuario en la
+  organización de una vez, no una sesión/dispositivo puntual.
 - MFA (modelo de datos y guard no implementados todavía).
 - CSP / secure headers a nivel de aplicación (hoy depende del entorno de
   despliegue).

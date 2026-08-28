@@ -73,12 +73,73 @@ export class SalesService {
     return this.attachBalance(sale);
   }
 
+  /**
+   * Crea una venta DRAFT. `dto.idempotencyKey` es OPCIONAL (a diferencia de
+   * `Payment.idempotencyKey`): el POS web actual no la envía todavía, así
+   * que sin ella el comportamiento es exactamente el de siempre (create
+   * simple, sin protección ante reintentos). Cuando el cliente SÍ la envía
+   * — el caso que importa para un cliente offline, que reintenta tras
+   * timeout/pérdida de conexión — protege contra duplicados con el mismo
+   * criterio ya usado en `InventoryService.registerManualMovement`/
+   * `CashService.registerMovement`: precheck rápido para el retry
+   * secuencial (misma key, misma operación → mismo resultado sin volver a
+   * crear nada) + `assertMatches` para rechazar una key reusada con datos
+   * distintos (409, nunca se devuelve en silencio la venta ajena) +
+   * resolución de P2002 fuera de la transacción abortada para la carrera
+   * real (dos requests concurrentes con la MISMA key: el índice único de
+   * Postgres deja pasar exactamente una).
+   */
   async create(
     organizationId: string,
     dto: CreateSaleDto,
     actorUserId: string,
   ) {
-    const sale = await this.tenantPrisma.run(organizationId, async (tx) => {
+    type ExistingSale = {
+      id: string;
+      total: Prisma.Decimal;
+      posTerminalId: string | null;
+      warehouseId: string | null;
+      customerId: string | null;
+      discount: Prisma.Decimal;
+      items: {
+        productId: string;
+        quantity: Prisma.Decimal;
+        discount: Prisma.Decimal;
+      }[];
+    };
+
+    const assertMatches = (existing: ExistingSale) => {
+      const sameScalars =
+        existing.posTerminalId === dto.posTerminalId &&
+        existing.warehouseId === dto.warehouseId &&
+        (existing.customerId ?? null) === (dto.customerId ?? null) &&
+        existing.discount.equals(money(dto.discount ?? 0));
+      const sameItems =
+        existing.items.length === dto.items.length &&
+        existing.items.every((item, i) => {
+          const candidate = dto.items[i];
+          return (
+            item.productId === candidate.productId &&
+            item.quantity.equals(money(candidate.quantity)) &&
+            item.discount.equals(money(candidate.discount ?? 0))
+          );
+        });
+      if (!sameScalars || !sameItems) {
+        throw new ConflictException(
+          'Esta idempotencyKey ya fue usada con datos distintos',
+        );
+      }
+    };
+
+    const saleInclude = {
+      items: {
+        include: {
+          product: { select: { id: true, name: true, sku: true } },
+        },
+      },
+    } as const;
+
+    const buildSale = async (tx: Tx) => {
       const posTerminal = await tx.pOSTerminal.findFirst({
         where: { id: dto.posTerminalId, organizationId },
       });
@@ -157,17 +218,32 @@ export class SalesService {
           discount: saleDiscount,
           total,
           createdById: actorUserId,
+          idempotencyKey: dto.idempotencyKey,
           items: { create: itemsData },
         },
-        include: {
-          items: {
-            include: {
-              product: { select: { id: true, name: true, sku: true } },
-            },
-          },
-        },
+        include: saleInclude,
       });
-    });
+    };
+
+    const sale = dto.idempotencyKey
+      ? await this.runOrResolveCreateConflict(
+          organizationId,
+          dto.idempotencyKey,
+          async (tx) => {
+            const existing = await tx.sale.findUnique({
+              where: { idempotencyKey: dto.idempotencyKey },
+              include: saleInclude,
+            });
+            if (existing) {
+              assertMatches(existing);
+              return existing;
+            }
+            return buildSale(tx);
+          },
+          saleInclude,
+          assertMatches,
+        )
+      : await this.tenantPrisma.run(organizationId, buildSale);
 
     await this.audit.log({
       organizationId,
@@ -671,6 +747,59 @@ export class SalesService {
           // ante cualquier ambigüedad se responde con el estado actual real
           // en vez de asumir.
           return this.loadFull(tx, organizationId, saleId) as unknown as T;
+        });
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Mismo patrón que `InventoryService.runOrResolveMovementConflict`/
+   * `CashService.runOrResolveMovementConflict`: si `fn` lanza P2002 sobre
+   * `sales_idempotencyKey_key` (dos requests concurrentes con la MISMA key
+   * — la única forma en que puede fallar acá: a diferencia de `Payment`,
+   * `create` no tiene ninguna fila padre que bloquear antes de intentar el
+   * INSERT), la transacción ya se abortó sola. Se abre una transacción
+   * nueva y limpia, se busca la venta que ganó la carrera por su
+   * idempotencyKey (única, tiene que existir en este punto) y se valida
+   * con `assertMatches` que sea la MISMA operación antes de devolverla —
+   * nunca se devuelve en silencio el resultado de un intento ajeno.
+   */
+  private async runOrResolveCreateConflict<
+    T extends {
+      id: string;
+      total: Prisma.Decimal;
+      posTerminalId: string | null;
+      warehouseId: string | null;
+      customerId: string | null;
+      discount: Prisma.Decimal;
+      items: {
+        productId: string;
+        quantity: Prisma.Decimal;
+        discount: Prisma.Decimal;
+      }[];
+    },
+  >(
+    organizationId: string,
+    idempotencyKey: string,
+    fn: (tx: Tx) => Promise<T>,
+    include: Record<string, unknown>,
+    assertMatches: (existing: T) => void,
+  ): Promise<T> {
+    try {
+      return await this.tenantPrisma.run(organizationId, fn);
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        return this.tenantPrisma.run(organizationId, async (tx) => {
+          const existing = (await tx.sale.findUniqueOrThrow({
+            where: { idempotencyKey },
+            include,
+          })) as unknown as T;
+          assertMatches(existing);
+          return existing;
         });
       }
       throw err;

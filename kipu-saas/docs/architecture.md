@@ -1379,3 +1379,110 @@ backend se muestran tal cual (mismo patrón `err.message` ya usado en
 `/users`, `/settings`, `/inventory/products`), así que un mensaje de
 límite alcanzado es automáticamente claro y accionable sin lógica nueva
 en el frontend.
+
+## 17. Fase Offline 1 — Preparación del backend: decisiones técnicas
+
+Primera fase de la iniciativa de app offline (Android/Windows, ver el
+informe de auditoría/diseño entregado al usuario). Alcance estrictamente
+limitado a infraestructura de backend: **no** se tocó Tauri, Capacitor,
+IndexedDB, impresión, ni sincronización completa — eso queda para fases
+futuras explícitamente autorizadas.
+
+### Idempotencia en `POST /sales` (crear venta)
+
+`Sale.create` era, hasta esta fase, la única operación de escritura del
+núcleo comercial sin protección de `idempotencyKey` — todas las demás
+(`Payment`, `PurchaseReceipt`/`PurchaseReturn`, `CashRegister.open`/`close`,
+`CashMovement`, `Expense`, `InventoryMovement`/`InventoryTransfer`) ya la
+tenían desde sus fases respectivas. Un cliente offline que reintenta una
+venta tras perder conexión a mitad del request necesita exactamente esta
+garantía, así que se extendió `SalesService.create` con el mismo criterio
+arquitectónico ya usado en el resto del sistema (`InventoryService
+.registerManualMovement`/`CashService.registerMovement` como referencia más
+cercana, por tratarse también de un `create` sin fila padre que bloquear):
+
+- Precheck rápido (`tx.sale.findUnique({ where: { idempotencyKey } })`) para
+  el caso común de un retry secuencial (timeout, doble click): si ya existe
+  una venta con esa key, se valida con `assertMatches` que sea la MISMA
+  operación (mismo `posTerminalId`/`warehouseId`/`customerId`/`discount` y
+  mismos ítems — productId/cantidad/descuento) y se devuelve tal cual, sin
+  crear una segunda.
+- `assertMatches` rechaza con `409` si la key se reusó con datos distintos
+  — nunca se devuelve en silencio la venta de un intento ajeno.
+- `runOrResolveCreateConflict` (privado, mismo patrón que
+  `SalesService.runOrResolvePaymentConflict`/
+  `InventoryService.runOrResolveMovementConflict`): si dos requests
+  verdaderamente concurrentes con la MISMA key chocan contra el índice
+  único de Postgres (`sales_idempotencyKey_key`), la transacción perdedora
+  se aborta sola; se abre una transacción nueva y limpia, se busca la venta
+  que ganó la carrera y se le aplica el mismo `assertMatches` antes de
+  devolverla. Nunca `MAX()+1` ni un chequeo "leer-luego-escribir" en la
+  aplicación — la barrera real es el índice único de Postgres, igual
+  criterio que `payments_exactly_one_target_check`/
+  `cash_registers_one_open_per_terminal` en fases anteriores.
+
+**`idempotencyKey` es OPCIONAL en el DTO** (`@IsOptional()`), a diferencia
+de `Payment.idempotencyKey` (obligatoria). Decisión explícita: el POS web
+actual (`frontend/src/app/sales/pos/page.tsx`) no la envía todavía — el
+botón ya se deshabilita mientras el request está en vuelo, así que no la
+necesitaba hasta ahora. Si se hubiera hecho obligatoria, el POS actual
+habría empezado a fallar con `400` en producción. Sin la key, `create` se
+comporta exactamente igual que antes de esta fase (sin protección ante
+reintentos); con ella, aplica todo el mecanismo de arriba. Un futuro
+cliente offline (o el propio POS web, cuando se decida) puede empezar a
+enviarla sin que el contrato de la API cambie para nadie más — mismo
+principio de compatibilidad hacia atrás que ya rige el resto del sistema.
+La columna (`sales.idempotencyKey`, `String? @unique`, migración
+`20260828190000_sales_create_idempotency`) es nullable por el mismo
+motivo, sin backfill: `sales` ya tiene filas de fases anteriores.
+
+### Revocación de sesiones/dispositivos
+
+Infraestructura mínima para "el propietario/admin revoca remotamente un
+dispositivo perdido", pedida como base necesaria antes de construir
+cualquier cliente offline (una sesión offline vive más tiempo sin contacto
+con el servidor que una sesión web normal, así que la capacidad de matarla
+remotamente importa más). **No se inventó ninguna arquitectura paralela**:
+`RefreshToken` (Fase 1) ya tenía exactamente los campos necesarios
+(`userId`, `organizationId`, `revokedAt` nullable) — la fase completa fue
+un método de servicio nuevo más un endpoint, cero migraciones.
+
+- `MembersService.revokeSessions(organizationId, membershipId, actorUserId)`
+  resuelve la membresía (vía `TenantPrismaService`, RLS de siempre) para
+  obtener el `userId` real, y revoca (`revokedAt = now()`) todos los
+  `RefreshToken` de ese usuario **filtrados también por `organizationId`**
+  — `refresh_tokens` no tiene RLS (no es tenant-scoped en el esquema, ver
+  `docs/database.md`: un usuario puede pertenecer a varias organizaciones),
+  así que ese filtro explícito es la única barrera que impide que revocar
+  en la organización A alcance la sesión de ese MISMO usuario en la
+  organización B. El `organizationId` usado es siempre el del JWT del
+  actor autenticado, nunca uno que el cliente pueda variar. Probado
+  explícitamente con un usuario compartido entre dos organizaciones reales
+  (`members.revoke-sessions.spec.ts`).
+- `POST /members/:id/revoke-sessions` (`@RequirePermissions('users.manage')`,
+  mismo permiso que invitar/cambiar rol/suspender — no se creó un permiso
+  nuevo) — sin UI de administrador de dispositivos todavía, explícitamente
+  fuera de esta fase.
+- `MembersService.setStatus(..., 'SUSPENDED', ...)` ahora revoca las
+  sesiones del usuario EN LA MISMA transacción que lo suspende (todo-o-nada:
+  si el `UPDATE` de estado se revierte, la revocación tampoco queda
+  aplicada) — cierre de un hueco real que existía desde Fase 1: suspender a
+  alguien no le cerraba las sesiones ya abiertas. `refresh_tokens` no tiene
+  RLS, pero eso no impide tocarla dentro de la transacción de
+  `tenantPrisma.run` (RLS restringe por tabla vía policy, no por
+  transacción; una tabla sin policy queda simplemente sin restricción
+  adicional dentro de esa misma transacción).
+- **Alcance deliberadamente acotado**: revoca TODAS las sesiones del
+  usuario en la organización de una vez, no una sesión/dispositivo puntual
+  — no existe todavía ninguna superficie que liste sesiones activas por
+  separado (`userAgent`/`ip`/`createdAt` ya se guardan en `RefreshToken`
+  desde Fase 1, listos para esa UI futura de "administrador de
+  dispositivos", que esta fase no construye).
+- **Limitación aceptada y documentada, no un descuido**: el access token
+  sigue siendo JWT stateless (15 minutos, sin verificación contra una lista
+  de revocación en cada request). Revocar refresh tokens detiene la
+  emisión de NUEVOS access tokens (refresh o login silencioso) — un access
+  token ya emitido antes de la revocación sigue siendo válido hasta que
+  expira por su cuenta. El dispositivo revocado queda completamente
+  bloqueado en, como máximo, el tiempo de vida de un access token. Ver
+  `docs/security.md` para el detalle.

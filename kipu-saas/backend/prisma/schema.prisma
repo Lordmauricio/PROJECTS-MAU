@@ -578,6 +578,18 @@ model Sale {
   discount Decimal    @default(0) @db.Decimal(12, 2)
   total    Decimal    @default(0) @db.Decimal(12, 2)
 
+  // Opcional (a diferencia de `Payment.idempotencyKey`): la creación de una
+  // venta predata este campo y el POS web actual no lo envía todavía, así
+  // que un valor ausente se comporta exactamente como antes (create simple,
+  // sin protección ante reintentos). Cuando el cliente SÍ lo envía (base
+  // para el cliente offline — Fase Offline 1), protege POST /sales contra
+  // reintentos/timeout/doble click con el mismo criterio que ya usan
+  // Payment/CashRegister.open/InventoryMovement: mismo key + mismo payload
+  // → mismo resultado; mismo key + payload distinto → 409; dos requests
+  // concurrentes → el índice único de Postgres deja pasar solo uno. Ver
+  // `SalesService.create`/`runOrResolveCreateConflict`.
+  idempotencyKey String? @unique
+
   createdById String?
 
   createdAt   DateTime  @default(now())

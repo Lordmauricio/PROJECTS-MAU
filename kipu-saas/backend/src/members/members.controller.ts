@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
@@ -20,7 +28,10 @@ export class MembersController {
 
   @Post('invite')
   @RequirePermissions('users.manage')
-  invite(@CurrentAuth() auth: AccessTokenPayload, @Body() dto: InviteMemberDto) {
+  invite(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Body() dto: InviteMemberDto,
+  ) {
     return this.members.invite(auth.organizationId, dto, auth.sub);
   }
 
@@ -31,18 +42,40 @@ export class MembersController {
     @Param('id') id: string,
     @Body() dto: ChangeMemberRoleDto,
   ) {
-    return this.members.changeRole(auth.organizationId, id, dto.roleId, auth.sub);
+    return this.members.changeRole(
+      auth.organizationId,
+      id,
+      dto.roleId,
+      auth.sub,
+    );
   }
 
   @Patch(':id/suspend')
   @RequirePermissions('users.manage')
   suspend(@CurrentAuth() auth: AccessTokenPayload, @Param('id') id: string) {
-    return this.members.setStatus(auth.organizationId, id, 'SUSPENDED', auth.sub);
+    return this.members.setStatus(
+      auth.organizationId,
+      id,
+      'SUSPENDED',
+      auth.sub,
+    );
   }
 
   @Patch(':id/reactivate')
   @RequirePermissions('users.manage')
   reactivate(@CurrentAuth() auth: AccessTokenPayload, @Param('id') id: string) {
     return this.members.setStatus(auth.organizationId, id, 'ACTIVE', auth.sub);
+  }
+
+  // Infraestructura mínima para "dispositivo perdido" (Fase Offline 1):
+  // revoca todas las sesiones activas del miembro en esta organización sin
+  // necesidad de suspender la cuenta. Ver `MembersService.revokeSessions`.
+  @Post(':id/revoke-sessions')
+  @RequirePermissions('users.manage')
+  revokeSessions(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Param('id') id: string,
+  ) {
+    return this.members.revokeSessions(auth.organizationId, id, auth.sub);
   }
 }

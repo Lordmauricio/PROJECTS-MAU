@@ -964,6 +964,57 @@ autorice sigue siendo `Sale → Fiscal Engine → Fiscal Document → SIN
 Adapter → SIN Bolivia`, construida en un módulo `fiscal/` nuevo que
 nunca necesitará modificar `receipts/` para funcionar.
 
+## Fase Offline 1 — Preparación del backend ✅
+
+Primera fase de la iniciativa de app offline (Android/Windows/impresión
+térmica), a partir del informe de auditoría/diseño entregado al usuario.
+Alcance estrictamente de backend, autorizado explícitamente: idempotencia
+real en `POST /sales` y la infraestructura mínima de revocación de
+sesiones/dispositivos. **No** se implementó (fuera de alcance explícito de
+esta fase): Tauri, Capacitor, Electron, Flutter, React Native, IndexedDB,
+Dexie, SQLite, Bluetooth, USB, ESC/POS, impresión, sincronización offline
+completa, ni PWA offline completa. Tampoco se tocó nada fiscal ni
+Cotizaciones. Ver `docs/architecture.md` sección 17 y `docs/security.md`
+sección "Fase Offline 1" para el detalle técnico completo.
+
+- [x] `POST /sales` (crear venta) gana `idempotencyKey` opcional
+      (`sales.idempotencyKey`, `String? @unique`, migración
+      `20260828190000_sales_create_idempotency`, aditiva, sin backfill).
+      Mismo criterio arquitectónico que `Payment`/`PurchaseReceipt`/
+      `PurchaseReturn`/`CashMovement`/`Expense`/`InventoryMovement`/
+      `InventoryTransfer`: precheck + `assertMatches` para el retry
+      secuencial, resolución de P2002 fuera de la transacción abortada
+      para la carrera real. Opcional (no obligatoria como en `Payment`) a
+      propósito: el POS web actual no la envía todavía, y hacerla
+      obligatoria lo habría roto en producción — sin ella, el
+      comportamiento es exactamente el de antes de esta fase.
+- [x] Infraestructura mínima de revocación de sesiones/dispositivos:
+      `POST /members/:id/revoke-sessions` (`users.manage`, mismo permiso
+      que suspender/cambiar rol) revoca todos los `RefreshToken` activos
+      de un miembro EN ESTA organización — cero migraciones nuevas,
+      `RefreshToken` ya tenía todos los campos necesarios desde Fase 1.
+      `MembersService.setStatus(..., 'SUSPENDED', ...)` ahora revoca
+      sesiones como efecto colateral, en la misma transacción (cierra un
+      hueco real preexistente: suspender no cerraba sesiones ya abiertas).
+      Sin UI de administrador de dispositivos todavía — explícitamente
+      fuera de esta fase (queda documentado como pendiente en
+      `docs/security.md`).
+- [x] Nada de lo ya construido se modificó: ningún módulo de negocio,
+      ninguna tabla existente renombrada/eliminada, RLS/RBAC/auditoría sin
+      cambios de comportamiento, Docker Compose intacto.
+- [x] Tests reales: 13 casos nuevos (5 en `sales.integration.spec.ts` —
+      venta normal con/sin key, retry secuencial, payload distinto → 409,
+      rollback tras fallo de validación; 1 en `sales.concurrency.spec.ts`
+      — dos requests verdaderamente concurrentes con la misma key; 7 en
+      `members.revoke-sessions.spec.ts` — sesión válida→revocación→intento
+      posterior falla, aislamiento entre usuarios, aislamiento entre
+      tenants con id ajeno, aislamiento entre tenants con un usuario
+      COMPARTIDO entre dos organizaciones, RBAC, doble revocación segura,
+      suspender revoca sesiones). Regresión completa: 320/320 tests
+      (307 previos + 13 nuevos), 34/34 suites, `verify:tenant-isolation`
+      23/23, build backend limpio, lint limpio en todos los archivos
+      tocados por esta fase.
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,

@@ -232,4 +232,40 @@ describe('Ventas/POS — concurrencia e idempotencia (integración, DB real)', (
     );
     expect(refundMovements).toHaveLength(1); // el lock de la venta serializa: solo el primero aplica el reembolso
   }, 15000);
+
+  it('POST /sales — dos requests VERDADERAMENTE concurrentes con el mismo idempotencyKey: solamente una venta creada (Fase Offline 1)', async () => {
+    const { productId } = await createProductWithStock(app, tenant, {
+      name: 'Create Concurrente',
+      price: 25,
+      quantity: 10,
+    });
+    const key = `sale-create-concurrente-${uniqueSuffix()}`;
+    const body = {
+      posTerminalId: tenant.posTerminalId,
+      warehouseId: tenant.warehouseId,
+      items: [{ productId, quantity: 1 }],
+      idempotencyKey: key,
+    };
+
+    const [a, b] = await Promise.all([
+      callApi<ApiSale>(app, 'POST', '/sales', body, tenant.accessToken),
+      callApi<ApiSale>(app, 'POST', '/sales', body, tenant.accessToken),
+    ]);
+
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    // Ambos requests ven la MISMA venta — nunca dos filas DRAFT distintas
+    // para la misma idempotencyKey, sin importar cuál "ganó" la carrera del
+    // índice único de Postgres.
+    expect(a.body.id).toBe(b.body.id);
+
+    const list = await callApi<ApiSale[]>(
+      app,
+      'GET',
+      '/sales?pageSize=100',
+      undefined,
+      tenant.accessToken,
+    );
+    expect(list.body.filter((s) => s.id === a.body.id)).toHaveLength(1);
+  });
 });

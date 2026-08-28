@@ -609,4 +609,179 @@ describe('Ventas/POS — ciclo de vida (integración, DB real)', () => {
     );
     expect(refundMovements).toHaveLength(1); // nunca duplicado
   });
+
+  describe('POST /sales — idempotencyKey (Fase Offline 1)', () => {
+    it('sin idempotencyKey se comporta exactamente igual que siempre (caller que no la envía, ej. el POS web actual)', async () => {
+      const { productId } = await createProductWithStock(app, tenant, {
+        name: 'Sin Idempotencia',
+        price: 5,
+        quantity: 10,
+      });
+      const res = await makeSale([{ productId, quantity: 1 }]);
+      expect(res.status).toBe(201);
+      expect(res.body.status).toBe('DRAFT');
+    });
+
+    it('venta normal con idempotencyKey: se crea igual que sin ella', async () => {
+      const { productId } = await createProductWithStock(app, tenant, {
+        name: 'Idempotente Normal',
+        price: 20,
+        quantity: 10,
+      });
+      const key = `sale-normal-${uniqueSuffix()}`;
+      const res = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        {
+          posTerminalId: tenant.posTerminalId,
+          warehouseId: tenant.warehouseId,
+          items: [{ productId, quantity: 1 }],
+          idempotencyKey: key,
+        },
+        tenant.accessToken,
+      );
+      expect(res.status).toBe(201);
+      expect(res.body.status).toBe('DRAFT');
+      expect(Number(res.body.total)).toBe(20);
+    });
+
+    it('mismo idempotencyKey reenviado secuencialmente (retry tras timeout/doble click): devuelve LA MISMA venta, no crea una segunda', async () => {
+      const { productId } = await createProductWithStock(app, tenant, {
+        name: 'Retry Secuencial',
+        price: 15,
+        quantity: 10,
+      });
+      const key = `sale-retry-${uniqueSuffix()}`;
+      const body = {
+        posTerminalId: tenant.posTerminalId,
+        warehouseId: tenant.warehouseId,
+        items: [{ productId, quantity: 2 }],
+        idempotencyKey: key,
+      };
+      const first = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        body,
+        tenant.accessToken,
+      );
+      // Simula el cliente reintentando porque nunca vio la respuesta del
+      // primer intento (timeout de red) — mismo request, mismo cuerpo.
+      const second = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        body,
+        tenant.accessToken,
+      );
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(second.body.id).toBe(first.body.id); // misma venta, no una segunda
+      expect(second.body.items).toHaveLength(1);
+
+      const list = await callApi<ApiSale[]>(
+        app,
+        'GET',
+        '/sales?pageSize=100',
+        undefined,
+        tenant.accessToken,
+      );
+      const matches = list.body.filter((s) => s.id === first.body.id);
+      expect(matches).toHaveLength(1); // nunca un DRAFT duplicado en la lista
+    });
+
+    it('mismo idempotencyKey con payload DISTINTO: rechaza con 409, no reutiliza la venta ajena', async () => {
+      const { productId: productA } = await createProductWithStock(
+        app,
+        tenant,
+        {
+          name: 'Conflicto A',
+          price: 10,
+          quantity: 10,
+        },
+      );
+      const { productId: productB } = await createProductWithStock(
+        app,
+        tenant,
+        {
+          name: 'Conflicto B',
+          price: 10,
+          quantity: 10,
+        },
+      );
+      const key = `sale-conflict-${uniqueSuffix()}`;
+      const first = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        {
+          posTerminalId: tenant.posTerminalId,
+          warehouseId: tenant.warehouseId,
+          items: [{ productId: productA, quantity: 1 }],
+          idempotencyKey: key,
+        },
+        tenant.accessToken,
+      );
+      expect(first.status).toBe(201);
+
+      // Misma key, carrito distinto (otro producto): no es un replay legítimo.
+      const second = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        {
+          posTerminalId: tenant.posTerminalId,
+          warehouseId: tenant.warehouseId,
+          items: [{ productId: productB, quantity: 1 }],
+          idempotencyKey: key,
+        },
+        tenant.accessToken,
+      );
+      expect(second.status).toBe(409);
+    });
+
+    it('reintento con la misma key tras un fallo de validación (rollback): la primera falla, la segunda con datos válidos crea la venta sin quedar bloqueada por un registro fantasma', async () => {
+      const { productId } = await createProductWithStock(app, tenant, {
+        name: 'Rollback Retry',
+        price: 12,
+        quantity: 10,
+      });
+      const key = `sale-rollback-${uniqueSuffix()}`;
+
+      // Primer intento: producto inexistente → 400, la transacción entera
+      // se revierte (ningún Sale con esta idempotencyKey queda persistido).
+      const failed = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        {
+          posTerminalId: tenant.posTerminalId,
+          warehouseId: tenant.warehouseId,
+          items: [{ productId: 'producto-inexistente', quantity: 1 }],
+          idempotencyKey: key,
+        },
+        tenant.accessToken,
+      );
+      expect(failed.status).toBe(400);
+
+      // Reintento con la MISMA key, ahora con datos válidos: debe crear la
+      // venta de verdad, no chocar contra un residuo del intento fallido.
+      const retried = await callApi<ApiSale>(
+        app,
+        'POST',
+        '/sales',
+        {
+          posTerminalId: tenant.posTerminalId,
+          warehouseId: tenant.warehouseId,
+          items: [{ productId, quantity: 1 }],
+          idempotencyKey: key,
+        },
+        tenant.accessToken,
+      );
+      expect(retried.status).toBe(201);
+      expect(retried.body.status).toBe('DRAFT');
+    });
+  });
 });

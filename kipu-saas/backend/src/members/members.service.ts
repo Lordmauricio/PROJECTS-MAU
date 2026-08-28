@@ -208,10 +208,30 @@ export class MembersService {
       if (status === 'ACTIVE' && membership.status !== 'ACTIVE') {
         await this.subscriptions.assertWithinLimit(tx, organizationId, 'users');
       }
-      return tx.organizationUser.update({
+      const result = await tx.organizationUser.update({
         where: { id: membershipId },
         data: { status },
       });
+
+      // Suspender a un usuario también revoca sus sesiones activas EN ESTA
+      // organización, dentro de la MISMA transacción (todo-o-nada: si el
+      // update de arriba se revierte, la revocación tampoco queda
+      // aplicada). `refresh_tokens` no tiene RLS (no es tenant-scoped en el
+      // esquema — ver docs/database.md, un usuario puede pertenecer a
+      // varias organizaciones), así que el filtro explícito por
+      // `organizationId` acá es la única barrera que evita alcanzar
+      // sesiones de ESTE usuario en OTRA organización donde también sea
+      // miembro. Ver `revokeSessions` para el mismo mecanismo expuesto
+      // como acción explícita (dispositivo perdido, sin necesidad de
+      // suspender la cuenta).
+      if (status === 'SUSPENDED') {
+        await tx.refreshToken.updateMany({
+          where: { userId: membership.userId, organizationId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+      }
+
+      return result;
     });
 
     await this.audit.log({
@@ -223,5 +243,54 @@ export class MembersService {
     });
 
     return updated;
+  }
+
+  /**
+   * Revoca (marca `revokedAt`) todas las sesiones activas de un miembro EN
+   * ESTA organización — infraestructura mínima para "usuario pierde
+   * teléfono/computadora → el propietario/admin revoca el dispositivo".
+   * No exige suspender la cuenta (a diferencia de `setStatus`, que además
+   * revoca como efecto colateral): un empleado activo puede perder un
+   * dispositivo sin perder su acceso.
+   *
+   * Alcance deliberado (infraestructura, no UI de "administrador de
+   * dispositivos" todavía): revoca TODAS las sesiones del usuario en esta
+   * organización de una vez, no una sesión/dispositivo puntual — no existe
+   * hoy ninguna superficie que liste sesiones activas por separado
+   * (userAgent/ip/createdAt ya se guardan en `RefreshToken` desde Fase 1,
+   * listos para esa UI futura). Revocar solo detiene la emisión de NUEVOS
+   * access tokens (refresh/login silencioso): un access token ya emitido
+   * sigue siendo válido hasta que expira por su cuenta (máximo 15 minutos,
+   * stateless — el sistema no valida el access token contra una lista de
+   * revocación en cada request, igual que hoy). Documentado como
+   * limitación aceptada, no un descuido — ver docs/security.md.
+   */
+  async revokeSessions(
+    organizationId: string,
+    membershipId: string,
+    actorUserId: string,
+  ) {
+    const membership = await this.tenantPrisma.run(organizationId, (tx) =>
+      tx.organizationUser.findFirst({
+        where: { id: membershipId, organizationId },
+      }),
+    );
+    if (!membership) throw new NotFoundException('Membresía no encontrada');
+
+    const { count } = await this.prisma.refreshToken.updateMany({
+      where: { userId: membership.userId, organizationId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+
+    await this.audit.log({
+      organizationId,
+      userId: actorUserId,
+      action: 'members.sessions.revoke',
+      entityType: 'OrganizationUser',
+      entityId: membershipId,
+      metadata: { targetUserId: membership.userId, revokedCount: count },
+    });
+
+    return { revokedCount: count };
   }
 }
