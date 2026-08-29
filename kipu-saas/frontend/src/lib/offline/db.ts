@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import type {
+  CatalogSyncState,
   LocalCustomer,
   LocalOrgContext,
   LocalProduct,
@@ -28,6 +29,7 @@ export class KipuLocalDB extends Dexie {
   orgContext!: EntityTable<LocalOrgContext, "organizationId">;
   sales!: EntityTable<LocalSale, "id">;
   syncQueue!: EntityTable<SyncQueueItem, "id">;
+  syncState!: EntityTable<CatalogSyncState, "organizationId">;
 
   constructor(organizationId: string) {
     super(`kipu_local_${organizationId}`);
@@ -41,6 +43,14 @@ export class KipuLocalDB extends Dexie {
       // orden; `[status+nextRetryAt]` compuesto para la consulta real de
       // "elegibles ahora" (ver `sync-queue.ts`).
       syncQueue: "id, status, entityId, createdAt, [status+nextRetryAt]",
+    });
+    // Versión 2 (Offline 4.3): agrega el cursor de sincronización
+    // incremental de catálogo. Cambio puramente ADITIVO — Dexie conserva
+    // intactas todas las tablas de la versión 1 (nada se migra, nada se
+    // pierde) para cualquier base que ya existía en el dispositivo; la
+    // tabla nueva simplemente empieza vacía.
+    this.version(2).stores({
+      syncState: "organizationId",
     });
   }
 }

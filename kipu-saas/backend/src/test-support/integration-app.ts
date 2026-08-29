@@ -552,6 +552,30 @@ export async function createProductWithStock(
 }
 
 /**
+ * Fuerza un `updatedAt` explícito, saltándose el `@updatedAt` automático de
+ * Prisma (que siempre lo pisa a `now()` en un `.update()` normal) — solo
+ * para tests que necesitan controlar el orden temporal exacto entre varias
+ * filas (Offline 4.3, sincronización incremental de catálogo por
+ * `updatedSince`). `$executeRaw` con plantilla etiquetada parametriza el
+ * valor de forma segura; el nombre de tabla nunca viene de afuera (union
+ * type cerrado), así que no hay riesgo de inyección SQL.
+ */
+export async function forceUpdatedAt(
+  app: INestApplication,
+  organizationId: string,
+  table: 'products' | 'customers',
+  id: string,
+  updatedAt: Date,
+): Promise<void> {
+  const tenantPrisma = app.get(TenantPrismaService);
+  await tenantPrisma.run(organizationId, (tx) =>
+    table === 'products'
+      ? tx.$executeRaw`UPDATE products SET "updatedAt" = ${updatedAt} WHERE id = ${id}`
+      : tx.$executeRaw`UPDATE customers SET "updatedAt" = ${updatedAt} WHERE id = ${id}`,
+  );
+}
+
+/**
  * Crea (o reutiliza) un `Plan` de prueba con límites arbitrarios y apunta
  * la `Subscription` de la organización a él directamente vía Prisma — sin
  * pasar por `SubscriptionsService.changePlan` (que solo acepta las 4

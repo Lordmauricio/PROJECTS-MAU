@@ -2184,3 +2184,195 @@ u otras pantallas fuera del alcance de esta subfase.
 ### Endpoints nuevos en esta fase: ninguno
 
 Fase exclusivamente de testing/frontend. Cero cambios de backend.
+
+## 22. Fase Offline 4.3 — Sincronización incremental de catálogo: decisiones técnicas
+
+Subfase autorizada explícitamente y por separado del resto de la
+auditoría "Offline 4". Alcance exclusivo: productos, clientes,
+sincronización incremental, cambios de estado `active`, cursor de
+sincronización, tests, compatibilidad con consumidores existentes. Cero
+impresión/hardware/Tauri/Android/Windows/administrador de dispositivos,
+cero cambios visuales del POS más allá de qué función de sync se llama
+en su efecto de arranque.
+
+### FULL SYNC vs. INCREMENTAL SYNC — la diferencia exacta
+
+**FULL SYNC** (`runFullInitialSync`, sin cambios de comportamiento desde
+Offline 2/3): descarga TODO el catálogo (`GET /products`, `GET
+/customers`, sin `updatedSince`) y reemplaza la copia local entera
+(`clear()` + `bulkAdd`). Sigue siendo el mecanismo para: primera
+instalación de un dispositivo, recuperación de una base local corrupta o
+inconsistente, o un resync manual explícito a futuro — el incremental
+NUNCA lo reemplaza, lo complementa. Lo único agregado: al final, dentro
+de la MISMA transacción que ya escribía `products`/`customers`
+/`orgContext`, ahora también graba el cursor inicial en la tabla nueva
+`syncState` (`productsUpdatedAt`/`customersUpdatedAt` = el `updatedAt`
+máximo de lo recién descargado).
+
+**INCREMENTAL SYNC** (`runIncrementalSync`, nueva): pide solo lo que
+cambió desde el cursor guardado (`GET /products?updatedSince=...`, `GET
+/customers?updatedSince=...`) y aplica los cambios con `bulkPut` (upsert
+por `id`) — NUNCA `clear()`. Un producto/cliente que no vino en la
+respuesta simplemente no se toca: "no vino en la respuesta" nunca
+significa "hay que borrarlo localmente" (instrucción explícita del
+pedido). Sin cursor previo (`syncState` vacío o sin `lastFullSyncAt`
+todavía), cae a `runFullInitialSync` — nunca intenta un incremental "a
+ciegas" sin saber desde dónde partir.
+
+`sales/pos/page.tsx` (único consumidor de `runFullInitialSync` en toda
+la app, confirmado por auditoría) ahora llama a una u otra según
+corresponda: `firstRun` (sin nada cacheado todavía) → full sync,
+bloqueante; catálogo ya cacheado de una sesión anterior → incremental,
+en segundo plano, exactamente el mismo manejo de errores que ya existía
+(un fallo del incremental en segundo plano no es un error visible — se
+sigue vendiendo con lo que ya había).
+
+### `updatedSince`: aditivo, nunca cambia el comportamiento por defecto
+
+`GET /products` y `GET /customers` ganan un parámetro opcional
+`updatedSince` (ISO 8601, validado con `@IsISO8601()` — mismo validador
+que ya usaban `reports`/`inventory/kardex`, un `updatedSince` inválido se
+rechaza con 400 automáticamente vía el `ValidationPipe` global, sin
+código de validación propio). **Sin este parámetro, el comportamiento es
+EXACTAMENTE el de siempre** — se auditaron los 6 callers reales
+(`inventory/products`, `purchases`, `inventory/movements`, `reports`,
+`customers/page.tsx`, y el propio `catalog-sync.ts` para su full sync) y
+NINGUNO lo envía, así que ninguno se ve afectado. La migración de
+`@Query('q') q?: string` (sin DTO) a `@Query() query: ListProductsQueryDto`
+(con DTO, `whitelist: true` global) se confirmó segura de la misma
+manera: ningún caller real manda hoy un query param fuera de `q`, así
+que el nuevo whitelisting no rechaza nada que antes pasara.
+
+### El punto crítico: productos desactivados SÍ aparecen en el incremental
+
+`ProductsService.list` filtraba `active: true` SIEMPRE — un producto que
+pasa de `active: true` a `false` (soft-delete, `remove()`) simplemente
+desaparecía de cualquier respuesta. Para el full sync esto nunca fue un
+problema (el `clear()` de cada full sync borra igual la copia local del
+producto ya no visible). Para un incremental que NUNCA hace `clear()`,
+sería un bug real: el dispositivo seguiría creyendo para siempre que ese
+producto sigue activo, pudiendo venderlo offline con stock que el
+servidor ya no reconoce como disponible.
+
+Solución implementada (`products.service.ts#list`): **cuando
+`updatedSince` está presente, se deja de filtrar `active: true`** — se
+audita el `updatedAt`, no el estado. `CustomersService.list`, en cambio,
+NUNCA filtró por `active` (se verificó contra el código real antes de
+tocar nada) — no hizo falta ningún bypass ahí, un cliente desactivado ya
+se devolvía siempre, con o sin `updatedSince`.
+
+El cliente offline (`toLocalProduct`) simplemente guarda el `active`
+recibido tal cual — `db.products.bulkPut` actualiza la fila EXISTENTE a
+`active: false`, nunca la borra físicamente. El propio `sales/pos
+/page.tsx#loadFromLocalDb` (sin cambios) ya filtraba
+`localProducts.filter(p => p.active)` para decidir qué mostrar como
+vendible — el producto desactivado deja de aparecer en la lista de venta
+en el siguiente render, sin necesitar ningún cambio visual nuevo, y el
+registro sigue disponible para cualquier historial local que lo
+referencie (`LocalSale.items` guarda `productId`, no una copia
+denormalizada que pudiera quedar huérfana).
+
+### Cursor: por qué `updatedAt >= cursor`, nunca `updatedAt > cursor`
+
+Riesgo real analizado explícitamente (instrucción del pedido): si el
+cursor avanza al `updatedAt` MÁXIMO de la última página aplicada y la
+siguiente consulta usara `>` estricto, cualquier fila que comparta ESE
+MISMO instante (dos productos tocados en el mismo milisegundo por un
+mismo `UPDATE`, o el propio corte de una página en el límite de `take`)
+se perdería PARA SIEMPRE — nunca volvería a ser `> cursor` en ninguna
+consulta futura. Se eligió `>=` en ambos services: puede traer de vuelta
+la última fila ya aplicada en el reintento siguiente, pero eso es
+inofensivo (`bulkPut` con el mismo dato es un no-op efectivo), mientras
+que perder una fila con `>` sería un dato desincronizado sin ninguna
+señal de error visible. `fetchAllChanges` (frontend) tiene además una
+salvaguarda extra: si una página completa no logra avanzar el cursor (
+todas las filas comparten el mismo instante que el cursor de entrada),
+corta el bucle en vez de repetir la misma página para siempre.
+
+El cursor NUNCA se deriva de `Date.now()` del dispositivo — siempre del
+`updatedAt` que el propio servidor (Postgres, vía `@updatedAt` de
+Prisma) ya puso en cada fila. Un reloj de dispositivo mal configurado
+(adelantado, atrasado, cambiado de zona horaria) no puede corromper ni
+adelantar el cursor, porque el cursor nunca lo lee.
+
+### Paginación del incremental — solución mínima, sin backend nuevo
+
+`take: 200` (productos) / `take: 100` (clientes) ya existían — el full
+sync ya los aceptaba como límite conocido. Para el incremental, si hay
+MÁS cambios que ese límite desde el cursor, hacía falta alguna forma de
+seguir pidiendo sin inventar un mecanismo de paginación nuevo del lado
+del backend. Solución: el propio `updatedSince` sirve como su token de
+continuación — `fetchAllChanges` (frontend) pide una página, y si viene
+EXACTAMENTE del tamaño del límite (`batch.length === pageSize`, señal de
+"podría haber más"), pide otra página con `updatedSince` = el `updatedAt`
+máximo de la página recién recibida; corta en cuanto una página viene
+MÁS CHICA que el límite (certeza de que no queda nada más). Cero cambios
+de forma en la respuesta del backend — sigue siendo el mismo array plano
+de siempre, ordenado ahora por `updatedAt asc` (en vez de `name asc`/
+`createdAt desc`) cuando `updatedSince` está presente, que es la
+propiedad de la que depende esta estrategia para converger. Una
+salvaguarda extra (`MAX_INCREMENTAL_PAGES = 50`) evita cualquier bucle
+sin fin ante un caso patológico no anticipado — 50 páginas cubre hasta
+10.000/5.000 filas cambiadas de una sola vez, muy por encima de
+cualquier volumen real esperado.
+
+### Atomicidad del cursor: nunca avanza si la aplicación local falla
+
+Requisito explícito y no negociable del pedido, con su propio test
+dedicado ("TEST DE CONSISTENCIA DEL CURSOR",
+`catalog-sync.test.ts`). `runIncrementalSync` aplica los cambios
+(`bulkPut`) Y actualiza `syncState` DENTRO de la misma transacción
+Dexie — si cualquier escritura local falla a mitad de camino, Dexie
+aborta TODA la transacción: ni los productos/clientes se aplican a
+medias, ni el cursor avanza. El estado queda exactamente como antes del
+intento fallido, listo para un reintento posterior que sí complete. Si
+lo que falla es la descarga (`fetch`, ANTES de que exista ninguna
+transacción), directamente nunca se llega a tocar la base local — incluso
+más simple: no hay nada que revertir. Un error de red durante el
+incremental nunca dejó el catálogo "parcialmente marcado como
+sincronizado" en ningún escenario probado.
+
+### Multi-tenant: aislamiento por construcción, no por lógica propia
+
+`syncState` es una tabla más DENTRO de la base física por-organización
+(`kipu_local_<organizationId>`, ver sección 18) — el mismo principio que
+ya aplicaba a `products`/`customers`/`orgContext`/`sales`/`syncQueue`
+desde Offline 2. Cambiar de organización o volver a una anterior nunca
+mezcla cursores porque no hay NINGUNA fila de otra organización con la
+que pudiera chocar en la misma base — no se escribió ninguna lógica de
+"filtrar por organizationId", el aislamiento viene gratis de que cada
+organización ya vive en su propio archivo IndexedDB separado.
+
+Del lado del servidor: `organizationId` sigue viniendo exclusivamente
+del JWT (`auth.organizationId`), nunca del cliente — ni `updatedSince`
+ni ningún query param nuevo pueden influir en qué tenant se consulta.
+RLS sigue aplicando sin cambios (`ProductsService.list`/
+`CustomersService.list` siguen pasando por `TenantPrismaService.run`,
+sin excepción).
+
+### Migración de Dexie: aditiva, sin pérdida de datos
+
+`db.ts` pasa de `version(1)` a `version(2)`, agregando SOLO la tabla
+`syncState` — ninguna tabla existente se toca ni se migra. Una base
+IndexedDB que ya existía en el dispositivo de un usuario (de Offline
+2/3) conserva intactos `products`/`customers`/`orgContext`/`sales`
+/`syncQueue`; `syncState` simplemente empieza vacía, así que la primera
+sincronización que corra después de esta fase (full o incremental) la
+completa sola — no hace falta ningún script de migración manual.
+
+### Test de paginación en escala real: dónde vive cada uno
+
+Crear 200+ filas reales en Postgres para cada corrida de test sería
+costoso y lento sin agregar información nueva (la propiedad crítica es
+el ORDEN ascendente, no el volumen en sí). Se dividió la cobertura:
+el backend prueba la propiedad de la que depende la paginación (orden
+`updatedAt asc` con `updatedSince`, con un puñado de filas reales vía
+`forceUpdatedAt`); el frontend prueba el bucle de paginación en sí
+(`fetchAllChanges`) con fetch mockeado — barato, determinista, y ejercita
+el límite real de 200 filas sin tocar Postgres.
+
+### Endpoints nuevos en esta fase: ninguno
+
+`updatedSince` es un parámetro OPCIONAL agregado a los dos endpoints que
+ya existían (`GET /products`, `GET /customers`) — no se creó ningún
+endpoint de sincronización genérico, instrucción explícita del pedido.

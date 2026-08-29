@@ -688,6 +688,45 @@ Alcance: `lib/api.ts`, `lib/offline/token-store.ts`, `lib/auth-context.tsx`
   Offline 2/3, cubierto por su batería de tests existente, no modificado
   por esta subfase.
 
+## Fase Offline 4.3 — Sincronización incremental de catálogo: notas de seguridad específicas
+
+Ver `docs/architecture.md` sección 22 para el detalle técnico completo.
+Alcance: `GET /products`/`GET /customers` (parámetro `updatedSince`
+opcional), `frontend/src/lib/offline/catalog-sync.ts`, `db.ts` — sin
+tocar autenticación, RLS, RBAC ni ningún módulo de negocio.
+
+- **`organizationId` sigue viniendo exclusivamente del JWT**: `updatedSince`
+  es un filtro adicional sobre `updatedAt`, nunca reemplaza ni afecta el
+  `WHERE organizationId = ...` que ya imponía `TenantPrismaService.run`
+  — un `updatedSince` cualquiera nunca puede traer filas de otra
+  organización. Verificado con tests de aislamiento reales
+  (`products.incremental-sync.spec.ts`, `customers.incremental-sync
+  .spec.ts`) contra dos tenants reales.
+- **Bypass de `active: true` acotado y auditado**: `ProductsService.list`
+  deja de filtrar productos inactivos SOLO cuando `updatedSince` está
+  presente — se confirmó explícitamente que ningún caller real (interfaz
+  de administración de productos incluida) envía ese parámetro hoy, así
+  que ningún flujo existente empieza a ver productos desactivados que
+  antes no veía. El bypass es estrictamente para que el DISPOSITIVO
+  OFFLINE pueda enterarse de una desactivación reciente, no una
+  relajación general del filtro.
+- **Validación de `updatedSince` vía el `ValidationPipe` global**:
+  `@IsISO8601()` (mismo validador que ya usaban `reports`/`inventory
+  /kardex`) rechaza con 400 cualquier valor que no sea una fecha ISO 8601
+  real — nunca llega a construirse un `new Date(...)` con un valor
+  arbitrario del cliente sin validar primero.
+- **Sin endpoint nuevo, sin superficie nueva de ataque**: se extendieron
+  dos endpoints ya protegidos por `JwtAuthGuard`/`PermissionsGuard`
+  (`products.read`/`customers.read`, sin cambios) — no se creó ningún
+  endpoint de sincronización genérico que pudiera exponer más de lo que
+  cada guard ya permite.
+- **Aislamiento multi-tenant del cursor local, por construcción**: el
+  cursor de sincronización (`syncState`) vive dentro de la misma base
+  IndexedDB física por-organización que ya usaban `products`/`customers`
+  desde Offline 2 — ninguna lógica nueva de filtrado que pudiera fallar,
+  el aislamiento viene de que no existe ninguna fila de otra organización
+  con la que un bug pudiera confundirse.
+
 ## Qué queda pendiente (explícito, no oculto)
 
 - Administrador de dispositivos (UI + endpoint de solo lectura para listar

@@ -10,16 +10,39 @@ export class CustomersService {
     private readonly audit: AuditService,
   ) {}
 
-  list(organizationId: string, search?: string) {
+  /**
+   * `updatedSince` (Offline 4.3, sincronización incremental de catálogo).
+   * A diferencia de productos, este `list()` NUNCA filtró por `active` —
+   * los clientes desactivados ya se devolvían siempre, así que no hace
+   * falta ningún bypass acá. `updatedAt >= updatedSince` (nunca `>`
+   * estricto) por la misma razón que en `ProductsService.list`: evita
+   * perder una fila que comparte instante exacto con el cursor. El orden
+   * pasa a `updatedAt asc` (en vez de `createdAt desc`) para que el
+   * cliente pueda paginar avanzando su propio cursor de forma segura.
+   */
+  list(
+    organizationId: string,
+    query?: { search?: string; updatedSince?: string },
+  ) {
+    const search = query?.search;
+    const updatedSince = query?.updatedSince;
     return this.tenantPrisma.run(organizationId, (tx) =>
       tx.customer.findMany({
         where: {
           organizationId,
+          ...(updatedSince
+            ? { updatedAt: { gte: new Date(updatedSince) } }
+            : {}),
           ...(search
-            ? { OR: [{ name: { contains: search, mode: 'insensitive' } }, { documentNumber: { contains: search } }] }
+            ? {
+                OR: [
+                  { name: { contains: search, mode: 'insensitive' } },
+                  { documentNumber: { contains: search } },
+                ],
+              }
             : {}),
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: updatedSince ? { updatedAt: 'asc' } : { createdAt: 'desc' },
         take: 100,
       }),
     );
@@ -44,7 +67,11 @@ export class CustomersService {
     });
   }
 
-  async create(organizationId: string, dto: CreateCustomerDto, actorUserId: string) {
+  async create(
+    organizationId: string,
+    dto: CreateCustomerDto,
+    actorUserId: string,
+  ) {
     const customer = await this.tenantPrisma.run(organizationId, (tx) =>
       tx.customer.create({ data: { organizationId, ...dto } }),
     );
@@ -58,9 +85,16 @@ export class CustomersService {
     return customer;
   }
 
-  async update(organizationId: string, customerId: string, dto: UpdateCustomerDto, actorUserId: string) {
+  async update(
+    organizationId: string,
+    customerId: string,
+    dto: UpdateCustomerDto,
+    actorUserId: string,
+  ) {
     const updated = await this.tenantPrisma.run(organizationId, async (tx) => {
-      const existing = await tx.customer.findFirst({ where: { id: customerId, organizationId } });
+      const existing = await tx.customer.findFirst({
+        where: { id: customerId, organizationId },
+      });
       if (!existing) throw new NotFoundException('Cliente no encontrado');
       return tx.customer.update({ where: { id: customerId }, data: dto });
     });

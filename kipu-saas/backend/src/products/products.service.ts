@@ -12,12 +12,43 @@ export class ProductsService {
     private readonly subscriptions: SubscriptionsService,
   ) {}
 
-  list(organizationId: string, search?: string) {
+  /**
+   * `updatedSince` (Offline 4.3, sincronización incremental de catálogo):
+   * cuando está presente, deja de filtrar `active: true` — el cliente
+   * offline necesita enterarse también de los productos que ACABAN de
+   * desactivarse (updatedAt reciente, active ahora false) para poder
+   * actualizar su copia local, algo que el filtro de siempre le ocultaría
+   * por completo. Sin `updatedSince`, el comportamiento es EXACTAMENTE el
+   * de antes — se auditaron todos los callers reales (`inventory/products`,
+   * `purchases`, `inventory/movements`, `reports`, el propio panel de
+   * administración de productos) y ninguno envía este parámetro, así que
+   * ninguno se ve afectado. Ver `docs/architecture.md` sección 22.
+   *
+   * `updatedAt >= updatedSince` (nunca `>` estricto) a propósito: usar `>`
+   * arriesgaría perder para siempre una fila que comparte el mismo
+   * instante que el cursor (dos productos actualizados en el mismo
+   * milisegundo, o el propio límite de página) — `>=` puede traer de
+   * vuelta la última fila ya aplicada, pero eso es inofensivo (reaplicar
+   * el mismo dato no corrompe nada) mientras que perder una fila sí. El
+   * orden pasa a `updatedAt asc` (en vez de `name asc`) para que el
+   * cliente pueda paginar de forma segura avanzando su propio cursor al
+   * `updatedAt` máximo visto en cada página — ver `catalog-sync.ts` del
+   * frontend.
+   */
+  list(
+    organizationId: string,
+    query?: { search?: string; updatedSince?: string },
+  ) {
+    const search = query?.search;
+    const updatedSince = query?.updatedSince;
     return this.tenantPrisma.run(organizationId, (tx) =>
       tx.product.findMany({
         where: {
           organizationId,
-          active: true,
+          ...(updatedSince ? {} : { active: true }),
+          ...(updatedSince
+            ? { updatedAt: { gte: new Date(updatedSince) } }
+            : {}),
           ...(search
             ? {
                 OR: [
@@ -29,7 +60,7 @@ export class ProductsService {
             : {}),
         },
         include: { category: true, unit: true },
-        orderBy: { name: 'asc' },
+        orderBy: updatedSince ? { updatedAt: 'asc' } : { name: 'asc' },
         take: 200,
       }),
     );

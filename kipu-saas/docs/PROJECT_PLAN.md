@@ -1279,6 +1279,57 @@ duplicar la cobertura de lógica pura que ya existía. Ver
       320/320 backend, `verify:tenant-isolation` 23/23, builds limpios,
       lint limpio en todos los archivos tocados/nuevos.
 
+## Fase Offline 4.3 — Sincronización incremental de catálogo ✅
+
+Tercera subfase de "Offline 4", autorizada explícitamente por separado.
+Alcance exclusivo: productos, clientes, sincronización incremental,
+cambios de `active`, cursor de sincronización, tests, compatibilidad con
+consumidores existentes. Ver `docs/architecture.md` sección 22 y
+`docs/security.md` sección "Fase Offline 4.3" para el detalle técnico
+completo.
+
+- [x] `GET /products`/`GET /customers` ganan `updatedSince` (ISO 8601,
+      opcional, validado con `@IsISO8601()`) — sin el parámetro, el
+      comportamiento es EXACTAMENTE el de siempre, confirmado auditando
+      los 6 callers reales de ambos endpoints (ninguno lo envía).
+- [x] **El punto crítico resuelto**: `ProductsService.list` deja de
+      filtrar `active: true` SOLO cuando `updatedSince` está presente —
+      un producto que se desactiva ahora sí llega al incremental (con
+      `active: false`), en vez de quedar invisible para siempre en la
+      copia local. `CustomersService.list` nunca filtró por `active` —
+      no hizo falta ningún bypass ahí.
+- [x] `updatedAt >= cursor` (nunca `>` estricto) — analizado
+      explícitamente el riesgo de perder filas que comparten el mismo
+      instante que el cursor; `>=` es inofensivo (reaplicar el mismo
+      dato no corrompe nada), `>` arriesgaba pérdida silenciosa real.
+- [x] Cursor derivado SIEMPRE del `updatedAt` real del servidor, nunca
+      de `Date.now()` del dispositivo — inmune a un reloj mal
+      configurado.
+- [x] Paginación del incremental sin backend nuevo: el propio
+      `updatedSince` sirve de token de continuación, con salvaguarda
+      contra bucles sin fin (`MAX_INCREMENTAL_PAGES`).
+- [x] Atomicidad del cursor: aplicar cambios + avanzar el cursor ocurre
+      dentro de una sola transacción Dexie — si algo falla, ninguno de
+      los dos avanza; probado explícitamente ("TEST DE CONSISTENCIA DEL
+      CURSOR").
+- [x] `runIncrementalSync` NUNCA hace `clear()` — `bulkPut` (upsert),
+      registros no mencionados en la respuesta quedan intactos.
+- [x] Full sync intacto como mecanismo de primera instalación/
+      recuperación — el incremental cae a él automáticamente sin cursor
+      previo.
+- [x] Multi-tenant por construcción: el cursor vive en la misma base
+      IndexedDB física por-organización de siempre, sin lógica de
+      filtrado propia que pudiera fallar.
+- [x] Migración de Dexie aditiva (`version(1)` → `version(2)`, solo
+      agrega la tabla `syncState`) — sin pérdida de datos existentes.
+- [x] Tests nuevos: 15 backend (8 productos + 7 clientes, incluidos
+      aislamiento, orden ascendente, `updatedSince` inválido/futuro) +
+      10 frontend (incluidas las pruebas de falla crítica y consistencia
+      del cursor pedidas explícitamente). 335/335 backend, 141/141
+      frontend, `verify:tenant-isolation` 23/23, builds y lint limpios
+      (3 errores de lint pre-existentes en `products.service.ts`,
+      confirmados contra el SHA base, no introducidos por esta subfase).
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,

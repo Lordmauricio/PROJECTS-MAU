@@ -5,7 +5,7 @@ import AppShell from "@/components/AppShell";
 import ConnectionBadge from "@/components/ConnectionBadge";
 import { useAuth } from "@/lib/auth-context";
 import { useLocalDb } from "@/lib/offline/react/useLocalDb";
-import { runFullInitialSync } from "@/lib/offline/catalog-sync";
+import { runFullInitialSync, runIncrementalSync } from "@/lib/offline/catalog-sync";
 import {
   addToCart,
   computeCartTotals,
@@ -117,27 +117,32 @@ export default function POSPage() {
 
       // Primera vez que se abre el POS en este dispositivo (sin nada
       // todavía cacheado): sin catálogo no hay nada que vender, así que
-      // acá SÍ hace falta esperar la primera descarga si hay conexión.
-      // Si ya hay catálogo cacheado de una sesión anterior, la
-      // actualización es en segundo plano y nunca bloquea la pantalla —
-      // el POS tiene que abrir rápido incluso sin red.
+      // acá SÍ hace falta esperar la descarga completa si hay conexión.
+      // Si ya hay catálogo cacheado de una sesión anterior (Offline 4.3),
+      // la actualización pide solo lo que cambió desde la última vez
+      // (`runIncrementalSync`) en vez de volver a bajar todo — y sigue
+      // siendo en segundo plano, nunca bloquea la pantalla: el POS tiene
+      // que abrir rápido incluso sin red.
       if (navigator.onLine) {
-        const sync = runFullInitialSync(db, {
+        const syncInput = {
           organizationId: organization.id,
           organizationName: organization.name,
           userId: user.id,
           userName: user.name,
           roleKey: null,
-        }).catch((err) => {
-          if (firstRun) {
-            setLoadError(
-              err instanceof Error ? err.message : "No se pudo descargar el catálogo",
-            );
-          }
-          // Si ya había catálogo cacheado, un fallo de la actualización en
-          // segundo plano no es un error visible — se sigue vendiendo con
-          // lo que ya había.
-        });
+        };
+        const sync = (firstRun ? runFullInitialSync(db, syncInput) : runIncrementalSync(db, syncInput)).catch(
+          (err) => {
+            if (firstRun) {
+              setLoadError(
+                err instanceof Error ? err.message : "No se pudo descargar el catálogo",
+              );
+            }
+            // Si ya había catálogo cacheado, un fallo de la actualización en
+            // segundo plano no es un error visible — se sigue vendiendo con
+            // lo que ya había.
+          },
+        );
         if (firstRun) await sync;
       }
 

@@ -58,6 +58,24 @@ export interface LocalOrgContext {
   fetchedAt: string;
 }
 
+/**
+ * Cursor de sincronización incremental de catálogo (Offline 4.3) — un solo
+ * registro por base local, igual que `LocalOrgContext` (una base física ya
+ * es una sola organización, así que el aislamiento multi-tenant viene
+ * gratis por construcción, sin necesitar lógica propia). `productsUpdatedAt`
+ * / `customersUpdatedAt` son el `updatedAt` MÁXIMO del servidor ya
+ * aplicado localmente — nunca `Date.now()` del dispositivo (ver
+ * `catalog-sync.ts`): el reloj del dispositivo puede estar mal, la marca
+ * del servidor no.
+ */
+export interface CatalogSyncState {
+  organizationId: string;
+  productsUpdatedAt: string | null;
+  customersUpdatedAt: string | null;
+  lastFullSyncAt: string | null;
+  lastIncrementalSyncAt: string | null;
+}
+
 export type LocalSaleStatus = "DRAFT_LOCAL" | "CREATE_SYNCED" | "CONFIRM_SYNCED";
 
 export interface LocalSaleItem {
