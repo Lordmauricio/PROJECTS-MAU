@@ -602,6 +602,49 @@ Tauri/Android/Windows/impresión.
   endpoints nuevos — toda la fase reutiliza los mismos endpoints que ya
   existían.
 
+## Fase Offline 3 — POS offline + estado de conexión + sincronización automática: notas de seguridad específicas
+
+Ver `docs/architecture.md` sección 19 para el detalle técnico completo.
+Alcance: UI (`sales/pos/page.tsx`), componentes de conexión/historial y
+orquestación de disparo automático (`auto-sync.ts`, hooks de React) sobre
+la infraestructura de Offline 2 — sin backend nuevo, sin
+Tauri/Android/Windows/impresión.
+
+- **`idempotencyKey` ahora SIEMPRE presente en `POST /sales`**: el POS
+  online usaba antes esta fase un camino directo a la API sin
+  `idempotencyKey` — un riesgo de duplicación por doble clic o reintento
+  de red ya señalado en Fase Offline 1, nunca cerrado. Al unificar POS
+  online y offline en un solo camino (`submitSaleOffline`), se cierra:
+  toda venta, con o sin conexión, ahora manda `idempotencyKey`.
+- **Sesión revocada detiene la sincronización automática sin reintentar
+  autenticarse en bucle**: `auto-sync.ts` marca la organización como
+  "sesión revocada" apenas el Sync Engine descubre un `401` que persiste
+  tras el refresh (mecanismo de Offline 2, sin cambios), y no vuelve a
+  intentar sincronizar hasta que el usuario se loguea de nuevo. Sin este
+  freno, un dispositivo con la sesión revocada remotamente (`POST
+  /members/:id/revoke-sessions`, Fase Offline 1) podría quedar golpeando
+  `/auth/refresh` cada 45 segundos indefinidamente. Probado en
+  `auto-sync.test.ts`.
+- **Ningún dato sensible nuevo en pantalla ni en almacenamiento**: el
+  historial local de ventas y el indicador de conexión leen exclusivamente
+  de IndexedDB (catálogo/ventas ya cacheados desde Offline 2) y del estado
+  en memoria del Sync Engine — nada de esto toca `localStorage` más allá
+  de lo que `token-store.ts` ya leía desde Offline 2.
+- **Logout sigue sin tocar IndexedDB**: la advertencia de operaciones
+  pendientes en `AppShell` (`window.confirm` con el resultado de
+  `getPendingSyncSummary`, Offline 2) es solo informativa — cancelar el
+  logout no hace nada especial con la cola, y confirmar el logout tampoco
+  la borra. Ninguna venta pendiente se pierde por cerrar sesión, con o sin
+  esta fase.
+- **Conflictos de venta (stock insuficiente, validación permanente) se
+  muestran al usuario tal como los devuelve el servidor**, sin
+  reformular ni "traducir" un mensaje que pueda ocultar el motivo real
+  del rechazo — el botón de reintento manual (`retrySale`) vuelve a
+  mandar exactamente el mismo payload con la misma `idempotencyKey`,
+  nunca uno alterado a mano.
+- **Endpoints nuevos en esta fase: ninguno** — reutiliza los mismos que
+  Offline 1/2 ya dejaron listos.
+
 ## Qué queda pendiente (explícito, no oculto)
 
 - Administrador de dispositivos (UI + endpoint de solo lectura para listar

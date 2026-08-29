@@ -2,34 +2,38 @@
 
 import { useEffect, useMemo, useState } from "react";
 import AppShell from "@/components/AppShell";
-import { api } from "@/lib/api";
-import { ApiError } from "@/lib/auth-context";
+import ConnectionBadge from "@/components/ConnectionBadge";
+import { useAuth } from "@/lib/auth-context";
+import { useLocalDb } from "@/lib/offline/react/useLocalDb";
+import { runFullInitialSync } from "@/lib/offline/catalog-sync";
+import {
+  addToCart,
+  computeCartTotals,
+  removeCartLine,
+  updateCartLine,
+  type CartLine,
+} from "@/lib/offline/pos-cart";
+import { retrySale, submitSaleOffline } from "@/lib/offline/pos-submit";
+import {
+  listLocalSalesWithState,
+  type LocalSaleWithState,
+  type SaleSyncState,
+} from "@/lib/offline/sale-sync-state";
+import { newIdempotencyKey } from "@/lib/offline/ids";
+import type { LocalOrgContext } from "@/lib/offline/types";
 
-interface Product {
+interface ProductView {
   id: string;
   name: string;
+  sku: string | null;
   price: string;
-  sku?: string | null;
   active: boolean;
 }
 
-interface Customer {
+interface CustomerView {
   id: string;
   name: string;
-}
-
-interface Branch {
-  id: string;
-  warehouses: { id: string; name: string }[];
-  posTerminals: { id: string; name: string; code: string }[];
-}
-
-interface CartLine {
-  productId: string;
-  name: string;
-  quantity: number;
-  unitPrice: number;
-  discount: number;
+  active: boolean;
 }
 
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "QR";
@@ -40,17 +44,32 @@ interface PaymentLine {
   idempotencyKey: string;
 }
 
-function newIdempotencyKey() {
-  return typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `key-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
+type Feedback = { kind: "synced" | "offline" | "conflict" | "error"; message: string };
+
+const FEEDBACK_STYLES: Record<Feedback["kind"], string> = {
+  synced: "bg-emerald-50 text-emerald-700",
+  offline: "bg-amber-50 text-amber-800",
+  conflict: "bg-red-50 text-red-700",
+  error: "bg-red-50 text-red-700",
+};
+
+const SYNC_BADGE: Record<SaleSyncState["kind"], { label: string; className: string }> = {
+  synced: { label: "Sincronizada", className: "bg-emerald-50 text-emerald-700" },
+  "offline-pending": { label: "Pendiente de sincronizar", className: "bg-amber-50 text-amber-700" },
+  syncing: { label: "Sincronizando…", className: "bg-sky-50 text-sky-700" },
+  conflict: { label: "Conflicto", className: "bg-red-50 text-red-700" },
+  error: { label: "Error", className: "bg-red-50 text-red-700" },
+};
 
 export default function POSPage() {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [branch, setBranch] = useState<Branch | null>(null);
+  const { organization, user } = useAuth();
+  const db = useLocalDb();
+
+  const [products, setProducts] = useState<ProductView[]>([]);
+  const [customers, setCustomers] = useState<CustomerView[]>([]);
+  const [orgContext, setOrgContext] = useState<LocalOrgContext | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [neverSynced, setNeverSynced] = useState(false);
 
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -60,56 +79,104 @@ export default function POSPage() {
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ id: string; status: string; total: string; balance: string } | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
 
-  async function load() {
-    setLoadError(null);
-    try {
-      const [p, c, branches] = await Promise.all([
-        api<Product[]>("/products"),
-        api<Customer[]>("/customers"),
-        api<Branch[]>("/branches"),
-      ]);
-      setProducts(p.filter((x) => x.active));
-      setCustomers(c);
-      setBranch(branches[0] ?? null);
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el POS");
-    }
+  const [localSales, setLocalSales] = useState<LocalSaleWithState[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+
+  async function loadFromLocalDb() {
+    if (!db) return;
+    const [localProducts, localCustomers, contexts] = await Promise.all([
+      db.products.toArray(),
+      db.customers.toArray(),
+      db.orgContext.toArray(),
+    ]);
+    setProducts(localProducts.filter((p) => p.active));
+    setCustomers(localCustomers.filter((c) => c.active));
+    setOrgContext(contexts[0] ?? null);
+  }
+
+  async function refreshHistory() {
+    if (!db) return;
+    setLocalSales(await listLocalSalesWithState(db));
   }
 
   useEffect(() => {
-    load();
-  }, []);
+    if (!db || !organization || !user) return;
+    let cancelled = false;
+
+    async function bootstrap() {
+      if (!db || !organization || !user) return;
+      setLoadError(null);
+      const [productCount, contextCount] = await Promise.all([
+        db.products.count(),
+        db.orgContext.count(),
+      ]);
+      const firstRun = productCount === 0 || contextCount === 0;
+
+      // Primera vez que se abre el POS en este dispositivo (sin nada
+      // todavía cacheado): sin catálogo no hay nada que vender, así que
+      // acá SÍ hace falta esperar la primera descarga si hay conexión.
+      // Si ya hay catálogo cacheado de una sesión anterior, la
+      // actualización es en segundo plano y nunca bloquea la pantalla —
+      // el POS tiene que abrir rápido incluso sin red.
+      if (navigator.onLine) {
+        const sync = runFullInitialSync(db, {
+          organizationId: organization.id,
+          organizationName: organization.name,
+          userId: user.id,
+          userName: user.name,
+          roleKey: null,
+        }).catch((err) => {
+          if (firstRun) {
+            setLoadError(
+              err instanceof Error ? err.message : "No se pudo descargar el catálogo",
+            );
+          }
+          // Si ya había catálogo cacheado, un fallo de la actualización en
+          // segundo plano no es un error visible — se sigue vendiendo con
+          // lo que ya había.
+        });
+        if (firstRun) await sync;
+      }
+
+      if (cancelled) return;
+      await loadFromLocalDb();
+      await refreshHistory();
+      const stillNoContext = (await db.orgContext.count()) === 0;
+      setNeverSynced(stillNoContext);
+    }
+
+    bootstrap();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, organization?.id, user?.id]);
 
   const filteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return products.slice(0, 20);
-    return products.filter((p) => p.name.toLowerCase().includes(q) || p.sku?.toLowerCase().includes(q)).slice(0, 20);
+    return products
+      .filter((p) => p.name.toLowerCase().includes(q) || p.sku?.toLowerCase().includes(q))
+      .slice(0, 20);
   }, [products, search]);
 
-  const subtotal = cart.reduce((acc, line) => acc + line.quantity * line.unitPrice - line.discount, 0);
-  const discountNum = Number(saleDiscount) || 0;
-  const total = Math.max(0, subtotal - discountNum);
+  const { subtotal, total } = computeCartTotals(cart, Number(saleDiscount) || 0);
   const paidSoFar = payments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
 
-  function addToCart(product: Product) {
-    setResult(null);
-    setCart((prev) => {
-      const existing = prev.find((l) => l.productId === product.id);
-      if (existing) {
-        return prev.map((l) => (l.productId === product.id ? { ...l, quantity: l.quantity + 1 } : l));
-      }
-      return [...prev, { productId: product.id, name: product.name, quantity: 1, unitPrice: Number(product.price), discount: 0 }];
-    });
+  function handleAddToCart(product: ProductView) {
+    setFeedback(null);
+    setCart((prev) => addToCart(prev, product));
   }
 
-  function updateLine(productId: string, patch: Partial<CartLine>) {
-    setCart((prev) => prev.map((l) => (l.productId === productId ? { ...l, ...patch } : l)));
+  function handleUpdateLine(productId: string, patch: Partial<CartLine>) {
+    setCart((prev) => updateCartLine(prev, productId, patch));
   }
 
-  function removeLine(productId: string) {
-    setCart((prev) => prev.filter((l) => l.productId !== productId));
+  function handleRemoveLine(productId: string) {
+    setCart((prev) => removeCartLine(prev, productId));
   }
 
   function addPaymentLine() {
@@ -129,13 +196,15 @@ export default function POSPage() {
     setCustomerId("");
     setSaleDiscount("0");
     setPayments([]);
-    setResult(null);
     setError(null);
   }
 
   async function confirmSale() {
-    if (!branch || branch.warehouses.length === 0 || branch.posTerminals.length === 0) {
-      setError("No hay almacén o punto de venta configurado todavía (ve a Configuración).");
+    if (!db || !organization) return;
+    if (!orgContext) {
+      setError(
+        "Todavía no se descargó la configuración de tu sucursal — conectate a internet una vez para la primera sincronización.",
+      );
       return;
     }
     if (cart.length === 0) {
@@ -144,125 +213,179 @@ export default function POSPage() {
     }
     setSubmitting(true);
     setError(null);
+    setFeedback(null);
     try {
-      const sale = await api<{ id: string }>("/sales", {
-        method: "POST",
-        body: {
-          posTerminalId: branch.posTerminals[0].id,
-          warehouseId: branch.warehouses[0].id,
-          customerId: customerId || undefined,
-          discount: discountNum,
-          items: cart.map((l) => ({
-            productId: l.productId,
-            quantity: l.quantity,
-            unitPrice: l.unitPrice,
-            discount: l.discount,
-          })),
-        },
+      const validPayments = payments.filter((p) => Number(p.amount) > 0);
+      const result = await submitSaleOffline(db, {
+        organizationId: organization.id,
+        posTerminalId: orgContext.posTerminalId,
+        warehouseId: orgContext.warehouseId,
+        customerId: customerId || null,
+        discount: Number(saleDiscount) || 0,
+        items: cart.map((l) => ({
+          productId: l.productId,
+          quantity: l.quantity,
+          unitPrice: l.unitPrice,
+          discount: l.discount,
+        })),
+        payments: validPayments.map((p) => ({
+          method: p.method,
+          amount: Number(p.amount),
+          idempotencyKey: p.idempotencyKey,
+        })),
       });
 
-      const validPayments = payments.filter((p) => Number(p.amount) > 0);
-      const confirmed = await api<{ id: string; status: string; total: string; balance: string }>(
-        `/sales/${sale.id}/confirm`,
-        {
-          method: "POST",
-          body: {
-            payments: validPayments.map((p) => ({ method: p.method, amount: Number(p.amount), idempotencyKey: p.idempotencyKey })),
-          },
-        },
-      );
-
-      setResult(confirmed);
-      setCart([]);
-      setPayments([]);
-      setCustomerId("");
-      setSaleDiscount("0");
+      if (result.outcome === "synced" && result.summary) {
+        const balance = Number(result.summary.balance);
+        setFeedback({
+          kind: "synced",
+          message:
+            `Venta confirmada (${result.summary.status}). Total Bs. ${Number(result.summary.total).toFixed(2)}` +
+            (balance > 0 ? ` — saldo pendiente Bs. ${balance.toFixed(2)}` : ""),
+        });
+      } else if (result.outcome === "offline-pending") {
+        setFeedback({
+          kind: "offline",
+          message: "Venta guardada sin conexión. Se sincronizará automáticamente cuando vuelva Internet.",
+        });
+      } else {
+        setFeedback({
+          kind: result.outcome,
+          message: result.message ?? "No se pudo completar la venta.",
+        });
+      }
+      resetSale();
+      await refreshHistory();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "No se pudo confirmar la venta");
+      setError(err instanceof Error ? err.message : "No se pudo registrar la venta");
     } finally {
       setSubmitting(false);
     }
   }
 
+  async function handleRetry(localSaleId: string) {
+    if (!db || !organization) return;
+    setRetryingId(localSaleId);
+    try {
+      await retrySale(db, organization.id, localSaleId);
+      await refreshHistory();
+    } finally {
+      setRetryingId(null);
+    }
+  }
+
+  const attentionCount = localSales.filter(
+    (s) => s.state.kind === "conflict" || s.state.kind === "error",
+  ).length;
+  const pendingCount = localSales.filter((s) => s.state.kind === "offline-pending").length;
+
   return (
     <AppShell>
-      <div className="p-6 grid grid-cols-3 gap-6">
-        <div className="col-span-2 space-y-4">
-          <h1 className="text-lg font-semibold">Punto de venta</h1>
+      <div className="p-4 md:p-6 grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+        {/* 1) Búsqueda + 2) productos — primero en el orden del documento, así en celular aparecen arriba de todo. */}
+        <div className="md:col-span-2 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h1 className="text-lg font-semibold">Punto de venta</h1>
+            <ConnectionBadge />
+          </div>
           {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
+          {neverSynced && !loadError && (
+            <p className="text-sm text-amber-800 bg-amber-50 rounded p-2">
+              Necesitás conexión a internet una primera vez para descargar tu catálogo de
+              productos y poder vender desde este dispositivo.
+            </p>
+          )}
 
+          <label htmlFor="pos-search" className="sr-only">
+            Buscar producto por nombre o SKU
+          </label>
           <input
+            id="pos-search"
             placeholder="Buscar producto por nombre o SKU..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded border border-zinc-300 px-3 py-2 text-sm"
+            className="w-full rounded border border-zinc-300 px-3 py-2.5 text-sm"
           />
 
-          <div className="bg-white rounded-lg border border-zinc-200 divide-y divide-zinc-100 max-h-[420px] overflow-y-auto">
+          <div className="bg-white rounded-lg border border-zinc-200 divide-y divide-zinc-100 max-h-[50vh] md:max-h-[420px] overflow-y-auto">
             {filteredProducts.map((p) => (
               <button
                 key={p.id}
-                onClick={() => addToCart(p)}
-                className="w-full flex justify-between items-center px-4 py-2 text-sm hover:bg-zinc-50 text-left"
+                onClick={() => handleAddToCart(p)}
+                className="w-full flex justify-between items-center gap-3 px-4 py-3 text-sm hover:bg-zinc-50 active:bg-zinc-100 text-left min-h-[44px]"
               >
                 <span>
                   {p.name} {p.sku && <span className="text-zinc-400">({p.sku})</span>}
                 </span>
-                <span className="text-zinc-600">Bs. {Number(p.price).toFixed(2)}</span>
+                <span className="text-zinc-600 shrink-0">Bs. {Number(p.price).toFixed(2)}</span>
               </button>
             ))}
-            {filteredProducts.length === 0 && <p className="px-4 py-6 text-center text-zinc-400 text-sm">Sin productos</p>}
+            {filteredProducts.length === 0 && (
+              <p className="px-4 py-6 text-center text-zinc-400 text-sm">
+                {products.length === 0 ? "Sin productos cacheados todavía" : "Sin resultados"}
+              </p>
+            )}
           </div>
         </div>
 
+        {/* 3) Carrito + 4) total + 5) método de pago + 6) confirmar. */}
         <div className="space-y-4">
           <div className="bg-white rounded-lg border border-zinc-200 p-4 space-y-3">
             <h2 className="font-medium text-sm">Carrito</h2>
             {error && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>}
-            {result && (
-              <p className="text-sm text-emerald-700 bg-emerald-50 rounded p-2">
-                Venta confirmada ({result.status}). Total Bs. {Number(result.total).toFixed(2)}
-                {Number(result.balance) > 0 && <> — saldo pendiente Bs. {Number(result.balance).toFixed(2)}</>}
-              </p>
+            {feedback && (
+              <p className={`text-sm rounded p-2 ${FEEDBACK_STYLES[feedback.kind]}`}>{feedback.message}</p>
             )}
 
-            {cart.length === 0 && <p className="text-sm text-zinc-400">Agrega productos desde la lista</p>}
+            {cart.length === 0 && <p className="text-sm text-zinc-400">Agregá productos desde la lista</p>}
             {cart.map((line) => (
-              <div key={line.productId} className="border-b border-zinc-100 pb-2 text-sm space-y-1">
-                <div className="flex justify-between">
+              <div key={line.productId} className="border-b border-zinc-100 pb-3 text-sm space-y-1.5">
+                <div className="flex justify-between items-start gap-2">
                   <span>{line.name}</span>
-                  <button onClick={() => removeLine(line.productId)} className="text-red-600 text-xs underline">
+                  <button
+                    onClick={() => handleRemoveLine(line.productId)}
+                    className="text-red-600 text-xs underline shrink-0 py-1"
+                  >
                     Quitar
                   </button>
                 </div>
-                <div className="flex gap-2 items-center text-xs">
-                  <label>Cant.</label>
-                  <input
-                    type="number"
-                    min={0.01}
-                    step="0.01"
-                    value={line.quantity}
-                    onChange={(e) => updateLine(line.productId, { quantity: Number(e.target.value) })}
-                    className="w-16 rounded border border-zinc-300 px-1 py-0.5"
-                  />
-                  <label>Precio</label>
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={line.unitPrice}
-                    onChange={(e) => updateLine(line.productId, { unitPrice: Number(e.target.value) })}
-                    className="w-20 rounded border border-zinc-300 px-1 py-0.5"
-                  />
-                  <label>Desc.</label>
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={line.discount}
-                    onChange={(e) => updateLine(line.productId, { discount: Number(e.target.value) })}
-                    className="w-16 rounded border border-zinc-300 px-1 py-0.5"
-                  />
+                <div className="flex flex-wrap gap-2 items-center text-xs">
+                  <span className="flex items-center gap-1">
+                    <span className="text-zinc-500">Cant.</span>
+                    <input
+                      aria-label={`Cantidad de ${line.name}`}
+                      type="number"
+                      min={0.01}
+                      step="0.01"
+                      value={line.quantity}
+                      onChange={(e) => handleUpdateLine(line.productId, { quantity: Number(e.target.value) })}
+                      className="w-16 rounded border border-zinc-300 px-2 py-1.5"
+                    />
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-zinc-500">Precio</span>
+                    <input
+                      aria-label={`Precio de ${line.name}`}
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={line.unitPrice}
+                      onChange={(e) => handleUpdateLine(line.productId, { unitPrice: Number(e.target.value) })}
+                      className="w-20 rounded border border-zinc-300 px-2 py-1.5"
+                    />
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-zinc-500">Desc.</span>
+                    <input
+                      aria-label={`Descuento de ${line.name}`}
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={line.discount}
+                      onChange={(e) => handleUpdateLine(line.productId, { discount: Number(e.target.value) })}
+                      className="w-16 rounded border border-zinc-300 px-2 py-1.5"
+                    />
+                  </span>
                 </div>
                 <div className="text-right text-zinc-500">
                   Subtotal: Bs. {(line.quantity * line.unitPrice - line.discount).toFixed(2)}
@@ -270,10 +393,14 @@ export default function POSPage() {
               </div>
             ))}
 
+            <label htmlFor="pos-customer" className="sr-only">
+              Cliente
+            </label>
             <select
+              id="pos-customer"
               value={customerId}
               onChange={(e) => setCustomerId(e.target.value)}
-              className="w-full rounded border border-zinc-300 px-2 py-1.5 text-sm"
+              className="w-full rounded border border-zinc-300 px-2 py-2 text-sm"
             >
               <option value="">Cliente ocasional</option>
               {customers.map((c) => (
@@ -284,52 +411,65 @@ export default function POSPage() {
             </select>
 
             <div className="flex justify-between items-center text-sm">
-              <label>Descuento venta</label>
+              <label htmlFor="pos-sale-discount">Descuento venta</label>
               <input
+                id="pos-sale-discount"
                 type="number"
                 min={0}
                 step="0.01"
                 value={saleDiscount}
                 onChange={(e) => setSaleDiscount(e.target.value)}
-                className="w-24 rounded border border-zinc-300 px-2 py-1"
+                className="w-24 rounded border border-zinc-300 px-2 py-1.5"
               />
             </div>
 
-            <div className="flex justify-between font-semibold text-sm border-t border-zinc-200 pt-2">
-              <span>Total</span>
-              <span>Bs. {total.toFixed(2)}</span>
+            {/* El total es lo más visible de toda la pantalla — nunca compite en tamaño con nada más. */}
+            <div className="flex justify-between items-baseline border-t border-zinc-200 pt-3">
+              <span className="text-sm font-medium text-zinc-600">Total</span>
+              <span className="text-2xl font-semibold tabular-nums">Bs. {total.toFixed(2)}</span>
             </div>
+            {subtotal !== total && (
+              <p className="text-xs text-zinc-400 text-right -mt-2">Subtotal Bs. {subtotal.toFixed(2)}</p>
+            )}
           </div>
 
           <div className="bg-white rounded-lg border border-zinc-200 p-4 space-y-2">
             <div className="flex justify-between items-center">
               <h2 className="font-medium text-sm">Pago (opcional — vacío = venta a crédito)</h2>
-              <button onClick={addPaymentLine} className="text-xs text-zinc-600 underline">
+              <button onClick={addPaymentLine} className="text-xs text-zinc-600 underline py-1">
                 + método
               </button>
             </div>
             {payments.map((p, i) => (
               <div key={i} className="flex gap-2 items-center text-xs">
+                <label className="sr-only" htmlFor={`pos-payment-method-${i}`}>
+                  Método de pago
+                </label>
                 <select
+                  id={`pos-payment-method-${i}`}
                   value={p.method}
                   onChange={(e) => updatePaymentLine(i, { method: e.target.value as PaymentMethod })}
-                  className="rounded border border-zinc-300 px-1 py-1"
+                  className="rounded border border-zinc-300 px-2 py-1.5"
                 >
                   <option value="CASH">Efectivo</option>
                   <option value="CARD">Tarjeta</option>
                   <option value="TRANSFER">Transferencia</option>
                   <option value="QR">QR</option>
                 </select>
+                <label className="sr-only" htmlFor={`pos-payment-amount-${i}`}>
+                  Monto
+                </label>
                 <input
+                  id={`pos-payment-amount-${i}`}
                   type="number"
                   min={0}
                   step="0.01"
                   placeholder="Monto"
                   value={p.amount}
                   onChange={(e) => updatePaymentLine(i, { amount: e.target.value })}
-                  className="w-24 rounded border border-zinc-300 px-2 py-1"
+                  className="w-24 rounded border border-zinc-300 px-2 py-1.5"
                 />
-                <button onClick={() => removePaymentLine(i)} className="text-red-600 underline">
+                <button onClick={() => removePaymentLine(i)} className="text-red-600 underline py-1.5">
                   Quitar
                 </button>
               </div>
@@ -345,14 +485,76 @@ export default function POSPage() {
             <button
               onClick={confirmSale}
               disabled={submitting || cart.length === 0}
-              className="flex-1 bg-zinc-900 text-white rounded px-3 py-2 text-sm disabled:opacity-50"
+              className="flex-1 bg-zinc-900 text-white rounded px-3 py-3.5 text-sm font-medium disabled:opacity-50 min-h-[44px]"
             >
               {submitting ? "Confirmando..." : "Confirmar venta"}
             </button>
-            <button onClick={resetSale} className="rounded border border-zinc-300 px-3 py-2 text-sm">
+            <button
+              onClick={resetSale}
+              className="rounded border border-zinc-300 px-3 py-3.5 text-sm min-h-[44px]"
+            >
               Limpiar
             </button>
           </div>
+        </div>
+
+        {/* Ventas creadas en ESTE dispositivo — sincronizadas o no. Nunca se borra una venta local porque no pudo sincronizar. */}
+        <div className="md:col-span-3">
+          <button
+            onClick={() => setHistoryOpen((v) => !v)}
+            className="w-full flex items-center justify-between bg-white rounded-lg border border-zinc-200 px-4 py-3 text-sm font-medium"
+          >
+            <span>
+              Ventas de este dispositivo
+              {pendingCount > 0 && (
+                <span className="ml-2 text-xs font-normal text-amber-700">
+                  · {pendingCount} pendiente{pendingCount !== 1 && "s"} de sincronizar
+                </span>
+              )}
+              {attentionCount > 0 && (
+                <span className="ml-2 text-xs font-normal text-red-700">
+                  · {attentionCount} necesita{attentionCount === 1 ? "" : "n"} atención
+                </span>
+              )}
+            </span>
+            <span aria-hidden="true">{historyOpen ? "▲" : "▼"}</span>
+          </button>
+          {(historyOpen || attentionCount > 0) && (
+            <div className="bg-white rounded-lg border border-zinc-200 border-t-0 rounded-t-none divide-y divide-zinc-100">
+              {localSales.length === 0 && (
+                <p className="px-4 py-6 text-center text-zinc-400 text-sm">
+                  Todavía no se registró ninguna venta desde este dispositivo
+                </p>
+              )}
+              {localSales.map(({ sale, state }) => (
+                <div key={sale.id} className="px-4 py-3 flex items-center justify-between gap-3 text-sm">
+                  <div>
+                    <p>
+                      {new Date(sale.createdAt).toLocaleString()} — {sale.items.length}{" "}
+                      {sale.items.length === 1 ? "ítem" : "ítems"}
+                    </p>
+                    {(state.kind === "conflict" || state.kind === "error") && (
+                      <p className="text-xs text-red-600 mt-0.5">{state.message}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`rounded px-2 py-0.5 text-xs ${SYNC_BADGE[state.kind].className}`}>
+                      {SYNC_BADGE[state.kind].label}
+                    </span>
+                    {(state.kind === "conflict" || state.kind === "error") && (
+                      <button
+                        onClick={() => handleRetry(sale.id)}
+                        disabled={retryingId === sale.id}
+                        className="text-xs underline text-zinc-600 disabled:opacity-50"
+                      >
+                        {retryingId === sale.id ? "Reintentando…" : "Reintentar"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </AppShell>

@@ -1104,6 +1104,107 @@ automático del Sync Engine (hoy se invoca explícitamente, no hay todavía
 un listener de reconexión que lo dispare solo); pantalla de logout que
 use `getPendingSyncSummary`; pantalla de conflictos/reintentos manuales.
 
+## Fase Offline 3 — POS offline + estado de conexión + sincronización automática ✅
+
+Tercera fase de la iniciativa de app offline, autorizada explícitamente
+tras la Fase Offline 2. Alcance: POS offline con UI real, estado de
+conexión visible, sincronización automática, historial de operaciones
+pendientes, recuperación manual y manejo visual de conflictos — todo
+construido SOBRE la infraestructura de Offline 2, sin rediseñarla. **No**
+se implementó (fuera de alcance explícito, igual que en las dos fases
+anteriores): Tauri, Android, Windows, Capacitor, Electron, Bluetooth,
+USB, ESC/POS, impresión térmica, aplicación nativa. Sin cambios de
+backend — cero endpoints nuevos, cero migraciones. Ver
+`docs/architecture.md` sección 19 y `docs/security.md` sección "Fase
+Offline 3" para el detalle técnico completo.
+
+- [x] **POS offline real** (`sales/pos/page.tsx`, reescrito): lee
+      productos/clientes/contexto desde IndexedDB en vez de la API
+      directa; sincronización inicial de catálogo (`runFullInitialSync`)
+      solo bloqueante la primera vez que se abre.
+- [x] **Un solo camino de envío de ventas, online y offline**
+      (`pos-submit.ts#submitSaleOffline`): siempre escribe primero en
+      IndexedDB y de inmediato intenta sincronizar. Cierra un riesgo
+      preexistente (el POS online nunca mandaba `idempotencyKey`) en vez
+      de introducir uno nuevo.
+- [x] **Estado de conexión central** (`connection-status.ts`, Offline 2)
+      expuesto a React vía `useSyncExternalStore`
+      (`useConnectionStatus.ts`) y mostrado con `ConnectionBadge` — un
+      solo componente, usado en `AppShell` y en el POS, con símbolo
+      distinto por estado (`●`/`▲`/`↻`/`✕`) además de color, para no
+      depender solo del color.
+- [x] **Sincronización automática real**: dispara al montar la app, al
+      evento `online` del navegador, y cada 45s como respaldo
+      (`useAutoSync.ts`). Protegida contra dos motores simultáneos en la
+      misma pestaña (`runningFor`) y entre pestañas (lock de
+      `claimNext`, Offline 2, sin cambios).
+- [x] **Bug real encontrado y corregido**: una reconexión real llegaba
+      antes de que venciera el backoff calculado durante el fallo
+      offline previo, así que no reintentaba de inmediato. Se agregó
+      `resetBackoff`/`{ force: true }` para que un evento de reconexión
+      real ignore ese backoff — el intervalo de respaldo periódico sigue
+      respetándolo.
+- [x] **Sesión revocada detiene la sincronización automática** sin
+      reintentar autenticarse en bucle — se limpia solo con un nuevo
+      login.
+- [x] **Historial local de ventas** con estado por venta
+      (`sale-sync-state.ts`: sincronizada/pendiente/sincronizando/
+      conflicto/error) y reintento manual (`retrySale`) — ninguna venta
+      se borra jamás por haber fallado su sincronización.
+- [x] **Conflictos (409/400) nunca se resuelven solos**: quedan visibles
+      con el motivo real del servidor, reintento manual siempre con la
+      misma `idempotencyKey`, nunca un ajuste automático de
+      cantidades/dinero.
+- [x] **Caja: análisis explícito, sin simulación offline**. Abrir/cerrar
+      caja sigue exclusivamente online (necesita leer estado del servidor
+      bajo lock). El pago en efectivo de una venta SÍ funciona offline
+      sin ese riesgo, porque el backend ya tolera la ausencia de una caja
+      abierta desde la Fase Comercial 5
+      (`cash.service.ts#registerSalePaymentMovement`): sin caja `OPEN`
+      para el terminal, el pago se aplica igual, simplemente sin generar
+      `CashMovement`. La capa offline no replica ninguna lógica de caja.
+- [x] **Logout con aviso de pendientes**: `AppShell` usa
+      `getPendingSyncSummary` (Offline 2) para confirmar antes de salir
+      si hay operaciones sin sincronizar — sin borrar nada al cerrar
+      sesión, con o sin confirmación.
+- [x] **Responsive mobile-first**: sidebar de `AppShell` (antes fijo,
+      256px) ahora colapsa a hamburguesa + panel off-canvas; layout del
+      POS en `grid-cols-1 md:grid-cols-3` siguiendo el orden de prioridad
+      pedido (buscar → productos → carrito → total → pago → confirmar) —
+      el orden del DOM ya coincidía, sin necesidad de `order-*`.
+      Objetivos táctiles `min-h-[44px]`, labels asociados, `aria-label`
+      en controles sin texto, total prominente.
+- [x] **PRUEBA FUNDAMENTAL** (`fundamental-flow.test.ts`, requisito no
+      negociable del pedido): venta creada offline, con un "cierre y
+      reapertura" real de la app simulado (`resetLocalDbCache()` —
+      descarta toda referencia en memoria, la persistencia se prueba de
+      verdad, no por casualidad), sincroniza al reconectar exactamente
+      UNA vez (`salesCreateCalls === 1`), nunca se duplica, un segundo
+      pase de sincronización no reenvía nada.
+- [x] Tests reales: 22 casos nuevos (`sale-sync-state.test.ts`,
+      `pos-cart.test.ts`, `pos-submit.test.ts`, `fundamental-flow.test.ts`,
+      ampliaciones de `auto-sync.test.ts` y `sync-queue.test.ts`) sobre la
+      base de los 64 de Offline 2 — 86/86 frontend en total. Decisión de
+      alcance explícita: la lógica de negocio del POS se extrajo a
+      módulos puros (`pos-cart.ts`, `pos-submit.ts`) testeados
+      directamente con Vitest; el JSX de `sales/pos/page.tsx` en sí se
+      verificó por compilación TypeScript y `next build`, no por un test
+      de interacción de usuario (no se incorporó
+      `@testing-library/react` en esta fase).
+- [x] Regresión completa del backend (no tocado esta fase, verificado
+      igual): 320/320 tests, 34/34 suites, `verify:tenant-isolation`
+      23/23 (incluye build limpio del backend). Frontend: 86/86 tests,
+      build limpio (29 rutas, incluye `/sales/pos`), lint limpio en todos
+      los archivos tocados/nuevos de esta fase.
+
+**Pendiente explícito (no pedido en esta fase)**: Tauri/empaquetado de
+escritorio, Android, Windows, Bluetooth, USB, ESC/POS, impresión térmica,
+PWA completa; administrador de dispositivos con UI (revocar sesiones
+individuales); sincronización incremental real (requiere backend nuevo,
+sigue sin implementarse); `@testing-library/react` para cobertura de
+interacción real sobre el JSX del POS; unificar el manejo de `401` de
+`sync-client.ts` dentro de `lib/api.ts` general.
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,

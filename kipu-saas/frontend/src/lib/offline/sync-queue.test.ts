@@ -8,6 +8,7 @@ import {
   markConflict,
   markFailedTransient,
   markSynced,
+  resetBackoff,
   retryManually,
 } from "./sync-queue";
 import { uniqueOrgId } from "./test-support/unique";
@@ -144,6 +145,32 @@ describe("Sync queue — transiciones de estado", () => {
     // No aparece como candidata para un nuevo claim.
     const next = await claimNext(db, "engine-2");
     expect(next).toBeNull();
+  });
+
+  it("resetBackoff deja elegibles de inmediato las FAILED con reintentos disponibles (ej. al reconectar)", async () => {
+    const org = uniqueOrgId();
+    const db = getLocalDb(org);
+    const item = await enqueue(db, baseOp(org));
+    await claimNext(db, "engine-1");
+    await markFailedTransient(db, item.id, "sin red");
+
+    // Con el backoff todavía vigente, no es candidata.
+    expect(await claimNext(db, "engine-1")).toBeNull();
+
+    await resetBackoff(db);
+    const claimed = await claimNext(db, "engine-1");
+    expect(claimed?.id).toBe(item.id);
+  });
+
+  it("resetBackoff nunca toca CONFLICT (esas nunca son automáticas)", async () => {
+    const org = uniqueOrgId();
+    const db = getLocalDb(org);
+    const item = await enqueue(db, baseOp(org));
+    await claimNext(db, "engine-1");
+    await markConflict(db, item.id, "revisar a mano");
+
+    await resetBackoff(db);
+    expect(await claimNext(db, "engine-1")).toBeNull();
   });
 
   it("retryManually recupera una CONFLICT/FAILED para un nuevo intento explícito", async () => {

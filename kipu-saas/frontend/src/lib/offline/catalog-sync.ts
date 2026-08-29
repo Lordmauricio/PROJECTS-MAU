@@ -37,7 +37,7 @@ export interface CatalogSyncInput {
   organizationName: string;
   userId: string;
   userName: string;
-  roleKey: string;
+  roleKey: string | null;
 }
 
 export interface CatalogSyncResult {

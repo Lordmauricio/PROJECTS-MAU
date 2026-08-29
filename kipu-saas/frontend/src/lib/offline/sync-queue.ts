@@ -9,7 +9,11 @@ import type { SyncOperationName, SyncQueueItem, SyncStatus } from "./types";
 // sección 18 para la justificación del valor.
 const STALE_LOCK_MS = 2 * 60_000;
 
-const MAX_AUTOMATIC_ATTEMPTS = 8;
+// Exportada (no solo interna) para que capas de más arriba (ej.
+// `sale-sync-state.ts`, para decidir si una `FAILED` todavía se va a
+// reintentar sola o ya necesita una acción manual) lean el mismo número,
+// nunca un valor duplicado que pudiera desincronizarse.
+export const MAX_AUTOMATIC_ATTEMPTS = 8;
 
 export interface EnqueueInput {
   organizationId: string;
@@ -60,6 +64,24 @@ export async function listByStatus(
   status: SyncStatus,
 ): Promise<SyncQueueItem[]> {
   return db.syncQueue.where("status").equals(status).sortBy("createdAt");
+}
+
+/**
+ * Limpia `nextRetryAt` de todas las operaciones FAILED con reintentos
+ * automáticos todavía disponibles — las vuelve elegibles de inmediato en
+ * el próximo `claimNext`, sin esperar el resto del backoff calculado.
+ * Uso concreto: una reconexión REAL (evento `online` del navegador) es una
+ * señal más fuerte que el temporizador que se calculó suponiendo que
+ * seguía sin haber red — no tiene sentido hacer esperar a un pago que ya
+ * podría sincronizar solo porque el backoff anterior todavía no venció.
+ * Nunca toca CONFLICT (esas nunca son automáticas, ver `markConflict`).
+ */
+export async function resetBackoff(db: KipuLocalDB): Promise<void> {
+  await db.syncQueue
+    .where("status")
+    .equals("FAILED")
+    .filter((item) => item.attempts < MAX_AUTOMATIC_ATTEMPTS)
+    .modify({ nextRetryAt: null });
 }
 
 function isLockStale(item: SyncQueueItem, now: number): boolean {

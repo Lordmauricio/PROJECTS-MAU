@@ -50,6 +50,7 @@ export async function createSaleOffline(
     createSyncOperationId: "",
     confirmSyncOperationId: null,
     createdAt,
+    serverSummary: null,
   };
 
   await db.transaction("rw", db.sales, db.syncQueue, async () => {

@@ -1709,17 +1709,240 @@ Toda la fase reutiliza `POST /sales`, `POST /sales/:id/confirm`, `GET
 /products`, `GET /customers`, `GET /branches` y `POST /auth/refresh`, tal
 como ya existían. Cero cambios de backend.
 
-### Qué queda para Offline 3
+### Qué se construyó en Offline 3 (dejó de ser pendiente)
 
-- POS offline con UI real (esta fase solo construyó la capa de datos:
-  `createSaleOffline`/`confirmSaleOffline`, sin ninguna pantalla).
-- Indicador visible de `connectionStatus` en la interfaz.
-- Pantalla de logout que use `getPendingSyncSummary` para avisar antes de
-  salir con operaciones pendientes.
-- Pantalla de "operaciones con problema" (CONFLICT/FAILED agotado) con
-  `retryManually`.
-- Disparo real del Sync Engine (hoy `runSyncOnce` es una función que hay
-  que invocar explícitamente — todavía no hay un `setInterval`/listener de
-  `online` que lo dispare solo).
-- Tauri, Android, Windows, Bluetooth, USB, ESC/POS, impresión, PWA
-  completa — sin tocar, como en esta fase.
+Todo lo listado como pendiente al cerrar Offline 2 se implementó en la
+Fase Offline 3 — ver sección 19 para el detalle técnico completo: POS
+offline con UI real, indicador visible de `connectionStatus`, logout con
+aviso de pendientes, historial local con reintento manual, y disparo
+automático real del Sync Engine (`online`, montaje, intervalo de
+respaldo). Tauri/Android/Windows/Bluetooth/USB/ESC-POS/impresión/PWA
+completa siguen sin tocar.
+
+## 19. Fase Offline 3 — POS offline + estado de conexión + sincronización automática: decisiones técnicas
+
+Tercera fase de la iniciativa offline. Alcance: construir SOBRE la
+infraestructura de Offline 2 (sin rediseñarla) la UI y orquestación que
+faltaban — `frontend/src/app/sales/pos/page.tsx`, componentes de
+conexión/historial, y los "pegamentos" (`auto-sync.ts`, hooks de React)
+que disparan el Sync Engine solo. Cero backend nuevo, cero
+Tauri/Android/Windows/Capacitor/Electron/Bluetooth/USB/ESC-POS/impresión
+térmica — igual que las dos fases anteriores.
+
+### POS: un solo camino de envío, online y offline
+
+Antes de esta fase, el POS online llamaba a `POST /sales` directo, SIN
+`idempotencyKey` — un riesgo ya señalado en Fase Offline 1 (un doble clic
+o un reintento de red podía crear dos ventas). En vez de mantener dos
+caminos paralelos (uno directo a la API cuando hay conexión, otro por la
+cola cuando no), se diseñó `lib/offline/pos-submit.ts#submitSaleOffline`
+como el ÚNICO camino: siempre escribe primero en IndexedDB
+(`createSaleOffline`/`confirmSaleOffline`, ya existentes desde Offline 2,
+sin tocar su lógica interna) y de inmediato intenta sincronizar
+(`triggerSync`). Si la sincronización tiene éxito en el acto (caso común,
+con conexión), el usuario ve "Venta registrada" con el resumen real del
+servidor; si falla (sin conexión, o un error transitorio), la venta ya
+quedó guardada localmente y en cola — nunca se pierde, nunca se duplica
+el intento. Esto reduce la superficie de riesgo respecto al POS anterior
+en vez de aumentarla, así que no dispara la regla de "parar y explicar":
+de todas formas se documenta acá como decisión de diseño deliberada, no
+implícita, para que quede a la vista.
+
+`submitSaleOffline` devuelve un resultado con 4 desenlaces distintos que
+el POS traduce a mensajes concretos (nunca un error genérico):
+`synced` ("Venta registrada"), `offline-pending` ("Venta guardada sin
+conexión — se sincronizará sola"), `conflict` (motivo del rechazo del
+servidor, con botón de reintento manual) y `error` (fallo transitorio,
+reintento automático seguirá corriendo).
+
+### Estado de conexión: una sola fuente, consumida por `useSyncExternalStore`
+
+`connectionStatus` (Offline 2) ya era un singleton framework-agnóstico.
+`lib/offline/react/useConnectionStatus.ts` lo expone a React vía
+`useSyncExternalStore` — la forma correcta de suscribirse a estado
+externo mutable sin duplicar la lógica de cuándo cambia ni arriesgar
+desincronización entre pestañas o componentes: cualquier pantalla que
+llame al hook ve exactamente el mismo estado, calculado en un solo lugar
+(`connection-status.ts`), nunca un cálculo propio por componente.
+
+`components/ConnectionBadge.tsx` es el ÚNICO componente visual de estado
+— usado tanto en `AppShell` (compacto, siempre visible) como en el POS
+(prominente, junto a la acción de vender), nunca un indicador
+reimplementado por pantalla. Cada estado tiene, además de un color, un
+SÍMBOLO Unicode distinto (`●` en línea, `▲` sin conexión, `↻`
+sincronizando, `✕` error) — instrucción explícita del pedido de no
+depender únicamente del color (accesibilidad para daltonismo o pantallas
+con poca luz). `role="status" aria-live="polite"` para que un lector de
+pantalla anuncie los cambios sin que el usuario tenga que enfocar el
+elemento.
+
+### Sincronización automática: sin dos motores a la vez, con una vía de "reconexión real"
+
+`lib/offline/auto-sync.ts#triggerSync` es la única puerta de entrada para
+disparar `runSyncOnce` desde la UI. Dos protecciones, en capas distintas:
+
+1. **Dentro de la misma pestaña**: un `Set<organizationId>` (`runningFor`)
+   evita que el evento `online`, el intervalo de respaldo y el montaje de
+   `useAutoSync` disparen el motor por duplicado si ya hay uno corriendo
+   para esa organización — un segundo `triggerSync` mientras el primero
+   sigue en vuelo devuelve `null` de inmediato, sin encolar trabajo
+   redundante (probado en `auto-sync.test.ts`).
+2. **Entre pestañas/dispositivos**: la protección real ya existía desde
+   Offline 2 — el `claimNext` de `sync-queue.ts` usa transacciones de
+   IndexedDB (serializadas por el navegador incluso entre pestañas del
+   mismo origen) como mecanismo de lock, así que dos motores en dos
+   pestañas nunca reclaman la misma fila.
+
+`lib/offline/react/useAutoSync.ts` (montado una sola vez, en `AppShell`,
+nunca por página) dispara `triggerSync` en tres momentos: al montar
+(simulando "la app recién abrió, puede haber pendientes"), en el listener
+`online` del navegador, y cada 45s como respaldo (WiFi que se reporta
+"conectado" pero sin salida real a internet no siempre dispara el evento
+`online` de forma confiable). Los dos primeros usan `{ force: true }`.
+
+**Bug real encontrado escribiendo la prueba fundamental (ver más abajo)**:
+una operación que falló offline queda con `nextRetryAt` en el futuro
+(backoff exponencial, Offline 2). Si la reconexión ocurre antes de que
+venza ese backoff, `triggerSync` sin más no reintentaba — el timer se
+había calculado creyendo que la app seguía sin conexión, un supuesto que
+ya no era cierto. Se agregó `resetBackoff(db)` (`sync-queue.ts`) y el
+parámetro `force` a `triggerSync`: un evento de reconexión real es una
+señal más fuerte que un timer calculado en la oscuridad, así que lo
+ignora. El intervalo de respaldo periódico SIGUE sin usar `force` — no
+tiene sentido ignorar el backoff en un chequeo que no representa ninguna
+señal nueva de conectividad. Test: `auto-sync.test.ts` ("reconexión real
+(force) ignora el backoff pendiente").
+
+**Sesión revocada detiene la sincronización automática, sin loop de
+reintento de auth**: si `runSyncOnce` devuelve `sessionRevoked: true`
+(Offline 2, `sync-client.ts`), `triggerSync` agrega la organización a
+`sessionRevokedFor` y deja de intentar sincronizar hasta que
+`clearSessionRevoked` (llamado por `useAutoSync` al detectar un token
+nuevo tras un login) la limpie — instrucción explícita del pedido de no
+"continuar intentando autenticarse indefinidamente". Test:
+`auto-sync.test.ts` ("sesión revocada: deja de intentar autenticarse solo
+hasta un nuevo login").
+
+### Historial local y manejo visual de conflictos
+
+`lib/offline/sale-sync-state.ts#getSaleSyncState` deriva el estado visual
+de una venta local (`synced`/`offline-pending`/`syncing`/`conflict`/
+`error`) inspeccionando las filas de `sync_queue` asociadas a esa venta —
+nunca un campo redundante que se pueda desincronizar del estado real de
+la cola. `listLocalSalesWithState` arma el historial que el POS muestra
+(panel colapsable, más recientes primero), con badge de color+texto por
+estado y botón de reintento manual (`retrySale`, `pos-submit.ts`) visible
+solo en `conflict`/`error` — nunca en ventas ya sincronizadas ni en las
+que siguen esperando su primer intento automático. Ninguna venta se
+borra jamás por haber fallado su sincronización — instrucción explícita
+del pedido; el registro persiste en `sales` con su estado real hasta que
+un humano la resuelve o hasta que sincroniza sola.
+
+### Caja: por qué NO se simula offline, y por qué el pago en efectivo no lo necesita
+
+Análisis explícito pedido por el usuario (sección 14 del pedido) antes de
+tocar nada de `cash/`:
+
+- **Abrir/cerrar caja debe seguir siendo exclusivamente online.** Ambas
+  operaciones necesitan leer estado del servidor bajo lock antes de
+  decidir (¿ya hay una caja `OPEN` para este `posTerminalId`? ¿cuál es el
+  saldo calculado ahora mismo, con todos los movimientos ya aplicados por
+  otros dispositivos?) — exactamente el tipo de decisión que esta
+  iniciativa, desde Fase Offline 1, definió como no seguro de simular
+  offline (dos dispositivos no pueden "decidir" en paralelo, sin verse,
+  si una caja está abierta). Esta fase NO agrega ninguna pantalla ni
+  camino para abrir/cerrar caja sin conexión — sigue bloqueado por el
+  `AppShell`/`api.ts` existente, sin cambios.
+- **El pago en efectivo de una venta SÍ puede registrarse offline sin
+  ese riesgo**, porque el backend YA tolera la ausencia de una caja
+  abierta con una regla que no depende de ningún estado que el
+  dispositivo offline necesite conocer de antemano:
+  `cash.service.ts#registerSalePaymentMovement` (líneas 505-515) busca una
+  `CashRegister` `OPEN` para ese `posTerminalId` y, si no la encuentra,
+  devuelve `null` — el pago se aplica igual (`Payment` se crea, la venta
+  queda `PAID`), simplemente sin generar un `CashMovement`. Esta regla ya
+  existía desde la Fase Comercial 5, para el caso (ya posible hoy, online)
+  de vender con la caja del turno todavía sin abrir. La capa offline no
+  necesita replicar NINGUNA lógica de caja: el servidor decide, en el
+  momento del `confirm`, exactamente como ya decide online. No se generó
+  ningún `CashMovement` "optimista" ni ninguna suposición local sobre el
+  estado de la caja.
+
+### Pagos: Decimal, idempotencia y atomicidad sin lógica nueva
+
+El POS offline arma el mismo payload de pagos que ya arma el POS online
+(`method`, `amount` como string, `idempotencyKey` — ahora SIEMPRE
+presente, ver más arriba). La atomicidad (crear la venta, aplicar el
+pago, mover inventario, generar el `CashMovement` si corresponde, todo o
+nada) ya la garantiza `sales.service.ts` dentro de una única transacción
+Prisma — sin cambios en esta fase. La capa offline nunca calcula un saldo
+ni decide si una venta "ya está pagada": solo transporta el mismo payload
+y refleja el `serverSummary` (`status`/`total`/`paidTotal`/`balance`) que
+el servidor devuelve al confirmar.
+
+### PRUEBA FUNDAMENTAL: una venta offline sobrevive un reinicio y sincroniza una sola vez
+
+Requisito explícito y no negociable del pedido. `fundamental-flow.test.ts`
+reproduce el flujo completo: ONLINE (descarga catálogo real vía
+`runFullInitialSync`) → OFFLINE (`submitSaleOffline` con `fetch` rechazado
+— la venta queda en `DRAFT_LOCAL` con su operación en cola) → **"cerrar y
+reabrir la app" simulado con `resetLocalDbCache()`** (descarta toda
+referencia en memoria; si el test pasa es porque los datos de verdad
+persistieron en IndexedDB, no porque sobrevivió una variable JS por
+casualidad) → se verifica que la venta y su estado `offline-pending`
+siguen ahí → ONLINE de nuevo, `triggerSync(..., { force: true })` (misma
+señal que un evento `online` real) → se verifica `salesCreateCalls === 1`
+(la venta se creó en el servidor UNA sola vez, nunca duplicada) y el
+estado final `synced` con el resumen real del servidor → un segundo pase
+de sincronización no reenvía nada (`processed === 0`).
+
+### Responsive: prioridad móvil sin sacrificar escritorio
+
+`AppShell` tenía un sidebar fijo de 256px sin versión móvil — rediseñar
+el POS para celular hubiera sido inútil si el sidebar seguía ocupando la
+mayoría del ancho de una pantalla de teléfono. Se agregó un patrón
+hamburguesa + panel off-canvas (`mobileNavOpen`, contenido de navegación
+compartido entre la versión de escritorio y la móvil) antes de tocar el
+POS — necesario para que el trabajo de responsive tuviera sentido, no un
+agregado fuera de alcance.
+
+El layout del POS (`grid-cols-1 md:grid-cols-3`) aprovecha que el orden
+del DOM que ya tenía sentido en escritorio (buscar → productos → carrito
+→ total → pago → confirmar) es exactamente el orden de prioridad pedido
+para móvil — no hizo falta usar `order-*` de Tailwind para reordenar
+nada. Objetivos táctiles con `min-h-[44px]`, `label`/`input` asociados
+con `htmlFor`/`id`, `aria-label` en controles sin texto visible, total
+prominente (`text-2xl font-semibold tabular-nums`) y la acción principal
+de confirmar siempre visible.
+
+### Qué NO se cubrió con tests automatizados (límite explícito de esta fase)
+
+La lógica de negocio del POS se extrajo a módulos puros/framework-free
+(`pos-cart.ts`, `pos-submit.ts`) específicamente para poder testearlos
+con Vitest sin necesidad de renderizar componentes — se decidió NO
+incorporar `@testing-library/react` en esta fase. Consecuencia explícita:
+`sales/pos/page.tsx` en sí (el JSX, la interacción de clicks/inputs) está
+verificado por compilación TypeScript y por `next build`, no por un test
+que simule un click de usuario real. Toda la lógica que ese JSX invoca sí
+tiene cobertura directa.
+
+### Endpoints nuevos en esta fase: ninguno
+
+Toda la fase reutiliza `POST /sales`, `POST /sales/:id/confirm`, `GET
+/products`, `GET /customers`, `GET /branches`, `POST /auth/refresh` y
+`POST /members/:id/revoke-sessions` (Fase Offline 1), tal como ya
+existían. Cero cambios de backend en esta fase.
+
+### Qué queda para Offline 4
+
+- Tauri/empaquetado de escritorio, Android, Windows, Bluetooth, USB,
+  ESC/POS, impresión térmica, PWA completa — nada de esto se tocó, como
+  en las tres fases anteriores.
+- Administrador de dispositivos con UI (listar/revocar sesiones
+  individuales, no solo "todas a la vez").
+- Sincronización incremental real (`updatedSince`) si se autoriza cambiar
+  el backend — ver sección 18, sigue sin implementarse.
+- `@testing-library/react` (o equivalente) si se decide agregar
+  cobertura de interacción real sobre el JSX del POS.
+- Unificar el manejo de `401` de `sync-client.ts` dentro de `lib/api.ts`
+  general — seguía señalado como fuera de alcance desde Offline 2.

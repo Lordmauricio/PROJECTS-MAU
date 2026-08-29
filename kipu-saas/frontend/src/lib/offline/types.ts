@@ -54,7 +54,7 @@ export interface LocalOrgContext {
   posTerminalId: string;
   userId: string;
   userName: string;
-  roleKey: string;
+  roleKey: string | null;
   fetchedAt: string;
 }
 
@@ -94,6 +94,18 @@ export interface LocalSale {
   createSyncOperationId: string; // qué fila de sync_queue creó esta venta
   confirmSyncOperationId: string | null; // qué fila de sync_queue la confirmó (si ya se encoló)
   createdAt: string;
+  // Capturado desde la respuesta real del servidor al reconciliar
+  // `sales.confirm` (ver `sync-engine.ts#reconcileEntity`) — nunca
+  // calculado localmente. Permite que el POS muestre el mismo feedback
+  // rico ("Venta confirmada (PAID). Total Bs X") tanto si la sincronización
+  // ocurrió al instante (online) como más tarde (offline reconectado),
+  // sin tener que volver a pedirle el detalle al servidor.
+  serverSummary: {
+    status: string;
+    total: string;
+    paidTotal: string;
+    balance: string;
+  } | null;
 }
 
 export type SyncOperationName =

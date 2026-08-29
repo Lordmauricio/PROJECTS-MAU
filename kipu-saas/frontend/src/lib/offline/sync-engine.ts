@@ -13,6 +13,10 @@ import type { SyncQueueItem } from "./types";
 
 interface SaleServerResponse {
   id?: string;
+  status?: string;
+  total?: string;
+  paidTotal?: string;
+  balance?: string;
 }
 
 function resolvePath(path: string, resultServerId: string | undefined): string {
@@ -47,7 +51,21 @@ async function reconcileEntity(
       status: "CREATE_SYNCED",
     });
   } else if (item.operation === "sales.confirm") {
-    await db.sales.update(item.entityId, { status: "CONFIRM_SYNCED" });
+    await db.sales.update(item.entityId, {
+      status: "CONFIRM_SYNCED",
+      // Se guarda tal cual la respuesta real del servidor — nunca se
+      // recalcula localmente (nada de aritmética financiera en esta
+      // capa, ver `docs/architecture.md` sección 18/19).
+      serverSummary:
+        response.status !== undefined
+          ? {
+              status: response.status,
+              total: response.total ?? "0",
+              paidTotal: response.paidTotal ?? "0",
+              balance: response.balance ?? "0",
+            }
+          : null,
+    });
   }
 }
 
