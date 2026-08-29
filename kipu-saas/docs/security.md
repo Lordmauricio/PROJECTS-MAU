@@ -645,6 +645,49 @@ Tauri/Android/Windows/impresión.
 - **Endpoints nuevos en esta fase: ninguno** — reutiliza los mismos que
   Offline 1/2 ya dejaron listos.
 
+## Fase Offline 4.1 — Unificación de autenticación y manejo de 401: notas de seguridad específicas
+
+Ver `docs/architecture.md` sección 20 para el detalle técnico completo.
+Alcance: `lib/api.ts`, `lib/offline/token-store.ts`, `lib/auth-context.tsx`
+— sin backend, sin hardware, sin cambios visuales.
+
+- **Ningún cambio en dónde viven los tokens**: siguen exclusivamente en
+  `localStorage`, mismas claves de siempre. Esta subfase NO migra a
+  almacenamiento nativo seguro (Keychain/Keystore/Windows Credential
+  Manager) — eso queda explícitamente para cuando exista una aplicación
+  nativa (Tauri/Android), tal como se pidió.
+- **Error de red nunca se confunde con sesión revocada**: se verificó con
+  un test explícito que un `fetch` que falla al intentar `POST
+  /auth/refresh` (sin Internet, DNS caído, timeout) NUNCA dispara el
+  logout forzado ni borra ningún token — el 401 original simplemente se
+  muestra como un error de esa acción puntual, reintentable a mano. Esto
+  es especialmente importante para el modo offline: un dispositivo sin
+  conexión no debe interpretar "no puedo llegar al servidor" como "mi
+  sesión ya no es válida".
+- **Sin reintentos infinitos**: el ciclo de refresh se agota en UN
+  reintento — si el request repetido (ya con el token renovado) también
+  da 401, se propaga tal cual, sin un segundo ciclo de renovación.
+  Probado explícitamente (`api.test.ts`).
+- **Concurrencia sin condición de carrera sobre el refresh token
+  rotado**: como la Fase Offline 1 rota el refresh token en cada uso, dos
+  renovaciones simultáneas con el mismo token viejo podían provocar un
+  falso "revocado" (la segunda en llegar al servidor ya encuentra el
+  token consumido por la primera). Se corrigió deduplicando
+  `refreshSession()` en `token-store.ts` — una sola renovación en curso
+  por vez, compartida entre todos los callers (interactivos y Sync
+  Engine). Probado con llamadas concurrentes reales, no simuladas.
+- **Coherencia con el Sync Engine, sin una segunda implementación**:
+  `lib/api.ts` reutiliza el mismo `refreshSession`/mismas señales
+  (`revoked-or-expired`/`network-error`/`no-refresh-token`) que ya usaba
+  `sync-client.ts` desde Offline 2 — un solo criterio de "sesión válida"
+  en toda la app, no dos que puedan divergir con el tiempo.
+- **Operaciones offline pendientes: sin cambios de comportamiento,
+  reverificado**. El Sync Engine sigue dejando una operación `FAILED`
+  (nunca `SYNCED` falsamente, nunca borrada) cuando descubre sesión
+  revocada, y deja de reintentar hasta un nuevo login — comportamiento de
+  Offline 2/3, cubierto por su batería de tests existente, no modificado
+  por esta subfase.
+
 ## Qué queda pendiente (explícito, no oculto)
 
 - Administrador de dispositivos (UI + endpoint de solo lectura para listar

@@ -21,13 +21,17 @@ export type SyncRequestResult =
 
 /**
  * Dedicado al Sync Engine — a propósito NO es el mismo `api()` de
- * `lib/api.ts` que usa el resto de la app. `lib/api.ts` propaga un 401 tal
- * cual (hay un humano mirando la pantalla que puede reaccionar); el Sync
- * Engine corre sin supervisión activa, así que necesita renovar su propia
- * sesión antes de darse por vencido. Ver `docs/architecture.md` sección 18
- * para por qué esto se mantuvo separado de `lib/api.ts` en vez de agregarle
- * un interceptor global (cambio más amplio, fuera del alcance de esta
- * fase).
+ * `lib/api.ts` que usa el resto de la app. Desde Offline 4.1, `lib/api.ts`
+ * TAMBIÉN renueva la sesión ante un 401 (mismo `refreshSession` de
+ * `token-store.ts`, cero lógica duplicada) — la diferencia que sigue
+ * justificando dos clientes separados es la forma de la respuesta: el Sync
+ * Engine necesita distinguir `conflict`/`validation-error`/`transient-error`
+ * (para decidir si reintenta solo o no, ver `sync-engine.ts`), algo que las
+ * llamadas interactivas de `lib/api.ts` no necesitan — ahí un error HTTP
+ * que no sea 401 simplemente se convierte en `ApiError` para que la
+ * pantalla lo muestre. Ver `docs/architecture.md` sección 20 para el
+ * detalle de por qué se mantienen dos clientes con un solo mecanismo de
+ * renovación compartido, en vez de fusionarlos en uno.
  */
 export async function syncRequest(
   path: string,

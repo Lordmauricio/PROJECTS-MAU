@@ -1,8 +1,8 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { api, ApiError } from "./api";
+import { api, ApiError, registerSessionExpiredHandler } from "./api";
 
 export interface AuthUser {
   id: string;
@@ -109,6 +109,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOrganization(null);
     router.push("/login");
   }
+
+  // `lib/api.ts` no es un componente React — no puede llamar a `logout()`
+  // directamente. Se registra acá (Offline 4.1) para que, cuando el ciclo
+  // de refresh automático de una llamada interactiva descubra que la
+  // sesión está revocada o expirada sin poder renovarse, la app reaccione
+  // exactamente igual que un logout manual (limpia sesión, redirige a
+  // /login) — sin que `lib/api.ts` necesite importar React ni este
+  // contexto. El ref evita capturar una versión vieja de `logout` en un
+  // closure obsoleto; se actualiza en su propio efecto (nunca durante el
+  // render) porque escribir un ref en el cuerpo del render es inseguro bajo
+  // renderizado concurrente de React 19 (el render puede descartarse/
+  // repetirse) — regla `react-hooks/refs` del lint del propio proyecto.
+  const logoutRef = useRef(logout);
+  useEffect(() => {
+    logoutRef.current = logout;
+  });
+  useEffect(() => {
+    registerSessionExpiredHandler(() => logoutRef.current());
+    return () => registerSessionExpiredHandler(null);
+  }, []);
 
   return (
     <AuthContext.Provider value={{ token, user, organization, loading, login, setSession, logout }}>

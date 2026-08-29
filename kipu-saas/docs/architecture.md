@@ -1945,4 +1945,140 @@ existían. Cero cambios de backend en esta fase.
 - `@testing-library/react` (o equivalente) si se decide agregar
   cobertura de interacción real sobre el JSX del POS.
 - Unificar el manejo de `401` de `sync-client.ts` dentro de `lib/api.ts`
-  general — seguía señalado como fuera de alcance desde Offline 2.
+  general — resuelto en Offline 4.1 (ver sección 20).
+
+## 20. Fase Offline 4.1 — Unificación de autenticación y manejo de 401: decisiones técnicas
+
+Subfase autorizada explícitamente y por separado de una auditoría previa de
+"Offline 4" (Tauri/Android/Windows/impresión/ESC-POS/Bluetooth/USB/
+sincronización incremental/testing del POS — ninguno de esos puntos se
+tocó acá). Alcance exclusivo: `lib/api.ts`, el mecanismo de renovación
+compartido (`lib/offline/token-store.ts`) y el registro de logout desde
+fuera de React (`lib/auth-context.tsx`). Cero cambios de backend, cero
+cambios visuales, cero cambios al Sync Engine más allá de un comentario
+que ya no reflejaba la realidad.
+
+### Comportamiento anterior (auditado, no supuesto)
+
+`lib/api.ts` (76 líneas) no tenía NINGÚN manejo especial de `401` — un
+token vencido se convertía en un `ApiError(401, ...)` igual que cualquier
+otro error HTTP, y ninguna de las 24+1 pantallas que lo consumen (`grep`
+exhaustivo, incluido `login/page.tsx` vía `auth-context.tsx`) distinguía
+ese caso: todas atrapan el error genéricamente
+(`err instanceof ApiError ? err.message : "..."`). El `refreshToken` que
+`auth-context.tsx` guarda en el login nunca se usaba fuera del Sync
+Engine. El mecanismo correcto YA existía, pero aislado:
+`lib/offline/token-store.ts#refreshSession` (framework-agnóstico, sin
+dependencia de React) y `lib/offline/sync-client.ts` (su propio ciclo
+401→refresh→reintento único, exclusivo del Sync Engine).
+
+### Comportamiento nuevo
+
+`lib/api.ts` ahora envuelve cada request en `authorizedFetch`, que aplica
+el MISMO ciclo que ya usaba el Sync Engine: 401 → `refreshSession()` →
+si tiene éxito, un único reintento con el token nuevo → lo que responda
+ese reintento es final, nunca se vuelve a interceptar (imposible entrar
+en loop). Se excluyen explícitamente `/auth/login`, `/auth/register` y
+`/auth/refresh` del ciclo — un 401 ahí es "credenciales inválidas" o
+"refresh token inválido", nunca "mi sesión venció", así que intentar
+renovar sobre esos mismos endpoints no tiene sentido. `apiDownload`/
+`apiBlobUrl` pasan por el mismo `authorizedFetch` — antes tenían su
+propia copia de la lógica de armar headers/mensaje de error, ahora
+comparten una sola.
+
+### Estrategia de refresh: sin duplicar `token-store.ts`
+
+`lib/api.ts` importa `refreshSession` de `lib/offline/token-store.ts`
+tal cual — cero lógica de renovación reescrita. El único cambio a ese
+módulo fue agregarle deduplicación (ver más abajo), que beneficia por
+igual al Sync Engine y a las llamadas interactivas nuevas.
+
+### Estrategia concurrente: dedup de `refreshSession` en el único lugar que importa
+
+Bug real identificado en la auditoría, no solo teórico: la Fase Offline 1
+rota el refresh token en cada uso, así que dos llamadas a `POST
+/auth/refresh` disparadas casi al mismo tiempo con el MISMO refresh token
+viejo harían que el servidor acepte solo una y rechace la otra como si
+la sesión estuviera revocada — un falso positivo. Con `lib/api.ts` ahora
+también llamando a `refreshSession()`, este escenario deja de ser
+hipotético (varias pantallas pueden disparar varios `fetch` casi
+simultáneos con un token vencido). Se resolvió agregando una única
+promesa en curso (`inFlightRefresh`) DENTRO de `token-store.ts`: mientras
+haya una renovación en camino, cualquier llamada adicional a
+`refreshSession()` recibe la MISMA promesa en vez de disparar un segundo
+`POST /auth/refresh` — nunca una solución paralela por caller, un solo
+lugar resuelve la concurrencia para todo el mundo. Probado con `Promise
+.all` de dos llamadas concurrentes reales (`token-store.test.ts`) y con
+tres requests interactivos simultáneos vía `lib/api.ts`
+(`api.test.ts`).
+
+### Estrategia ante error de red: nunca se confunde con revocación
+
+Instrucción explícita del pedido: si `refreshSession()` devuelve
+`reason: "network-error"` (el intento de `POST /auth/refresh` ni
+siquiera pudo contactar al servidor), `lib/api.ts` NUNCA fuerza logout ni
+borra tokens — el 401 original simplemente se propaga como un error más,
+para que el usuario pueda reintentar la acción cuando vuelva la conexión.
+Solo `reason: "revoked-or-expired"` (y, por descarte, `no-refresh-token`)
+dispara el logout forzado. Probado explícitamente (`api.test.ts`,
+"refresh falla por error de RED").
+
+### Estrategia ante sesión revocada: logout sin acoplar `lib/api.ts` a React
+
+`lib/api.ts` no es un componente ni puede usar hooks. Se agregó
+`registerSessionExpiredHandler(handler)` — un registro mínimo de un solo
+callback, que `auth-context.tsx` completa con su `logout()` real al
+montar `AuthProvider`. `lib/api.ts` nunca importa `auth-context.tsx` (la
+dirección del import ya era al revés: `auth-context.tsx` importa de
+`lib/api.ts`), así que no hay ciclo. El callback se guarda vía un `ref`
+que se actualiza en su PROPIO efecto (nunca durante el render: escribir
+un ref en el cuerpo del render es inseguro bajo el renderizado
+concurrente de React 19 — el lint del propio proyecto, regla
+`react-hooks/refs`, lo marca como error) — evita capturar una versión
+vieja de `logout` en un closure obsoleto sin arriesgar una escritura
+insegura.
+
+### Impacto en el Sync Engine: ninguno funcional, un comentario corregido
+
+El contrato de `refreshSession` (`RefreshOutcome`) no cambió — solo se le
+agregó deduplicación, transparente para quien ya lo llamaba.
+`sync-engine.ts`/`sync-client.ts`/`auto-sync.ts` siguen exactamente
+igual: ante sesión revocada, la operación en `sync_queue` queda `FAILED`
+(nunca se pierde, nunca se marca `SYNCED` falsamente) y el Sync Engine
+deja de reintentar hasta un nuevo login — comportamiento de Offline 2/3,
+no tocado, reverificado con la batería completa (320 tests backend + 98
+frontend). El único cambio fue actualizar el comentario de
+`sync-client.ts` que afirmaba (ya inexacto) que `lib/api.ts` propagaba
+todo 401 sin más — hoy la diferencia real entre los dos clientes es la
+forma de la respuesta (el Sync Engine necesita distinguir
+`conflict`/`validation-error`/`transient-error`, `lib/api.ts` no), no la
+renovación de sesión, que ahora comparten.
+
+### Blast radius: 24 archivos que importan `lib/api.ts`, ninguno con dependencia del comportamiento anterior
+
+Se auditó cada uno (`grep` de `instanceof ApiError` en todo `src/app`):
+ninguna pantalla especializa el caso `status === 401` — todas muestran
+`err.message` genéricamente. El nuevo comportamiento es estrictamente una
+mejora transparente para el 401 "token vencido, renovable" (antes: error
+crudo en pantalla; ahora: reintento invisible) y un no-cambio para
+cualquier otro error. `login/page.tsx` (vía `auth-context.tsx#login`) y
+`register/page.tsx` quedan explícitamente fuera del ciclo de refresh por
+la exclusión de rutas de arranque de sesión.
+
+### Hallazgo pre-existente NO corregido en esta subfase (documentado, no ocultado)
+
+Al lintear `auth-context.tsx` (tocado por esta subfase) aparece un error
+`react-hooks/set-state-in-effect` en el efecto original de restauración
+de sesión al montar (`setToken`/`setUser`/`setOrganization` síncronos
+dentro de un `useEffect`, línea ~58). Se confirmó explícitamente contra
+el SHA base aprobado (`434a38f`, anterior a cualquier cambio de esta
+subfase) que el error YA existía antes de tocar el archivo — no lo
+introdujo Offline 4.1. Fuera del alcance estricto autorizado ("401 +
+refresh + logout + regresión"), así que no se tocó; queda documentado
+para una futura limpieza de lint en `auth-context.tsx` explícitamente
+autorizada.
+
+### Endpoints nuevos en esta fase: ninguno
+
+Reutiliza `POST /auth/refresh` tal cual ya existía. Cero cambios de
+backend.

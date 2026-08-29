@@ -2,10 +2,12 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4200";
 
 // Mismas claves de `localStorage` que ya usa `lib/auth-context.tsx`/
 // `lib/api.ts` — deliberadamente NO se crea un segundo lugar donde vive la
-// sesión. Este módulo solo LEE/ACTUALIZA esas claves para que el Sync
-// Engine (que corre sin que haya necesariamente un humano mirando la
-// pantalla en ese momento) pueda refrescar su propio access token vencido
-// sin depender de React ni de que el usuario interactúe con la UI.
+// sesión. Este módulo solo LEE/ACTUALIZA esas claves, sin depender de React,
+// para que cualquier código que necesite renovar la sesión sin que
+// necesariamente haya un humano mirando la pantalla en ese momento (el Sync
+// Engine desde Offline 2, y desde Offline 4.1 también las llamadas
+// interactivas normales vía `lib/api.ts`) comparta el MISMO mecanismo de
+// renovación en vez de cada uno inventar el suyo.
 const TOKEN_KEY = "kipu_token";
 const REFRESH_TOKEN_KEY = "kipu_refresh_token";
 const ORGANIZATION_KEY = "kipu_organization";
@@ -57,8 +59,28 @@ export type RefreshOutcome =
  * deja de poder refrescar exactamente por este camino — cuando vuelve la
  * conexión y el Sync Engine intenta trabajar, este es el punto donde la
  * revocación se descubre.
+ *
+ * Deduplicada contra llamadas CONCURRENTES (Offline 4.1): la Fase Offline 1
+ * rota el refresh token en cada uso, así que dos llamadas simultáneas con el
+ * mismo refresh token viejo harían que el servidor acepte solo la primera y
+ * rechace la segunda como si estuviera revocada — un falso positivo, no una
+ * revocación real. Si ya hay una renovación en curso, las llamadas
+ * adicionales esperan esa MISMA promesa en vez de disparar un segundo
+ * `POST /auth/refresh` — nunca una solución paralela por caller, un solo
+ * lugar (acá) resuelve la concurrencia para todo el mundo (Sync Engine y
+ * `lib/api.ts` por igual).
  */
-export async function refreshSession(): Promise<RefreshOutcome> {
+let inFlightRefresh: Promise<RefreshOutcome> | null = null;
+
+export function refreshSession(): Promise<RefreshOutcome> {
+  if (inFlightRefresh) return inFlightRefresh;
+  inFlightRefresh = performRefresh().finally(() => {
+    inFlightRefresh = null;
+  });
+  return inFlightRefresh;
+}
+
+async function performRefresh(): Promise<RefreshOutcome> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return { ok: false, reason: "no-refresh-token" };
 
@@ -88,4 +110,9 @@ export async function refreshSession(): Promise<RefreshOutcome> {
   }
   setTokens(data.accessToken, data.refreshToken);
   return { ok: true, accessToken: data.accessToken };
+}
+
+/** Solo para tests: limpia la renovación en curso entre casos aislados. */
+export function resetRefreshGuard(): void {
+  inFlightRefresh = null;
 }

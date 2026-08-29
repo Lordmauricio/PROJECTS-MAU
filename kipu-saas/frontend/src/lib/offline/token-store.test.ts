@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getAccessToken, getRefreshToken, refreshSession } from "./token-store";
+import { getAccessToken, getRefreshToken, refreshSession, resetRefreshGuard } from "./token-store";
 
 describe("token-store — lee las MISMAS claves que auth-context.tsx/lib/api.ts", () => {
   beforeEach(() => {
@@ -73,5 +73,60 @@ describe("refreshSession — renovación de sesión sin pasar por React", () => 
 
     const result = await refreshSession();
     expect(result).toEqual({ ok: false, reason: "network-error" });
+  });
+});
+
+describe("refreshSession — deduplicación contra llamadas concurrentes (Offline 4.1)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetRefreshGuard();
+    vi.restoreAllMocks();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("dos llamadas CONCURRENTES comparten la MISMA promesa y disparan un solo POST /auth/refresh", async () => {
+    localStorage.setItem("kipu_refresh_token", "refresh-viejo");
+    let resolveFetch!: (v: Response) => void;
+    const fetchMock = vi.fn().mockImplementation(
+      () => new Promise<Response>((resolve) => (resolveFetch = resolve)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = refreshSession();
+    const second = refreshSession(); // concurrente, ANTES de que la primera resuelva
+
+    resolveFetch(
+      new Response(
+        JSON.stringify({ accessToken: "access-nuevo", refreshToken: "refresh-nuevo" }),
+        { status: 201 },
+      ),
+    );
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // nunca 2 — evita que el refresh token rotado deje a una de las dos "huérfana"
+    expect(firstResult).toEqual({ ok: true, accessToken: "access-nuevo" });
+    expect(secondResult).toEqual({ ok: true, accessToken: "access-nuevo" }); // misma respuesta, no una segunda renovación
+  });
+
+  it("una llamada POSTERIOR (ya resuelta la anterior) SÍ dispara un nuevo refresh — el dedupe no queda pegado para siempre", async () => {
+    localStorage.setItem("kipu_refresh_token", "refresh-1");
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ accessToken: "access-a", refreshToken: "refresh-2" }),
+        { status: 201 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await refreshSession();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // El token ya rotó (refresh-2 quedó guardado) — una renovación
+    // posterior, ya no concurrente con la primera, debe volver a golpear
+    // la red con normalidad.
+    await refreshSession();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
