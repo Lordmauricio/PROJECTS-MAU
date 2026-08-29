@@ -45,13 +45,37 @@ export interface LocalCustomer {
   cachedAt: string;
 }
 
-/** Contexto mínimo de organización/sucursal necesario para poder crear una venta offline — un solo registro por base local (una base local = una organización, ver `db.ts`). */
+/**
+ * Contexto de organización/sucursal necesario para poder crear una venta
+ * offline Y construir un ticket comercial NO fiscal completo sin red
+ * (Offline 4.5) — un solo registro por base local (una base local = una
+ * organización, ver `db.ts`).
+ *
+ * Los campos `business*`/`branch*`/`posTerminal*` reflejan 1:1 los nombres
+ * reales del backend (`Organization.legalName/nit/address/phone/logoUrl`,
+ * `Branch.name/address`, `POSTerminal.name/code` — ver `GET /organizations
+ * /me` y `GET /branches`) — nunca un nombre de propiedad inventado. No hay
+ * versión nueva de Dexie para agregarlos: son propiedades del objeto
+ * guardado en `orgContext`, no un índice nuevo (`db.ts` solo declara
+ * `organizationId` como índice de esta tabla), así que Dexie no necesita
+ * ninguna migración de esquema para persistirlos.
+ */
 export interface LocalOrgContext {
   organizationId: string;
-  organizationName: string;
+  organizationName: string; // `Organization.name` (nombre comercial)
+  businessLegalName: string; // `Organization.legalName` (razón social)
+  businessNit: string; // `Organization.nit`
+  businessAddress: string | null; // `Organization.address`
+  businessPhone: string | null; // `Organization.phone`
+  /** `Organization.logoUrl` — solo la URL, nunca se descarga/cachea la imagen (ver docs/architecture.md sección 24: sin sistema de imágenes en esta fase, el ticket ESC/POS es texto puro). */
+  businessLogoUrl: string | null;
   branchId: string;
+  branchName: string; // `Branch.name`
+  branchAddress: string | null; // `Branch.address`
   warehouseId: string;
   posTerminalId: string;
+  posTerminalName: string; // `POSTerminal.name`
+  posTerminalCode: string; // `POSTerminal.code`
   userId: string;
   userName: string;
   roleKey: string | null;

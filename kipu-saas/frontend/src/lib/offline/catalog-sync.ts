@@ -33,8 +33,20 @@ interface ApiCustomer {
 
 interface ApiBranch {
   id: string;
+  name: string;
+  address: string | null;
   warehouses: { id: string }[];
-  posTerminals: { id: string }[];
+  posTerminals: { id: string; name: string; code: string }[];
+}
+
+/** Espejo mínimo de `GET /organizations/me` (backend `OrganizationsController#getMine`, `Organization` de `schema.prisma`) — solo los campos de identidad que necesita el ticket offline (Offline 4.5). */
+interface ApiOrganization {
+  name: string;
+  legalName: string;
+  nit: string;
+  address: string | null;
+  phone: string | null;
+  logoUrl: string | null;
 }
 
 export interface CatalogSyncInput {
@@ -43,6 +55,44 @@ export interface CatalogSyncInput {
   userId: string;
   userName: string;
   roleKey: string | null;
+}
+
+/**
+ * Arma el registro completo de `orgContext` (identidad de negocio +
+ * sucursal + punto de venta) a partir de las respuestas YA descargadas de
+ * `GET /organizations/me` y `GET /branches` — un solo lugar que usan tanto
+ * `runFullInitialSync` como `runIncrementalSync` (Offline 4.5), para que
+ * ninguno de los dos pueda divergir en cómo arma este registro. El caller
+ * ya garantizó `branch.warehouses[0]`/`branch.posTerminals[0]` existen
+ * (`hasBranchConfigured`).
+ */
+function buildOrgContext(
+  input: CatalogSyncInput,
+  organization: ApiOrganization,
+  branch: ApiBranch,
+  cachedAt: string,
+): LocalOrgContext {
+  const posTerminal = branch.posTerminals[0];
+  return {
+    organizationId: input.organizationId,
+    organizationName: input.organizationName,
+    businessLegalName: organization.legalName,
+    businessNit: organization.nit,
+    businessAddress: organization.address,
+    businessPhone: organization.phone,
+    businessLogoUrl: organization.logoUrl,
+    branchId: branch.id,
+    branchName: branch.name,
+    branchAddress: branch.address,
+    warehouseId: branch.warehouses[0].id,
+    posTerminalId: posTerminal.id,
+    posTerminalName: posTerminal.name,
+    posTerminalCode: posTerminal.code,
+    userId: input.userId,
+    userName: input.userName,
+    roleKey: input.roleKey,
+    fetchedAt: cachedAt,
+  };
 }
 
 export interface CatalogSyncResult {
@@ -103,10 +153,16 @@ export async function runFullInitialSync(
   db: KipuLocalDB,
   input: CatalogSyncInput,
 ): Promise<CatalogSyncResult> {
-  const [products, customers, branches] = await Promise.all([
+  // `organization` viaja en el MISMO `Promise.all` que products/customers/
+  // branches (Offline 4.5) — si `GET /organizations/me` falla, todo el
+  // `Promise.all` rechaza ANTES de que la transacción Dexie empiece: ningún
+  // dato queda a medio escribir, mismo criterio de atomicidad que ya
+  // aplicaba a products/customers/branches desde Offline 2/3.
+  const [products, customers, branches, organization] = await Promise.all([
     api<ApiProduct[]>("/products"),
     api<ApiCustomer[]>("/customers"),
     api<ApiBranch[]>("/branches"),
+    api<ApiOrganization>("/organizations/me"),
   ]);
 
   const cachedAt = new Date().toISOString();
@@ -131,18 +187,7 @@ export async function runFullInitialSync(
       await db.customers.bulkAdd(localCustomers);
 
       if (hasBranchConfigured && branch) {
-        const context: LocalOrgContext = {
-          organizationId: input.organizationId,
-          organizationName: input.organizationName,
-          branchId: branch.id,
-          warehouseId: branch.warehouses[0].id,
-          posTerminalId: branch.posTerminals[0].id,
-          userId: input.userId,
-          userName: input.userName,
-          roleKey: input.roleKey,
-          fetchedAt: cachedAt,
-        };
-        await db.orgContext.put(context);
+        await db.orgContext.put(buildOrgContext(input, organization, branch, cachedAt));
       }
 
       const state: CatalogSyncState = {
@@ -258,18 +303,42 @@ export async function runIncrementalSync(
 
   const productsSince = state.productsUpdatedAt ?? state.lastFullSyncAt;
   const customersSince = state.customersUpdatedAt ?? state.lastFullSyncAt;
-  const [changedProducts, changedCustomers] = await Promise.all([
+  // Identidad de negocio/sucursal/POS (Offline 4.5) NO tiene un cursor
+  // `updatedSince` propio — son un puñado de campos de un solo registro,
+  // nunca una colección paginada — así que cada incremental simplemente
+  // vuelve a pedir el estado ACTUAL completo (`GET /organizations/me`, `GET
+  // /branches`), igual que el full sync. Es información de tamaño fijo y
+  // acotado (nunca crece con el catálogo), así que no viola "nunca una
+  // descarga sin límite": son siempre las mismas 2 llamadas, sin paginar.
+  // Viajan en el MISMO `Promise.all` que products/customers por la misma
+  // razón de atomicidad que en `runFullInitialSync`: si cualquiera falla,
+  // nada de este incremental se aplica (ni el catálogo ni el contexto ni el
+  // cursor avanzan).
+  const [changedProducts, changedCustomers, branches, organization] = await Promise.all([
     fetchAllChanges<ApiProduct>("/products", productsSince, PRODUCTS_PAGE_SIZE),
     fetchAllChanges<ApiCustomer>("/customers", customersSince, CUSTOMERS_PAGE_SIZE),
+    api<ApiBranch[]>("/branches"),
+    api<ApiOrganization>("/organizations/me"),
   ]);
 
   const cachedAt = new Date().toISOString();
   const localProducts = changedProducts.map((p) => toLocalProduct(p, cachedAt));
   const localCustomers = changedCustomers.map((c) => toLocalCustomer(c, cachedAt));
+  const branch = branches[0];
+  const hasBranchConfigured = Boolean(branch && branch.warehouses[0] && branch.posTerminals[0]);
 
-  await db.transaction("rw", db.products, db.customers, db.syncState, async () => {
+  await db.transaction("rw", db.products, db.customers, db.orgContext, db.syncState, async () => {
     if (localProducts.length > 0) await db.products.bulkPut(localProducts);
     if (localCustomers.length > 0) await db.customers.bulkPut(localCustomers);
+
+    // Refresca el contexto en CADA incremental (no solo en el full sync
+    // inicial) — esto es lo que permite que un dispositivo con un
+    // `orgContext` cacheado ANTES de Offline 4.5 (sin los campos de
+    // identidad de negocio) se autorepare en su próxima sincronización en
+    // línea, sin necesitar un resync manual ni una migración de datos.
+    if (hasBranchConfigured && branch) {
+      await db.orgContext.put(buildOrgContext(input, organization, branch, cachedAt));
+    }
 
     const nextState: CatalogSyncState = {
       organizationId: input.organizationId,

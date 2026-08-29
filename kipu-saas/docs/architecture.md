@@ -2558,13 +2558,11 @@ que ya aplica el feedback del POS desde Offline 3. Si todavía no
 sincronizó, calcula a partir del carrito local — lo mejor disponible
 offline, dejado explícito por `syncStatus`.
 
-**Limitación conocida, documentada**: `LocalOrgContext` no cachea hoy
-NIT/razón social/dirección/teléfono de la organización — un ticket
-armado 100% offline desde `ticketFromLocalSale` no va a poder mostrar
-esos campos hasta que una fase futura los agregue al catálogo offline
-(ampliar `runFullInitialSync`/`LocalOrgContext`, ya señalado en la
-auditoría original de "Offline 4"). `TicketMapperContext` ya tiene esos
-campos como opcionales para no bloquear esa extensión.
+**Limitación resuelta en Offline 4.5**: `LocalOrgContext` no cacheaba
+NIT/razón social/dirección/teléfono de la organización ni nombres reales
+de sucursal/POS — ver sección 24 para el detalle de cómo se cerró esta
+brecha reutilizando `GET /organizations/me`/`GET /branches` (sin ningún
+endpoint nuevo).
 
 ### Manejo de errores — nunca un error genérico cuando existe uno específico
 
@@ -2631,3 +2629,217 @@ usar cuando se implementen).
 ### Endpoints nuevos en esta fase: ninguno
 
 Fase exclusivamente de arquitectura/frontend. Cero cambios de backend.
+
+## 24. Fase Offline 4.5 — Datos completos para ticket offline: decisiones técnicas
+
+Quinta subfase de "Offline 4", autorizada explícitamente por separado.
+Alcance exclusivo: los DATOS locales necesarios para construir un ticket
+comercial NO fiscal completo sin ninguna llamada de red al momento de
+imprimir (no la arquitectura de impresión en sí, ya resuelta en Offline
+4.4). Cero cambios de backend, cero wiring del botón de imprimir a la
+UI del POS (eso sigue siendo Offline 4.9+).
+
+### Auditoría previa: nada de esto necesitó un endpoint nuevo
+
+Antes de tocar código se auditó qué exponía ya el backend:
+
+- `GET /organizations/me` (`OrganizationsController#getMine`, sin
+  permiso especial — `@NoPermissionRequired()`) ya devuelve la fila
+  completa de `Organization`: `name`, `legalName`, `nit`, `address`,
+  `phone`, `logoUrl` — exactamente los campos de identidad de negocio
+  que pedía la fase, con los nombres reales del schema (nunca inventados).
+- `GET /branches` (`BranchesController#list`, permiso
+  `organization.branches.read` — que el rol `CASHIER` YA tiene por
+  defecto en `permissions.catalog.ts`) devuelve cada `Branch` con
+  `warehouses`/`posTerminals` anidados completos: `Branch.name/address`,
+  `POSTerminal.name/code`. También sin faltante.
+
+Conclusión de la auditoría: **no hizo falta ningún endpoint nuevo,
+ningún campo nuevo en Prisma, ningún cambio de backend**. El único
+trabajo real era: (a) que el frontend pidiera estos dos endpoints ya
+existentes durante la sincronización de catálogo, y (b) cachear lo que
+devuelven en `LocalOrgContext` con nombres de propiedad que reflejan 1:1
+los del backend.
+
+### `LocalOrgContext` extendido — mismos nombres que el backend, sin migración de Dexie
+
+Campos nuevos en `LocalOrgContext` (`types.ts`): `businessLegalName`,
+`businessNit`, `businessAddress`, `businessPhone`, `businessLogoUrl`
+(espejo de `Organization`), `branchName`, `branchAddress` (espejo de
+`Branch`), `posTerminalName`, `posTerminalCode` (espejo de
+`POSTerminal`). Ningún nombre inventado — cada uno es literalmente el
+nombre de la columna real del lado del servidor.
+
+**Sin bump de versión de Dexie**: `db.ts` solo declara `organizationId`
+como índice de la tabla `orgContext` (`orgContext: "organizationId"`,
+sin cambios desde la v1) — Dexie no necesita ninguna migración de
+esquema para que un objeto guardado tenga propiedades adicionales no
+indexadas. La tabla sigue en la versión 3 (Offline 4.4, `printers`); no
+hizo falta una versión 4.
+
+### `catalog-sync.ts`: un solo `buildOrgContext()`, usado por full E incremental
+
+Antes de esta fase, `runIncrementalSync` nunca tocaba `orgContext` — solo
+lo escribía `runFullInitialSync`, una única vez, en la primera apertura
+del POS en el dispositivo. Eso significa que un dispositivo con un
+`orgContext` cacheado ANTES de Offline 4.5 (sin los campos nuevos) nunca
+se iba a autoreparar: `runFullInitialSync` solo corre cuando
+`db.orgContext.count() === 0`, y ese dispositivo ya tenía 1 fila (con la
+forma vieja).
+
+Se resolvió agregando `GET /organizations/me` y `GET /branches` al
+`Promise.all` de AMBAS funciones (full e incremental) y extrayendo un
+único `buildOrgContext(input, organization, branch, cachedAt)` compartido
+— mismo criterio que ya aplica `ticket-mapper.ts` con sus dos caminos:
+nunca dos lugares distintos armando el mismo objeto de formas que puedan
+divergir. Consecuencias:
+
+- **Se autorepara solo**: un dispositivo con un contexto viejo obtiene
+  los campos nuevos en su próxima sincronización incremental en línea
+  (que ya ocurre en cada apertura del POS con conexión), sin resync
+  manual ni migración de datos.
+- **Atomicidad preservada**: `organization`/`branches` viajan en el
+  MISMO `Promise.all` que products/customers — si `GET /organizations
+  /me` falla, todo el `Promise.all` rechaza ANTES de que la transacción
+  Dexie empiece, así que ni el catálogo ni el contexto ni el cursor de
+  sincronización avanzan (probado explícitamente para full e
+  incremental).
+- **No es una descarga sin límite**: a diferencia de products/customers
+  (paginados, potencialmente miles de filas), la identidad de negocio y
+  la sucursal/POS son un puñado de campos de UN registro — sin cursor
+  `updatedSince` propio porque no hace falta: cada sincronización
+  simplemente vuelve a pedir el estado actual completo, siempre 2
+  llamadas fijas, nunca más.
+- El gate `hasBranchConfigured` (¿la organización tiene al menos una
+  sucursal con un almacén Y un punto de venta?) se preserva sin cambios
+  — sin eso, `orgContext` sencillamente no se escribe, exactamente como
+  antes de esta fase.
+
+### Selección de sucursal/POS: arquitectura auditada, no rediseñada
+
+`runFullInitialSync`/`runIncrementalSync` siguen resolviendo "la"
+sucursal/almacén/POS del dispositivo como `branches[0]` (la primera que
+devuelve `GET /branches`) — heurística preexistente desde Offline 2, sin
+ninguna UI que permita al cajero elegir o cambiar de sucursal/POS en
+medio de una sesión (`sales/pos/page.tsx` lee `db.orgContext.toArray()[0]`
+una sola vez al montar). Offline 4.5 audita esto explícitamente y lo
+DEJA TAL CUAL: rediseñar la selección multi-sucursal es un cambio de
+arquitectura/UI que la fase no pidió y que corresponde a una subfase
+futura si el negocio real lo necesita (ej. una organización con más de
+una sucursal activa vendiendo offline desde el mismo dispositivo).
+
+### Cajero: el usuario autenticado del dispositivo, no un campo nuevo en `LocalSale`
+
+`LocalSale` nunca guardó (ni pasa a guardar en esta fase) quién creó la
+venta — no hay `cashierId`/`cashierName` en la tabla `sales`. Se evaluó
+agregarlo (capturado al crear la venta, para que sobreviva a un cambio
+de cajero en el mismo dispositivo) y se decidió NO hacerlo: habría
+significado tocar `sales-repo.ts#createSaleOffline`/`pos-submit.ts`, el
+flujo comercial de creación de venta — explícitamente fuera de alcance
+("no changes to sale creation/confirmation..."). En su lugar,
+`TicketMapperContext.cashierName` (ya existente desde Offline 4.4, sin
+cambios) se alimenta de `LocalOrgContext.userName` — el usuario
+autenticado real (nunca inventado), ya cacheado desde Offline 2.
+
+**Limitación documentada, no ocultada**: si el dispositivo cambia de
+usuario autenticado ENTRE que se creó una venta offline y el momento en
+que se imprime su ticket (turno de caja compartido, mismo dispositivo),
+el ticket va a mostrar el cajero ACTUALMENTE logueado, no
+necesariamente quien registró esa venta puntual. Es un caso de borde
+real pero infrecuente (la mayoría de los ticket se imprimen en el
+momento); resolverlo bien requeriría el cambio de modelo de datos
+señalado arriba, evaluado y diferido deliberadamente.
+
+### Logo: se cachea la URL, no se implementa un sistema de imágenes
+
+`Organization.logoUrl` (cuando existe) se cachea en
+`LocalOrgContext.businessLogoUrl` — es solo una URL de texto, cachearla
+no cuesta nada adicional (viaja en la misma respuesta de
+`GET /organizations/me` que ya se pide para NIT/razón social) y no
+implica descargar ni guardar ninguna imagen. Deliberadamente NO se
+extendió `TicketData`/`ticket-mapper.ts`/`EscPosEncoder` para renderizar
+el logo como bitmap: eso requeriría un comando ESC/POS de imagen (`GS v
+0`) y una decisión de conversión de imagen→bitmap monocromo que ninguna
+impresora real elegida todavía justifica (mismo criterio que ya se
+aplicó a la codificación de texto en Offline 4.4 — no adivinar hardware
+que no se conoce). El ticket es 100% texto y es completamente funcional
+y legible sin logo, con o sin `businessLogoUrl` presente — probado
+explícitamente.
+
+### Total del ticket: la MISMA fórmula que ya ve el cajero en pantalla
+
+`ticketFromLocalSale` (Offline 4.4, sin cambios en esta fase) ya
+calculaba `subtotal`/`total` con la misma fórmula que
+`pos-cart.ts#computeCartTotals` (`subtotal = Σ(cantidad×precio -
+descuento de línea)`, `total = max(0, subtotal - descuento de venta)`)
+— Offline 4.5 lo deja probado explícitamente con un test que corre
+AMBAS fórmulas sobre el mismo carrito y compara el resultado, para que
+cualquier divergencia futura entre ambas se detecte como falla de test,
+nunca como un ticket que muestra un total distinto del que el cajero vio
+al confirmar la venta.
+
+### Folio, cliente, pagos, fecha: sin cambios de comportamiento, solo de datos disponibles
+
+Estas reglas ya las establecía `ticket-mapper.ts` desde Offline 4.4 y
+Offline 4.5 no las toca — solo las prueba de nuevo con datos reales de
+`runFullInitialSync` en vez de un contexto armado a mano:
+
+- `operation.fullNumber` sigue SIEMPRE `null` para una `LocalSale`,
+  sincronizada o no — el único camino a un folio real es
+  `ticketFromReceiptSnapshot`, un recibo YA EMITIDO (`POST /receipts`).
+- El cliente sale exclusivamente de `db.customers` (catálogo ya
+  sincronizado, Offline 4.3) — nunca de una consulta al servidor al
+  momento de imprimir. Una venta sin cliente (`customerId: null`)
+  produce un ticket sin ninguna línea "undefined"/"null" superflua
+  (probado explícitamente).
+- Los métodos de pago vienen tal cual del `enum` real de
+  `LocalSalePayment.method` (`CASH`/`CARD`/`TRANSFER`/`QR`) — nunca un
+  valor inventado.
+- `operation.issuedAt` sale de `sale.createdAt` (marca del DISPOSITIVO al
+  crear la venta, no del servidor) — nunca se pide la hora al servidor
+  al imprimir. Diferencia conocida: si la venta sincroniza más tarde, el
+  `createdAt` que finalmente persiste el servidor (`Sale.createdAt`,
+  columna `@default(now())`) puede diferir en segundos/minutos del
+  `createdAt` local si hubo una demora real hasta reconectar — es
+  esperado y no se “corrige” retroactivamente el ticket ya impreso.
+
+### Aislamiento multi-tenant: extendido a los campos nuevos, no solo al catálogo
+
+El aislamiento sigue viniendo de la misma base física por-organización
+de siempre (`kipu_local_<organizationId>`, ver sección 18) — los campos
+nuevos de `orgContext` no necesitaron ninguna lógica de filtrado propia.
+Probado explícitamente (Offline 4.5): dos organizaciones que
+DELIBERADAMENTE comparten el mismo id de sucursal/POS/producto en sus
+datos de prueba nunca ven su identidad de negocio ni su catálogo
+mezclados — cada base física ni siquiera contiene una fila de la otra
+organización con la que un bug pudiera confundirse.
+
+### Tests nuevos: 14 (9 en `catalog-sync.test.ts`, 5 en `offline-ticket-data.test.ts`)
+
+`catalog-sync.test.ts`: identidad de negocio/sucursal/POS cacheada
+correctamente en el full sync; atomicidad si `GET /organizations/me`
+falla (full e incremental, nada se escribe); el incremental refresca y
+autorepara un `orgContext` con forma vieja; aislamiento A/B de los
+campos nuevos aunque compartan ids.
+
+`printing/offline-ticket-data.test.ts` (nuevo): la PRUEBA PRINCIPAL
+end-to-end completa (sincronizar organización → crear venta offline vía
+`createSaleOffline`/`confirmSaleOffline` reales → `ticketFromLocalSale`
+→ `EscPosEncoder` → bytes ESC/POS, con la red deliberadamente cortada a
+partir de ese punto del test); ticket sin cliente; ticket sin logo;
+aislamiento A/B a nivel de ticket completo; transición pending-sync →
+synced (el folio sigue `null`).
+
+215/215 frontend (206 + 9 nuevos en `catalog-sync.test.ts` + 5 nuevos en
+`offline-ticket-data.test.ts` menos ajustes de mocks existentes), 335/335
+backend (sin cambios), `verify:tenant-isolation` 23/23, builds y lint
+limpios.
+
+### Qué NO se implementó en esta fase (deliberado)
+
+Ningún endpoint de backend nuevo, ningún campo nuevo en Prisma/RLS,
+ningún wiring del botón de imprimir a `sales/pos/page.tsx` (sigue sin
+existir ningún botón de imprimir visible), ninguna selección de
+sucursal/POS multi-sucursal, ningún campo `cashierId`/`cashierName` en
+`LocalSale`, ninguna descarga/renderizado de logo como imagen,
+Bluetooth, USB, red, Tauri, Windows, Android, impresión física.

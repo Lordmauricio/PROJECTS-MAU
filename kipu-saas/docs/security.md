@@ -727,6 +727,47 @@ tocar autenticación, RLS, RBAC ni ningún módulo de negocio.
   el aislamiento viene de que no existe ninguna fila de otra organización
   con la que un bug pudiera confundirse.
 
+## Fase Offline 4.5 — Datos completos para ticket offline: notas de seguridad específicas
+
+Ver `docs/architecture.md` sección 24 para el detalle técnico completo.
+Alcance: `frontend/src/lib/offline/types.ts` (`LocalOrgContext`),
+`catalog-sync.ts` — sin ningún endpoint nuevo, sin tocar autenticación,
+RLS ni RBAC.
+
+- **Ningún dato nuevo sensible se cachea localmente**: los campos
+  agregados (NIT, razón social, dirección, teléfono, nombres de
+  sucursal/POS, URL de logo) son datos de IDENTIDAD DE NEGOCIO — la
+  misma información que ya aparece en cualquier factura/recibo físico
+  del comercio — nunca credenciales, tokens, contraseñas ni datos
+  personales de terceros más allá de lo que ya cacheaba `LocalCustomer`
+  desde Offline 2. `businessLogoUrl` es solo una URL de texto: nunca se
+  descarga ni persiste la imagen en sí.
+- **Sin endpoint nuevo, sin superficie nueva de ataque**: se reutilizan
+  `GET /organizations/me` (`@NoPermissionRequired()`, requiere solo
+  sesión válida) y `GET /branches` (permiso `organization.branches
+  .read`, que el rol `CASHIER` ya tenía) — ambos ya protegidos por
+  `JwtAuthGuard`/`PermissionsGuard` desde antes de esta fase, sin
+  ningún cambio a esos guards ni a los permisos.
+- **`organizationId` sigue viniendo exclusivamente del JWT**: igual que
+  en Offline 4.3, esta fase no introduce ningún parámetro de cliente que
+  pudiera influir en QUÉ organización se consulta — el aislamiento sigue
+  siendo 100% responsabilidad de `TenantPrismaService.run(auth
+  .organizationId, ...)` del lado del servidor.
+- **Aislamiento multi-tenant del contexto local, por construcción**: los
+  campos nuevos de `orgContext` viven en la misma base IndexedDB física
+  por-organización que ya usaban `products`/`customers`/`sales` desde
+  Offline 2 — ninguna lógica de filtrado nueva que pudiera fallar.
+  Probado explícitamente con dos organizaciones que comparten a propósito
+  ids de sucursal/POS/producto en sus datos de prueba.
+- **El incremental ahora también reconsulta identidad de negocio**: antes
+  de esta fase, solo el full sync inicial llamaba a `GET /organizations
+  /me`/`GET /branches`; ahora el incremental (que ya corría en cada
+  apertura online del POS) también los reconsulta para autoreparar un
+  contexto cacheado con la forma vieja. Esto no expone ningún dato nuevo
+  al dispositivo que el usuario autenticado no pudiera ya pedir con esos
+  mismos dos endpoints — solo cambia CUÁNDO se cachea localmente lo que
+  ya era accesible.
+
 ## Qué queda pendiente (explícito, no oculto)
 
 - Administrador de dispositivos (UI + endpoint de solo lectura para listar

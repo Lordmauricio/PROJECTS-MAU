@@ -1388,6 +1388,70 @@ técnico completo.
       cero código de la nueva arquitectura importado todavía desde
       ninguna pantalla (confirmado explícitamente).
 
+## Fase Offline 4.5 — Datos completos para ticket offline ✅
+
+Quinta subfase de "Offline 4", autorizada explícitamente por separado.
+Alcance exclusivo: los DATOS locales necesarios para armar un ticket
+comercial NO fiscal completo sin ninguna llamada de red — no la
+arquitectura de impresión (ya resuelta en Offline 4.4), no el wiring a la
+UI del POS (Offline 4.9+). Ver `docs/architecture.md` sección 24 para el
+detalle técnico completo.
+
+- [x] Auditoría previa confirmó que `GET /organizations/me` y
+      `GET /branches` (ambos ya existentes, ambos accesibles para el rol
+      `CASHIER`) ya devuelven toda la identidad de negocio/sucursal/POS
+      necesaria — **cero endpoints nuevos, cero campos nuevos en
+      Prisma, cero cambios de backend**.
+- [x] `LocalOrgContext` extendido con `businessLegalName`/`businessNit`/
+      `businessAddress`/`businessPhone`/`businessLogoUrl`/`branchName`/
+      `branchAddress`/`posTerminalName`/`posTerminalCode` — nombres
+      idénticos a las columnas reales del backend, nunca inventados. Sin
+      bump de versión de Dexie (propiedades no indexadas de una tabla
+      que ya existía).
+- [x] `catalog-sync.ts`: `buildOrgContext()` único, usado por
+      `runFullInitialSync` E `runIncrementalSync` — el incremental ahora
+      también refresca `orgContext` en cada corrida (antes solo lo
+      escribía el full sync inicial), lo que autorepara un dispositivo
+      con un contexto cacheado ANTES de esta fase, sin resync manual.
+      Atomicidad preservada: si `GET /organizations/me` falla, nada se
+      escribe (ni catálogo, ni contexto, ni cursor) — probado
+      explícitamente para full e incremental.
+- [x] Selección de sucursal/POS (`branches[0]`, sin UI de cambio)
+      auditada y dejada tal cual — rediseñarla es una decisión de
+      arquitectura/producto fuera de esta fase, documentada.
+- [x] Cajero: se evaluó agregar `cashierId`/`cashierName` a `LocalSale`
+      (tocaría el flujo de creación de venta, fuera de alcance) y se
+      decidió NO hacerlo — el ticket usa
+      `LocalOrgContext.userName` (usuario autenticado real). Limitación
+      documentada: si el dispositivo cambia de usuario entre crear una
+      venta y imprimir su ticket, muestra el cajero actual, no
+      necesariamente quien la vendió.
+- [x] Logo: se cachea `Organization.logoUrl` como URL de texto (sin
+      costo adicional, misma respuesta que NIT/razón social) pero
+      deliberadamente NO se implementa un sistema de imágenes/bitmap
+      ESC/POS en esta fase — el ticket es 100% texto, funcional y
+      legible con o sin logo, probado explícitamente.
+- [x] Total del ticket: se probó explícitamente que
+      `ticketFromLocalSale` (sin cambios) calcula el mismo total que
+      `pos-cart.ts#computeCartTotals` — nunca una segunda fórmula.
+- [x] Folio/cliente/pagos/fecha: mismas reglas ya establecidas en
+      Offline 4.4 (`fullNumber` siempre `null` para `LocalSale`, cliente
+      solo de `db.customers`, métodos de pago del enum real,
+      `createdAt` local nunca pedido al servidor), re-probadas con datos
+      reales de sincronización en vez de un contexto armado a mano.
+- [x] Aislamiento multi-tenant extendido a los campos nuevos — probado
+      con dos organizaciones que comparten deliberadamente ids de
+      sucursal/POS/producto en sus datos de prueba.
+- [x] 14 tests nuevos (9 en `catalog-sync.test.ts` + 5 en el nuevo
+      `printing/offline-ticket-data.test.ts`, incluida la PRUEBA
+      PRINCIPAL end-to-end: sync de organización → venta offline real
+      (`createSaleOffline`/`confirmSaleOffline`) → `ticketFromLocalSale`
+      → `EscPosEncoder` → bytes ESC/POS, con la red cortada desde ese
+      punto del test). 215/215 frontend, 335/335 backend (sin cambios),
+      `verify:tenant-isolation` 23/23, builds y lint limpios. Cero
+      cambios de backend, cero botón de imprimir en el POS, cero
+      transporte real, cero Bluetooth/USB/red/Tauri/Windows/Android.
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,

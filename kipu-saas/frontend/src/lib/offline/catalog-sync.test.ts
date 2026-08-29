@@ -64,8 +64,26 @@ describe("Catalog sync — full initial sync (V1)", () => {
       if (url.endsWith("/branches")) {
         return Promise.resolve(
           jsonResponse([
-            { id: "branch-1", warehouses: [{ id: "wh-1" }], posTerminals: [{ id: "pos-1" }] },
+            {
+              id: "branch-1",
+              name: "Sucursal Centro",
+              address: "Av. Siempre Viva 123",
+              warehouses: [{ id: "wh-1" }],
+              posTerminals: [{ id: "pos-1", name: "Caja 1", code: "POS-01" }],
+            },
           ]),
+        );
+      }
+      if (url.endsWith("/organizations/me")) {
+        return Promise.resolve(
+          jsonResponse({
+            name: "Mi Negocio",
+            legalName: "Mi Negocio SRL",
+            nit: "1234567890",
+            address: "Calle Falsa 456",
+            phone: "70000000",
+            logoUrl: "https://cdn.example.com/logo.png",
+          }),
         );
       }
       throw new Error(`URL inesperada: ${url}`);
@@ -87,6 +105,43 @@ describe("Catalog sync — full initial sync (V1)", () => {
     const context = await db.orgContext.get(org);
     expect(context?.posTerminalId).toBe("pos-1");
     expect(context?.warehouseId).toBe("wh-1");
+    // Offline 4.5 — identidad de negocio y nombres reales de sucursal/POS,
+    // reutilizando `GET /organizations/me` y `GET /branches` (ya existentes,
+    // sin ningún endpoint nuevo).
+    expect(context?.businessLegalName).toBe("Mi Negocio SRL");
+    expect(context?.businessNit).toBe("1234567890");
+    expect(context?.businessAddress).toBe("Calle Falsa 456");
+    expect(context?.businessPhone).toBe("70000000");
+    expect(context?.businessLogoUrl).toBe("https://cdn.example.com/logo.png");
+    expect(context?.branchName).toBe("Sucursal Centro");
+    expect(context?.branchAddress).toBe("Av. Siempre Viva 123");
+    expect(context?.posTerminalName).toBe("Caja 1");
+    expect(context?.posTerminalCode).toBe("POS-01");
+  });
+
+  it("si `GET /organizations/me` falla, no se escribe NADA (ni catálogo, ni contexto, ni cursor) — mismo criterio de atomicidad que products/customers/branches", async () => {
+    const org = uniqueOrgId();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith("/organizations/me")) return Promise.reject(new Error("falla simulada de red"));
+        if (url.endsWith("/products")) return Promise.resolve(jsonResponse([product({ organizationId: org })]));
+        if (url.endsWith("/branches"))
+          return Promise.resolve(
+            jsonResponse([{ id: "b1", name: "Sucursal", address: null, warehouses: [{ id: "w1" }], posTerminals: [{ id: "p1", name: "Caja 1", code: "POS-01" }] }]),
+          );
+        return Promise.resolve(jsonResponse([]));
+      }),
+    );
+
+    const db = getLocalDb(org);
+    await expect(
+      runFullInitialSync(db, { organizationId: org, organizationName: "N", ...BASE_INPUT }),
+    ).rejects.toThrow();
+
+    expect(await db.products.count()).toBe(0);
+    expect(await db.orgContext.get(org)).toBeUndefined();
+    expect(await db.syncState.get(org)).toBeUndefined();
   });
 
   it("registra la organización como 'conocida' en este dispositivo tras sincronizar", async () => {
@@ -550,5 +605,165 @@ describe("Catalog sync — sincronización incremental (Offline 4.3)", () => {
     expect(await db.products.count()).toBe(201);
     const state = await db.syncState.get(org);
     expect(state?.productsUpdatedAt).toBe("2026-03-01T00:00:00.000Z");
+  });
+
+  // Offline 4.5 — el incremental también refresca identidad de negocio/
+  // sucursal/POS en cada corrida (no solo el full sync inicial), lo que
+  // autorepara un `orgContext` cacheado ANTES de esta fase (sin los campos
+  // nuevos) sin necesitar un resync manual.
+  it("el incremental refresca la identidad de negocio/sucursal/POS del `orgContext`, incluso si ya había uno cacheado con datos viejos", async () => {
+    const org = uniqueOrgId();
+    const db = getLocalDb(org);
+    await db.orgContext.put({
+      organizationId: org,
+      organizationName: "N",
+      businessLegalName: "Nombre Viejo SRL",
+      businessNit: "000",
+      businessAddress: null,
+      businessPhone: null,
+      businessLogoUrl: null,
+      branchId: "branch-vieja",
+      branchName: "Sucursal Vieja",
+      branchAddress: null,
+      warehouseId: "wh-vieja",
+      posTerminalId: "pos-vieja",
+      posTerminalName: "Caja Vieja",
+      posTerminalCode: "POS-VIEJA",
+      userId: "u1",
+      userName: "U",
+      roleKey: "OWNER",
+      fetchedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await db.syncState.put({
+      organizationId: org,
+      productsUpdatedAt: "2026-01-01T00:00:00.000Z",
+      customersUpdatedAt: "2026-01-01T00:00:00.000Z",
+      lastFullSyncAt: "2026-01-01T00:00:00.000Z",
+      lastIncrementalSyncAt: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith("/branches"))
+          return Promise.resolve(
+            jsonResponse([
+              {
+                id: "branch-nueva",
+                name: "Sucursal Renombrada",
+                address: "Nueva Dirección 789",
+                warehouses: [{ id: "wh-nueva" }],
+                posTerminals: [{ id: "pos-nueva", name: "Caja Nueva", code: "POS-NUEVA" }],
+              },
+            ]),
+          );
+        if (url.endsWith("/organizations/me"))
+          return Promise.resolve(
+            jsonResponse({
+              name: "N",
+              legalName: "Nombre Corregido SRL",
+              nit: "999",
+              address: "Dirección Correcta",
+              phone: "71111111",
+              logoUrl: null,
+            }),
+          );
+        return Promise.resolve(jsonResponse([]));
+      }),
+    );
+
+    await runIncrementalSync(db, { organizationId: org, organizationName: "N", ...BASE_INPUT });
+
+    const context = await db.orgContext.get(org);
+    expect(context?.businessLegalName).toBe("Nombre Corregido SRL");
+    expect(context?.businessNit).toBe("999");
+    expect(context?.branchName).toBe("Sucursal Renombrada");
+    expect(context?.posTerminalName).toBe("Caja Nueva");
+    expect(context?.posTerminalCode).toBe("POS-NUEVA");
+  });
+
+  it("si `GET /organizations/me` falla durante un incremental, no se aplica NADA: ni catálogo, ni contexto, ni cursor avanzan", async () => {
+    const org = uniqueOrgId();
+    const db = getLocalDb(org);
+    await db.products.add(product({ id: "prod-existente" }) as never);
+    await db.syncState.put({
+      organizationId: org,
+      productsUpdatedAt: "2026-01-01T00:00:00.000Z",
+      customersUpdatedAt: "2026-01-01T00:00:00.000Z",
+      lastFullSyncAt: "2026-01-01T00:00:00.000Z",
+      lastIncrementalSyncAt: null,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url.includes("/organizations/me")) return Promise.reject(new Error("falla simulada"));
+        if (url.includes("/products"))
+          return Promise.resolve(jsonResponse([product({ id: "prod-nuevo", updatedAt: "2026-02-01T00:00:00.000Z" })]));
+        return Promise.resolve(jsonResponse([]));
+      }),
+    );
+
+    await expect(
+      runIncrementalSync(db, { organizationId: org, organizationName: "N", ...BASE_INPUT }),
+    ).rejects.toThrow();
+
+    expect(await db.products.get("prod-nuevo")).toBeUndefined();
+    expect(await db.orgContext.get(org)).toBeUndefined();
+    const state = await db.syncState.get(org);
+    expect(state?.productsUpdatedAt).toBe("2026-01-01T00:00:00.000Z"); // cursor intacto
+  });
+
+  // Aislamiento multi-tenant (Offline 4.5): la identidad de negocio de A y
+  // B nunca se mezcla, incluso si ambas organizaciones reutilizan el mismo
+  // id de sucursal/POS (posible en datos de prueba/demo, cada base física
+  // es de todas formas una organización distinta — ver `db.ts`).
+  it("aislamiento: la identidad de negocio/sucursal/POS de la organización A y B nunca se mezcla, aunque compartan ids de sucursal/POS", async () => {
+    const orgA = uniqueOrgId("org-a");
+    const orgB = uniqueOrgId("org-b");
+
+    function fetchFor(nit: string, legalName: string, branchName: string) {
+      return vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith("/branches"))
+          return Promise.resolve(
+            jsonResponse([
+              {
+                id: "branch-compartida",
+                name: branchName,
+                address: null,
+                warehouses: [{ id: "wh-compartida" }],
+                posTerminals: [{ id: "pos-compartida", name: "Caja 1", code: "POS-01" }],
+              },
+            ]),
+          );
+        if (url.endsWith("/organizations/me"))
+          return Promise.resolve(
+            jsonResponse({ name: legalName, legalName, nit, address: null, phone: null, logoUrl: null }),
+          );
+        return Promise.resolve(jsonResponse([]));
+      });
+    }
+
+    vi.stubGlobal("fetch", fetchFor("NIT-A", "Negocio A SRL", "Sucursal de A"));
+    await runFullInitialSync(getLocalDb(orgA), {
+      organizationId: orgA,
+      organizationName: "A",
+      ...BASE_INPUT,
+    });
+
+    vi.stubGlobal("fetch", fetchFor("NIT-B", "Negocio B SRL", "Sucursal de B"));
+    await runFullInitialSync(getLocalDb(orgB), {
+      organizationId: orgB,
+      organizationName: "B",
+      ...BASE_INPUT,
+    });
+
+    const contextA = await getLocalDb(orgA).orgContext.get(orgA);
+    const contextB = await getLocalDb(orgB).orgContext.get(orgB);
+    expect(contextA?.businessNit).toBe("NIT-A");
+    expect(contextA?.branchName).toBe("Sucursal de A");
+    expect(contextB?.businessNit).toBe("NIT-B");
+    expect(contextB?.branchName).toBe("Sucursal de B");
+    // Ninguna base física conoce ni siquiera la existencia del contexto ajeno.
+    expect(await getLocalDb(orgA).orgContext.get(orgB)).toBeUndefined();
+    expect(await getLocalDb(orgB).orgContext.get(orgA)).toBeUndefined();
   });
 });
