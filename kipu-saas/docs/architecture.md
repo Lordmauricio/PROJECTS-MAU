@@ -2082,3 +2082,105 @@ autorizada.
 
 Reutiliza `POST /auth/refresh` tal cual ya existía. Cero cambios de
 backend.
+
+## 21. Fase Offline 4.2 — Testing de UI del POS con React Testing Library: decisiones técnicas
+
+Subfase de testing puro, autorizada explícitamente y por separado del resto
+de la auditoría "Offline 4" (impresión/ESC-POS/Bluetooth/USB/Tauri/Android/
+Windows/sincronización incremental — nada de eso se tocó). Alcance: agregar
+React Testing Library (RTL) sobre el stack de Vitest/jsdom/fake-indexeddb ya
+existente, y usarla para probar la interacción real DOM→handler→estado→UI
+del POS y de los componentes de conexión/logout — nunca duplicar la
+cobertura de lógica pura que ya tenían `pos-cart.test.ts`, `pos-submit
+.test.ts`, `sale-sync-state.test.ts`, los tests de `sync-queue`/`sync-engine`
+/`auto-sync`/`token-store`/`api.ts`.
+
+### Dependencias agregadas y por qué
+
+- `@testing-library/react@16.3.3` — versión con soporte explícito para
+  React 19 (peer deps `^18 || ^19`), confirmado contra `react@19.2.8`
+  antes de instalar.
+- `@testing-library/user-event@14.6.6` — el pedido pide explícitamente
+  preferir `userEvent` sobre `fireEvent` para simular interacción real
+  (foco, eventos de teclado/click más fieles a un usuario real que
+  disparar el evento DOM crudo).
+- `@testing-library/jest-dom@7.0.1` — matchers (`toBeInTheDocument`,
+  `toHaveTextContent`, `toBeDisabled`, etc.) que permiten escribir
+  aserciones sobre lo que el usuario PERCIBE, en vez de inspeccionar
+  propiedades del DOM a mano — exactamente el principio de testing que
+  pide esta fase (sección 5 del pedido). Sin él, cada aserción de
+  accesibilidad/estado visible sería más verbosa y menos legible,
+  trabajando en contra de ese mismo principio.
+- `@vitejs/plugin-react`: **evaluado y descartado**. Se probó primero sin
+  agregarlo (un test JSX mínimo, borrado después de confirmar) — Vite 8
+  (ya presente vía Vitest 4) transforma `.tsx` con esbuild out-of-the-box
+  sin necesitar el plugin para este caso de uso (sin Fast Refresh, sin
+  necesidad de él en tests). No se agregó una dependencia que no hacía
+  falta.
+
+### Configuración: dos setups separados, nunca uno mezclado
+
+`vitest.config.ts` ahora registra DOS `setupFiles`: el `setup-fake-indexeddb
+.ts` que ya existía (lógica pura) y un `setup-rtl.ts` nuevo
+(`lib/offline/test-support/setup-rtl.ts`) que importa `@testing-library
+/jest-dom/vitest` y registra `afterEach(cleanup)` explícitamente — este
+proyecto no usa `test.globals` de Vitest (todos los archivos importan
+`describe`/`it`/`expect` a mano), así que el auto-cleanup de RTL, que
+depende de detectar un `afterEach` global, no se hubiera activado solo.
+`include` se amplió a `src/**/*.test.tsx` (antes solo `.test.ts`) sin
+tocar el patrón existente para lógica pura.
+
+### Mocking: useAuth() controlado, next/navigation controlado, nunca la lógica real
+
+Instrucción explícita del pedido: mockear `useAuth()` de forma controlada,
+nunca reescribir la lógica real de Offline 4.1. Cada archivo de test
+mockea `@/lib/auth-context` (organización/usuario/logout configurables
+por test) y `next/navigation` (`useRouter`/`usePathname`, ya que `AppShell`
+los necesita) — ambas son fronteras externas al comportamiento bajo
+prueba, no el comportamiento en sí. `fetch` se mockea por escenario (igual
+patrón que ya usa toda la suite de `lib/offline/*.test.ts`), nunca se
+mockea `pos-cart.ts`/`pos-submit.ts`/`sale-sync-state.ts` — esas se
+ejercitan tal cual existen.
+
+IndexedDB: cero mocks — se usa la base real (`fake-indexeddb`, vía
+`getLocalDb`) con datos de prueba realistas (productos, cliente, contexto
+de sucursal, ventas creadas con `createSaleOffline`/`confirmSaleOffline`
+reales) — nunca un mock vacío. El bootstrap del POS (`navigator.onLine`)
+se pone en `false` en la mayoría de los tests para que la pantalla lea
+directamente el catálogo ya precargado en la base local sin depender de
+un `GET /products` real — `runFullInitialSync` ya tiene su propia
+cobertura dedicada en `catalog-sync.test.ts`, no hacía falta volver a
+probarla acá.
+
+### Hallazgo real durante el testing: el historial se auto-oculta al resolverse el último error
+
+El panel "Ventas de este dispositivo" se muestra automáticamente mientras
+`attentionCount > 0` (una venta en `conflict`/`error`), sin que el usuario
+lo haya abierto (`historyOpen || attentionCount > 0`, `sales/pos/page.tsx`).
+Al escribir el test de reintento manual (sección 11 del pedido) se
+descubrió que, si el usuario NUNCA abrió el panel a mano y clickea
+"Reintentar" desde ahí, en el instante en que el reintento tiene éxito
+`attentionCount` cae a 0 y el panel se OCULTA de nuevo solo — el usuario
+podría no llegar a ver el "Sincronizada" que confirma que el reintento
+funcionó, aunque la venta sí sincronizó correctamente (los datos nunca
+estuvieron en riesgo, es puramente una cuestión de qué ve el usuario en
+pantalla). No es un bug de datos/dinero/inventario (no dispara la regla
+de "detenerse y explicar" del pedido) — se documenta acá como hallazgo de
+UX, sin rediseñar el panel: una futura fase podría, por ejemplo, mantener
+el panel abierto un momento después de un reintento exitoso antes de
+volver a colapsarlo solo.
+
+### Qué NO se cubrió (límite explícito, declarado desde Offline 3)
+
+El JSX de `sales/pos/page.tsx` ya estaba fuera de la cobertura de tests
+hasta esta fase — Offline 3 lo dejó explícitamente pendiente. Esta fase
+lo cierra para los flujos pedidos (productos, pagos, confirmación,
+cuatro desenlaces, historial, reintento, `ConnectionBadge`, menú móvil de
+`AppShell`, logout con pendientes) — no se agregó cobertura de
+snapshot/visual, ni una batería exhaustiva de breakpoints (instrucción
+explícita del pedido de no hacerlo), ni tests de `sales/[id]/page.tsx`
+u otras pantallas fuera del alcance de esta subfase.
+
+### Endpoints nuevos en esta fase: ninguno
+
+Fase exclusivamente de testing/frontend. Cero cambios de backend.

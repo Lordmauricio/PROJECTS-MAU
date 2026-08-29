@@ -1205,6 +1205,80 @@ sigue sin implementarse); `@testing-library/react` para cobertura de
 interacción real sobre el JSX del POS; unificar el manejo de `401` de
 `sync-client.ts` dentro de `lib/api.ts` general.
 
+## Fase Offline 4.1 — Unificación de autenticación y manejo de 401 ✅
+
+Primera subfase de "Offline 4" (auditoría técnica previa de todo lo
+pendiente: impresión/ESC-POS/Bluetooth/USB/Tauri/Android/Windows/
+sincronización incremental/testing del POS). Autorizada explícitamente,
+en solitario. Ver `docs/architecture.md` sección 20 y `docs/security.md`
+sección "Fase Offline 4.1" para el detalle técnico completo.
+
+- [x] `lib/api.ts` (usado por ~24 pantallas interactivas, antes sin
+      NINGÚN manejo de 401) gana el mismo ciclo 401→refresh→reintento
+      único que ya tenía el Sync Engine, reutilizando `refreshSession`
+      de `token-store.ts` — cero lógica duplicada.
+- [x] `refreshSession()` deduplicada contra llamadas concurrentes
+      (`inFlightRefresh`) — corrige una condición de carrera real con la
+      rotación de refresh token de Fase Offline 1.
+- [x] Error de red al refrescar nunca se confunde con sesión revocada —
+      no borra tokens, no fuerza logout.
+- [x] `registerSessionExpiredHandler`: puente mínimo para que
+      `lib/api.ts` dispare el logout real sin depender de React.
+- [x] Sync Engine sin cambios funcionales (comportamiento de Offline 2/3
+      intacto, reverificado).
+- [x] 12 tests nuevos (`api.test.ts`, ampliación de `token-store.test.ts`)
+      contra comportamiento real, no mockeado por dentro. 98/98 frontend,
+      320/320 backend, `verify:tenant-isolation` 23/23, builds limpios.
+- [x] Hallazgo pre-existente de lint (`react-hooks/set-state-in-effect`
+      en `auth-context.tsx`, confirmado contra el SHA base, no
+      introducido por esta subfase) documentado, no corregido — fuera
+      del alcance estricto autorizado.
+
+## Fase Offline 4.2 — Testing de UI del POS con React Testing Library ✅
+
+Segunda subfase de "Offline 4", autorizada explícitamente por separado.
+Alcance exclusivo: agregar React Testing Library sobre el stack de
+Vitest/jsdom/fake-indexeddb existente y probar la interacción REAL
+DOM→handler→estado→UI del POS y de `ConnectionBadge`/`AppShell` — nunca
+duplicar la cobertura de lógica pura que ya existía. Ver
+`docs/architecture.md` sección 21 para el detalle técnico completo.
+
+- [x] Dependencias agregadas, cada una justificada: `@testing-library
+      /react@16.3.3` (soporte explícito React 19), `@testing-library
+      /user-event@14.6.6` (interacción simulada realista, pedida
+      explícitamente sobre `fireEvent` crudo), `@testing-library
+      /jest-dom@7.0.1` (matchers de accesibilidad/estado visible). Se
+      evaluó `@vitejs/plugin-react` y se descartó — Vite 8 ya transforma
+      `.tsx` sin él para este caso de uso.
+- [x] `vitest.config.ts`: setup de RTL separado del de `fake-indexeddb`
+      (`setup-rtl.ts`), `include` ampliado a `.test.tsx`.
+- [x] `ConnectionBadge.test.tsx`: los 5 estados reales (`ONLINE`/
+      `OFFLINE`/`SYNCING`/`PENDING`/`ERROR`) contra el singleton real de
+      `connection-status.ts`, símbolo + texto accesibles, `role="status"`/
+      `aria-live`, modo compacto.
+- [x] `AppShell.test.tsx`: menú off-canvas móvil (abrir/cerrar/navegar/
+      backdrop) y logout con operaciones pendientes reales en IndexedDB
+      (cancelar de verdad evita el logout; confirmar sí lo hace; la cola
+      nunca se toca).
+- [x] `sales/pos/page.test.tsx` (20 tests): productos→carrito→total,
+      formulario de pagos, los CUATRO desenlaces reales de
+      `pos-submit.ts` (sincronizada/offline-pendiente/conflicto/error),
+      historial colapsable, reintento manual conectado de verdad (no solo
+      "se llamó a una función"), y la prueba fundamental de UI con sus
+      cuatro variantes online/offline/conflict/error.
+- [x] Mocking controlado (`useAuth()`, `next/navigation`, `fetch`) sin
+      tocar la lógica real de Offline 4.1; IndexedDB real
+      (`fake-indexeddb`) con datos de prueba realistas, nunca un mock
+      vacío.
+- [x] Hallazgo real documentado (no corregido, no dispara la regla de
+      detenerse): el panel de historial se auto-oculta al resolverse el
+      último error/conflicto si el usuario nunca lo abrió a mano —
+      cuestión de qué ve el usuario en pantalla, nunca de datos en
+      riesgo.
+- [x] 33 tests nuevos de UI (6 + 7 + 20). 131/131 frontend en total,
+      320/320 backend, `verify:tenant-isolation` 23/23, builds limpios,
+      lint limpio en todos los archivos tocados/nuevos.
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,
