@@ -1015,6 +1015,95 @@ sección "Fase Offline 1" para el detalle técnico completo.
       23/23, build backend limpio, lint limpio en todos los archivos
       tocados por esta fase.
 
+## Fase Offline 2 — Base local + Sync Queue + Sync Engine ✅
+
+Segunda fase de la iniciativa de app offline, autorizada explícitamente
+tras la Fase Offline 1. Alcance: infraestructura de almacenamiento local y
+sincronización en el frontend (`frontend/src/lib/offline/`). **No** se
+implementó (fuera de alcance explícito): Tauri, Capacitor, Electron,
+Flutter, React Native, Bluetooth, USB, ESC/POS, impresión, PWA completa,
+rediseño del POS, ni POS offline con UI. Sin cambios de backend — cero
+endpoints nuevos, cero migraciones. Ver `docs/architecture.md` sección 18
+y `docs/security.md` sección "Fase Offline 2" para el detalle técnico
+completo.
+
+- [x] **IndexedDB + Dexie.js**, tal como se autorizó de entrada — se
+      investigó primero si había una razón técnica para no usarlo y no se
+      encontró ninguna (volumen real muy por debajo de cualquier límite
+      práctico; el futuro shell Tauri también renderiza en un WebView con
+      IndexedDB nativo).
+- [x] **Aislamiento multi-tenant por base física**: una base IndexedDB
+      distinta por organización (`kipu_local_<organizationId>`), no una
+      tabla compartida filtrada — misma filosofía que RLS del lado del
+      servidor. Verificado con tests que fuerzan colisiones de id entre
+      organizaciones y confirman que nunca se mezclan.
+- [x] Entidades mínimas para Offline V1: catálogo de productos, clientes,
+      contexto de sucursal/almacén/POS por defecto, ventas creadas
+      offline — nada más. Sin backend nuevo: reutiliza `GET /products`,
+      `GET /customers`, `GET /branches` tal cual.
+- [x] `sync_queue` con los campos pedidos (`id`, `operation`, `entity`,
+      `entityId`, `idempotencyKey`, `payload`, `createdAt`, `attempts`,
+      `lastAttemptAt`, `status`, `error`, `nextRetryAt`) más `dependsOn`
+      (orden explícito), `lockedBy`/`lockedAt` (protección contra dos
+      Sync Engines) y `resultServerId` (reconciliación con el id real del
+      servidor).
+- [x] Tres conceptos separados explícitamente y nunca mezclados: `localId`
+      (fila local), `idempotencyKey` (garantía del servidor, Fase Offline
+      1), `syncOperationId` (fila de la cola).
+- [x] `createSaleOffline`/`confirmSaleOffline` (`sales-repo.ts`): el
+      camino de datos completo para una venta offline, sin ninguna
+      pantalla — la confirmación depende explícitamente (`dependsOn`) de
+      que la creación haya sincronizado, porque necesita el id real que
+      Postgres le asigna a la venta.
+- [x] Reintentos con backoff exponencial (2s→5min) y tope de intentos
+      automáticos; recuperación manual explícita después. Conflictos
+      (409/400) nunca se reintentan solos — se investigó el mecanismo real
+      de anti-sobreventa del backend (`UPDATE ... WHERE quantity >= $1`) y
+      se reutilizó tal cual como la autoridad final, sin inventar ninguna
+      resolución automática.
+- [x] Protección contra dos Sync Engines concurrentes vía la propia
+      serialización de transacciones de IndexedDB (compartida entre
+      pestañas del mismo origen) — sin mecanismo de lock inventado aparte.
+      Locks abandonados (cierre inesperado, corte de energía) se liberan
+      solos pasado un umbral.
+- [x] Descubrimiento de revocación remota: un cliente HTTP dedicado del
+      Sync Engine renueva la sesión antes de rendirse; si el refresh
+      también falla, se detiene de inmediato — es el punto donde un
+      dispositivo revocado (Fase Offline 1) lo descubre al reconectar.
+- [x] Logout y cambio de organización: el logout actual ya no toca
+      IndexedDB (nada que romper); se agregó `getPendingSyncSummary`
+      (solo lectura) para una futura pantalla de aviso. Cambiar de
+      organización no requiere ninguna migración — cada una ya vive en su
+      propia base física.
+- [x] Tests reales: 64 casos nuevos (`ids.test.ts`, `db.test.ts`,
+      `sync-queue.test.ts`, `token-store.test.ts`, `sync-client.test.ts`,
+      `sync-engine.test.ts`, `catalog-sync.test.ts`,
+      `session-lifecycle.test.ts`, `connection-status.test.ts`,
+      `sales-repo.test.ts`) cubriendo base local, cola, idempotencia,
+      sincronización end-to-end, conflictos, sesión revocada, y
+      aislamiento entre organizaciones — corridos con Vitest +
+      `fake-indexeddb` (recomendado por la propia documentación de Dexie
+      para testear fuera del navegador), sin tocar la batería de Jest del
+      backend. Un bug real encontrado y corregido durante la escritura de
+      los tests: un lock de `sync_queue` abandonado (`SYNCING` con
+      `lockedAt` viejo) nunca se reclamaba de nuevo — `isDue` solo
+      consideraba `PENDING`/`FAILED` como candidatos, nunca `SYNCING`
+      con lock vencido.
+- [x] Regresión completa del backend (no tocado esta fase, verificado
+      igual): 320/320 tests, 34/34 suites, `verify:tenant-isolation`
+      23/23. Frontend: 64/64 tests nuevos, build limpio (29 rutas), lint
+      limpio en todos los archivos de esta fase (25 errores/4 warnings
+      preexistentes en otros archivos, documentados, no introducidos por
+      esta fase).
+
+**Pendiente explícito (no pedido en esta fase)**: sincronización
+incremental (requiere backend nuevo, documentado exactamente qué haría
+falta — un query param `updatedSince`, nunca un endpoint genérico); POS
+offline con UI real; indicador visible de `connectionStatus`; disparo
+automático del Sync Engine (hoy se invoca explícitamente, no hay todavía
+un listener de reconexión que lo dispare solo); pantalla de logout que
+use `getPendingSyncSummary`; pantalla de conflictos/reintentos manuales.
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,

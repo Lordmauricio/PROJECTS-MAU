@@ -561,6 +561,47 @@ sincronización completa todavía.
   ni tablas con datos sensibles nuevas — `RefreshToken` ya existía con
   todos los campos necesarios desde Fase 1.
 
+## Fase Offline 2 — Base local + Sync Queue + Sync Engine: notas de seguridad específicas
+
+Ver `docs/architecture.md` sección 18 para el detalle técnico completo.
+Alcance: solo `frontend/src/lib/offline/` — sin backend nuevo, sin
+Tauri/Android/Windows/impresión.
+
+- **Cero secretos en IndexedDB**: contraseñas nunca se guardan en ningún
+  lado (igual que siempre); access/refresh tokens siguen exclusivamente
+  en `localStorage`, sin cambios respecto a como ya funcionaban —
+  `lib/offline/token-store.ts` solo lee/actualiza esas mismas claves,
+  nunca crea una copia paralela. Lo único que vive en IndexedDB es
+  catálogo (productos/clientes) y ventas locales — datos que el usuario
+  autenticado ya ve hoy en pantalla online, no una superficie nueva de
+  exposición.
+- **Aislamiento multi-tenant, verificado con tests reales**: cada
+  organización tiene su propia base IndexedDB física
+  (`kipu_local_<organizationId>`) — nunca una tabla compartida filtrada.
+  Se probó explícitamente forzando el mismo id de fila en dos
+  organizaciones distintas (catálogo, cola de sincronización, contexto)
+  y confirmando que nunca se mezclan ni se pisan entre sí
+  (`db.test.ts`, `sync-queue.test.ts`, `catalog-sync.test.ts`,
+  `session-lifecycle.test.ts`).
+- **Descubrimiento de revocación remota**: el Sync Engine usa un cliente
+  HTTP propio (`sync-client.ts`) que renueva la sesión antes de darse por
+  vencido — si el refresh también falla con `401` (dispositivo revocado
+  vía `POST /members/:id/revoke-sessions`, Fase Offline 1, o refresh
+  token expirado), el engine se detiene de inmediato y deja de intentar
+  sincronizar. Probado explícitamente simulando un refresh token
+  revocado al reconectar.
+- **Ninguna resolución automática de conflictos que pueda alterar
+  dinero/inventario**: `409`/`400` del servidor se dejan en `CONFLICT`,
+  nunca se reintentan solos ni se "arreglan" localmente — el backend
+  sigue siendo la única autoridad (mismo `UPDATE ... WHERE quantity >=
+  $1` que ya evita sobreventa online). Probado con un conflicto de stock
+  simulado: la venta local nunca se marca como sincronizada, el error
+  queda visible.
+- **Nada nuevo que gestionar como secreto de infraestructura**: sin
+  variables de entorno nuevas, sin tablas nuevas en Postgres, sin
+  endpoints nuevos — toda la fase reutiliza los mismos endpoints que ya
+  existían.
+
 ## Qué queda pendiente (explícito, no oculto)
 
 - Administrador de dispositivos (UI + endpoint de solo lectura para listar

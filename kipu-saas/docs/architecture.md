@@ -1486,3 +1486,240 @@ un método de servicio nuevo más un endpoint, cero migraciones.
   expira por su cuenta. El dispositivo revocado queda completamente
   bloqueado en, como máximo, el tiempo de vida de un access token. Ver
   `docs/security.md` para el detalle.
+
+## 18. Fase Offline 2 — Base local + Sync Queue + Sync Engine: decisiones técnicas
+
+Segunda fase de la iniciativa de app offline. Alcance: infraestructura de
+almacenamiento local y sincronización en `frontend/src/lib/offline/` —
+**sin** Tauri/Capacitor/Electron, sin Android/Windows, sin
+Bluetooth/USB/ESC-POS/impresión, sin PWA completa, sin rediseño del POS ni
+POS offline con UI. Nada de esto se tocó ni se preparó todavía.
+
+### Tecnología: IndexedDB + Dexie.js, sin desviarse
+
+Se investigó primero si había una razón técnica real para no usar
+IndexedDB+Dexie (autorizado explícitamente como punto de partida) y no se
+encontró ninguna: el volumen real de datos de un emprendimiento chico
+(catálogo de unos cientos de productos, ventas de unos pocos días en cola)
+está muy por debajo de cualquier límite práctico de IndexedDB, Dexie ya
+resuelve exactamente lo que hacía falta (transacciones atómicas
+multi-tabla, promesas, TypeScript de primera clase), y — dato adicional
+verificado en la auditoría previa — el futuro shell nativo (Tauri)
+renderiza en el WebView del sistema operativo, que también trae
+IndexedDB, así que esta misma capa funcionará sin cambios ahí. No hizo
+falta detenerse a pedir autorización para otra tecnología.
+
+### Aislamiento multi-tenant: una base IndexedDB física por organización
+
+Decisión central de esta fase. En vez de una única base con todas las
+tablas filtradas por `organizationId` (el equivalente cliente de "un
+`WHERE` en cada query"), cada organización tiene su PROPIA base
+(`kipu_local_<organizationId>`, ver `lib/offline/db.ts`). Es la misma
+filosofía que ya justifica RLS del lado del servidor —
+`docs/architecture.md` sección 3: "un `WHERE` olvidado... filtra datos
+entre empresas. Con RLS, incluso una consulta sin ningún WHERE devuelve
+solo las filas del tenant activo" — aplicada acá: un bug que olvide
+filtrar por organización simplemente no tiene ninguna fila ajena en la
+misma base con la que chocar, porque no existe. Verificado explícitamente
+con tests que fuerzan el mismo id de fila en dos organizaciones distintas
+y confirman que nunca se pisan (`db.test.ts`, `sync-queue.test.ts`,
+`catalog-sync.test.ts`, `session-lifecycle.test.ts`).
+
+Una base separada y mínima, `kipu_app_meta` (`app-meta-db.ts`), lleva el
+registro de qué organizaciones tienen datos locales en este dispositivo —
+nunca contiene catálogo, ventas, ni tokens.
+
+### Qué se descarga localmente (Offline V1) y qué no
+
+| Entidad | ¿Local? | Por qué |
+|---|---|---|
+| Catálogo de productos (`GET /products`) | Sí | Lo mínimo para poder vender: id, nombre, sku, código de barras, precio, activo. |
+| Clientes (`GET /customers`) | Sí | Igual criterio — lo que el POS ya usa hoy online. |
+| Sucursal/almacén/POS por defecto (`GET /branches`) | Sí (un registro, `orgContext`) | Necesario para poder construir el body de `POST /sales` sin red. |
+| Usuario/rol actual | Sí (mínimo: id, nombre, roleKey) | Para decisiones de UI futuras — nunca autoridad final (ver "Autenticación offline" más abajo). |
+| Ventas creadas offline | Sí (`sales`, con `localId` propio) | Es la entidad que esta fase existe para soportar. |
+| Todo lo demás (compras, inventario completo, reportes, configuración) | No | Fuera de alcance de Offline V1 — ver la auditoría de diseño original. |
+
+No se copia el esquema de Postgres — cada tabla local es un subconjunto
+deliberadamente angosto (`lib/offline/types.ts`).
+
+### `sync_queue`: forma y estados
+
+`SyncQueueItem` (`types.ts`) — campos pedidos más los estrictamente
+necesarios para que la ejecución sea segura: `id` (syncOperationId),
+`operation`, `entity`, `entityId`, `idempotencyKey`, `payload`,
+`createdAt`, `attempts`, `lastAttemptAt`, `status`, `error`,
+`nextRetryAt`, más `dependsOn` (orden explícito, ver más abajo),
+`lockedBy`/`lockedAt` (protección contra dos Sync Engines, ver más abajo)
+y `resultServerId` (reconciliación, ver más abajo).
+
+Estados: `PENDING → SYNCING → SYNCED`, o `PENDING/SYNCING → FAILED`
+(transitorio, reintentable automáticamente) o `→ CONFLICT` (permanente,
+nunca automático). Una operación **nunca** se marca `SYNCED` sin una
+respuesta 2xx real del servidor — no hay ningún camino que la marque
+sincronizada de forma optimista.
+
+### Tres conceptos que NUNCA se mezclan (`lib/offline/ids.ts`)
+
+- **`localId`** — identifica una fila local (ej. `LocalSale.id`) antes de
+  que el servidor le asigne su propio `cuid()`. Puro bookkeeping del
+  cliente.
+- **`idempotencyKey`** — el valor con significado contractual del lado del
+  servidor (`Sale.idempotencyKey` de Fase Offline 1, o la de cada
+  `Payment` individual). Se genera UNA vez y se reenvía idéntica en cada
+  reintento de la MISMA operación — nunca una nueva por retry.
+- **`syncOperationId`** — identifica una FILA de `sync_queue` (el trabajo
+  en cola), no la entidad de negocio ni la garantía de idempotencia. Una
+  misma venta tiene, a lo largo de su vida, más de una operación de sync
+  (`sales.create`, luego `sales.confirm`) — cada una con su propio
+  `syncOperationId` y su propia `idempotencyKey`.
+
+### Orden de sincronización: dependencia explícita, nunca inferida
+
+Se investigó el flujo real (no se asumió): el POS actual arma una venta en
+DOS llamadas — `POST /sales` (crea el DRAFT) y luego `POST /sales/:id
+/confirm` (que además puede llevar los pagos en el mismo body). La
+dependencia real no es "cliente antes que venta antes que pago" (el
+ejemplo del pedido) — es que `sales.confirm` necesita el **id real que
+Postgres le asignó a la venta**, que no existe hasta que `sales.create`
+sincronizó. `confirmSaleOffline` encola su operación con `dependsOn:
+[createSyncOperationId]` (`sales-repo.ts`), y `claimNext` (`sync-queue.ts`)
+nunca entrega una fila cuyas dependencias no estén todas `SYNCED`. El
+motor procesa una operación a la vez, nunca en paralelo — la forma más
+simple de garantizar "nunca dos operaciones dependientes en paralelo" sin
+tener que razonar sobre qué pares son independientes, apropiada para el
+volumen real de un comercio chico.
+
+`{serverId}` en el `path` de una operación (ej.
+`/sales/{serverId}/confirm`) se resuelve en el momento de enviar,
+leyendo el `serverId` ya reconciliado en la entidad local — nunca se
+arma la URL con el `localId`.
+
+### Protección contra dos Sync Engines procesando lo mismo
+
+Dos pestañas del mismo origen comparten la MISMA base IndexedDB. El
+`claimNext` (lectura + marcar `SYNCING` con un `lockedBy`/`lockedAt`
+propios) ocurre dentro de una única transacción Dexie — las transacciones
+de IndexedDB están serializadas por el navegador incluso entre pestañas
+del mismo origen, así que es esa serialización nativa, no un mecanismo de
+lock inventado aparte, la que garantiza que dos motores nunca reclamen la
+misma fila (probado con `Promise.all` de dos `claimNext`/`runSyncOnce`
+concurrentes). Un lock con más de 2 minutos de antigüedad se considera
+abandonado (el proceso que lo tomó murió a mitad de camino — cierre
+inesperado, corte de energía) y vuelve a quedar reclamable.
+
+### Reintentos: backoff exponencial con techo, nunca en bucle agresivo
+
+`markFailedTransient` (`sync-queue.ts`) incrementa `attempts` y calcula
+`nextRetryAt` con backoff exponencial (2s, 4s, 8s, ... techo de 5
+minutos). Tras `MAX_AUTOMATIC_ATTEMPTS` (8) sin éxito, la operación deja
+de ser candidata automática — solo `retryManually` (acción explícita) la
+recupera. `FAILED` (transitorio: red caída, timeout, 5xx) y `CONFLICT`
+(permanente: 409/400) se tratan de forma completamente distinta a
+propósito — ver el próximo punto.
+
+### Conflictos: nunca resolución automática que altere cantidades
+
+Instrucción explícita del pedido: no inventar una resolución automática.
+El backend YA es la única autoridad — el mismo `UPDATE inventories SET
+quantity = quantity - $1 WHERE quantity >= $1` que evita sobreventa entre
+dos requests online evita exactamente el mismo problema entre dos
+dispositivos offline que vendieron el último stock disponible sin señal:
+al reconectar, el primero en sincronizar gana: el segundo recibe `409` y
+la capa offline lo deja en `CONFLICT`, nunca lo reintenta sola, nunca
+inventa un ajuste de cantidades. `400` (error de validación permanente,
+ej. "Producto no encontrado") se trata igual — reintentar con el mismo
+payload nunca lo arregla solo. Ambos casos quedan visibles (campo
+`error`) para revisión humana — sin UI todavía (fuera de esta fase), pero
+el dato ya está ahí.
+
+### Dinero: la capa offline no hace aritmética financiera propia
+
+Todos los campos monetarios se guardan como `string` (igual que ya
+sirven hoy `GET /products`/`GET /sales`, que serializan
+`Prisma.Decimal` a texto) — nunca `number`. La capa offline nunca suma,
+compara ni redondea dinero: arma el mismo payload que el POS ya arma hoy
+y deja que el servidor decida con `Prisma.Decimal` — exactamente como
+ya ocurre online. No se modificó ninguna lógica financiera existente.
+
+### Autenticación offline y descubrimiento de revocación
+
+Se investigó el mecanismo real de auth (access token JWT de 15 minutos,
+refresh opaco rotativo de 30 días, revocación remota de Fase Offline 1)
+antes de diseñar nada nuevo. Los tokens NUNCA se guardan en IndexedDB —
+siguen en `localStorage`, exactamente donde ya viven
+(`auth-context.tsx`/`lib/api.ts`, sin tocar). `lib/offline/token-store.ts`
+solo LEE/actualiza esas mismas claves para que el Sync Engine (que corre
+sin que necesariamente haya un humano mirando la pantalla) pueda renovar
+su propia sesión.
+
+`lib/offline/sync-client.ts` es un cliente HTTP DEDICADO al Sync Engine —
+deliberadamente separado de `lib/api.ts` (que sigue igual, usado por
+todas las páginas interactivas: un 401 ahí lo ve un humano que puede
+reaccionar). Maneja 401 con un ciclo refresh→reintento único: si el
+refresh también da 401, la señal es `session-revoked` — exactamente el
+punto donde un dispositivo revocado remotamente (`POST /members/:id
+/revoke-sessions`, Fase Offline 1) lo descubre al reconectar. El Sync
+Engine se detiene de inmediato ante esa señal (nada más va a poder
+sincronizar sin sesión) y deja la operación en cola intacta — nunca la
+pierde, queda lista para cuando el usuario vuelva a loguearse.
+
+Unificar este manejo de 401 dentro de `lib/api.ts` (beneficiaría también
+a la UI interactiva) queda fuera de esta fase — cambio más amplio, sobre
+un archivo que usa literalmente toda la app.
+
+### Logout y cambio de organización
+
+El `logout()` actual (`auth-context.tsx`) ya es seguro por construcción:
+no toca IndexedDB en absoluto, así que ninguna operación pendiente se
+pierde al cerrar sesión, con o sin esta fase. `lib/offline
+/session-lifecycle.ts` agrega el primitivo de solo lectura
+`getPendingSyncSummary(organizationId)` (cuántas operaciones siguen sin
+sincronizar) para que una futura pantalla de logout pueda avisar antes de
+salir — esta fase construye el dato, no la pantalla.
+
+Cambiar de organización no requiere ninguna migración ni limpieza: cada
+organización ya vive en su propia base física (ver más arriba), así que
+pedir la base de otra organización simplemente abre una instancia
+completamente separada.
+
+### Seguridad: qué vive en IndexedDB y qué nunca
+
+Nunca en IndexedDB: contraseñas, access/refresh tokens (siguen en
+`localStorage`, sin cambios), datos de organizaciones que no sean la
+activa en esa base física. Sí en IndexedDB (no sensible, ya visible hoy
+para el usuario autenticado online): catálogo, clientes, ventas locales,
+metadatos de sincronización.
+
+### Datos del servidor: FULL SYNC en V1, INCREMENTAL documentado mas no implementado
+
+`runFullInitialSync` (`catalog-sync.ts`) reutiliza tal cual `GET
+/products`, `GET /customers`, `GET /branches` — sin backend nuevo. Se
+verificó contra el código real que `ProductsService.list`/el equivalente
+de clientes NO aceptan hoy un filtro `updatedSince` (ver
+`products.service.ts`), así que una sincronización incremental real
+necesitaría backend nuevo. Si se autoriza a futuro, el mecanismo mínimo
+sería agregar un query param `updatedSince` (ISO) a esos dos endpoints
+(`where: { updatedAt: { gt: updatedSince } }`, campo que ya existe en el
+schema) — nunca un endpoint de sincronización genérico.
+
+### Endpoints nuevos en esta fase: ninguno
+
+Toda la fase reutiliza `POST /sales`, `POST /sales/:id/confirm`, `GET
+/products`, `GET /customers`, `GET /branches` y `POST /auth/refresh`, tal
+como ya existían. Cero cambios de backend.
+
+### Qué queda para Offline 3
+
+- POS offline con UI real (esta fase solo construyó la capa de datos:
+  `createSaleOffline`/`confirmSaleOffline`, sin ninguna pantalla).
+- Indicador visible de `connectionStatus` en la interfaz.
+- Pantalla de logout que use `getPendingSyncSummary` para avisar antes de
+  salir con operaciones pendientes.
+- Pantalla de "operaciones con problema" (CONFLICT/FAILED agotado) con
+  `retryManually`.
+- Disparo real del Sync Engine (hoy `runSyncOnce` es una función que hay
+  que invocar explícitamente — todavía no hay un `setInterval`/listener de
+  `online` que lo dispare solo).
+- Tauri, Android, Windows, Bluetooth, USB, ESC/POS, impresión, PWA
+  completa — sin tocar, como en esta fase.
