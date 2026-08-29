@@ -2376,3 +2376,258 @@ el límite real de 200 filas sin tocar Postgres.
 `updatedSince` es un parámetro OPCIONAL agregado a los dos endpoints que
 ya existían (`GET /products`, `GET /customers`) — no se creó ningún
 endpoint de sincronización genérico, instrucción explícita del pedido.
+
+## 23. Fase Offline 4.4 — Arquitectura de dispositivos e impresión ESC/POS: decisiones técnicas
+
+Subfase autorizada explícitamente y por separado del resto de "Offline 4"
+(impresión física, Bluetooth, USB, red, Tauri, Windows, Android,
+Administrador de Dispositivos — nada de eso se implementó). Alcance
+exclusivo: la arquitectura AGNÓSTICA DE PLATAFORMA para imprimir tickets
+— contratos, lógica pura, persistencia y tests, ejecutable enteramente en
+Node/jsdom sin ningún dispositivo físico ni API del navegador. Cero
+cambios de backend, cero cambios visuales del POS, cero UI de
+dispositivos (eso es Offline 4.9).
+
+### Capas, de arriba hacia abajo
+
+```
+POS (a futuro, Offline 4.9+)
+   ↓ solo conoce
+PrinterManager                    (frontend/src/lib/offline/printing/printer-manager.ts)
+   ↓ decide QUÉ imprimir, delega el CÓMO
+EscPosEncoder                     (esc-pos-encoder.ts) — TicketData → Uint8Array
+   ↓ los bytes van a
+PrinterTransport                  (printer-transport.ts) — contrato, no implementación
+   ↓ implementado en esta fase por
+FakePrinterTransport              (fake-printer-transport.ts) — el ÚNICO transporte real que existe hoy
+   ↓ a futuro (Offline 4.6+), implementado también por
+BluetoothTransport / UsbTransport / NetworkTransport / TauriXxxTransport
+```
+
+El POS NUNCA va a importar `navigator.bluetooth`/`navigator.usb`/nada de
+Tauri — solo `PrinterManager`. Agregar un transporte real más adelante
+significa: (1) escribir una clase que implemente `PrinterTransport`, (2)
+registrar su fábrica al construir `PrinterManager` (ej. en `AppShell`).
+Cero cambios en `PrinterManager`, cero cambios en `EscPosEncoder`, cero
+cambios en el POS — es la prueba de que la abstracción cumple lo pedido
+explícitamente ("agregar transportes sin modificar la lógica principal
+del POS").
+
+### `PrinterTransport` — el contrato
+
+`connect()` / `disconnect()` / `write(bytes)` / `getStatus()` /
+`onStatusChange(listener)` (mismo patrón que `connection-status.ts
+#onChange`: devuelve la función de desuscripción). `TransportKind` =
+`"bluetooth" | "usb" | "network" | "native"` (`"native"` es el
+placeholder para un puente Tauri futuro que no encaje en las otras tres
+categorías, ej. hablar directo con el spooler de impresión del sistema
+operativo). `TransportStatus` = `"disconnected" | "connecting" |
+"connected" | "printing" | "error"` — deliberadamente pocos, los que
+`PrinterManager` y una futura UI (Offline 4.9) realmente necesitan.
+
+### `PrinterDevice` y persistencia (`db.printers`, Dexie versión 3)
+
+Un `PrinterDevice` es un DESCRIPTOR persistido (`id`, `organizationId`,
+`name`, `transportKind`, `transportConfig`, `capabilities`, `isDefault`,
+`lastConnectedAt`, `createdAt`) — NUNCA una conexión viva; eso lo
+mantiene `PrinterManager` en memoria (`Map<deviceId, PrinterTransport>`),
+así que reiniciar la app siempre empieza desconectado, sin reconexión
+automática oculta.
+
+`transportConfig` es deliberadamente mínimo (`{ address?: string }`) y
+NUNCA guarda secretos — ni PIN de emparejamiento Bluetooth, ni
+credenciales de red, ni tokens. `address` sirve de MAC/IP:puerto/id de
+USB según el transporte real que lo termine usando; ninguno existe
+todavía, así que ningún campo específico de plataforma se agregó por
+adelantado.
+
+`printers` es una tabla más DENTRO de la base física por-organización
+(`kipu_local_<organizationId>`, ver sección 18) — mismo aislamiento
+multi-tenant "gratis" que ya tenían `products`/`customers`/`syncState`
+desde Offline 2/4.3: ninguna fila de otra organización existe en la
+misma base con la que un bug pudiera confundirse. Se probó explícitamente
+(no solo se asumió) que la organización A nunca puede leer/listar la
+impresora de B ni al revés, incluso pasando su id exacto a `getDevice()`.
+Migración Dexie versión 2 → 3 puramente aditiva: agrega solo la tabla
+`printers`, ninguna tabla anterior se toca.
+
+**Como máximo una impresora predeterminada por organización**:
+`PrinterManager#setDefault` lo garantiza dentro de una transacción Dexie
+(limpia `isDefault` de cualquier otra fila antes de marcar la nueva) —
+nunca depende de que la UI evite mandar dos veces.
+
+### `PrinterManager` — extensibilidad vía inyección de fábricas, no `if/switch`
+
+`PrinterManagerDeps` acepta `transportFactories?: Partial<Record
+<TransportKind, TransportFactory>>` y `discoverers?: Partial<Record
+<TransportKind, DiscoverFn>>` — ambos VACÍOS por defecto. Esto es lo que
+hace que "en esta fase nunca toca hardware" sea una propiedad
+estructural, no una promesa: sin una fábrica/discoverer registrado para
+un `kind`, `connect()` falla con un error claro (`connection-failed`,
+"el transporte todavía no está disponible en este build") y `discover()`
+devuelve `[]` sin lanzar — nunca porque el código "decide no tocar
+hardware", sino porque literalmente no hay ningún código de hardware
+registrado para llamar. Offline 4.6+ agrega transportes reales
+registrando sus fábricas, nunca modificando esta clase.
+
+`FakePrinterTransport` es el único transporte real de esta fase — 100%
+en memoria, permite conectar/desconectar/recibir bytes/registrar lo
+recibido/simular fallo de conexión/simular fallo de escritura/simular
+una desconexión espontánea, todo inspeccionable desde los tests. Es a la
+vez el vehículo de prueba de esta fase Y la prueba viva de que
+`PrinterTransport` es un contrato suficientemente abstracto (los
+transportes reales futuros lo implementan exactamente igual).
+
+### `EscPosEncoder` — lógica pura, capacidades como gate real
+
+Comandos V1 (subconjunto mínimo pedido): `ESC @` (init), texto,
+`ESC a n` (alineación izq/centro/der), `ESC E n` (negrita on/off), `GS !
+n` (tamaño normal/doble), salto de línea, `GS V 0` (corte total). Nada
+de QR/código de barras/apertura de cajón/imágenes — quedan en el tipo
+`PrinterCapability` (`qr`, `barcode`, `cashDrawer` ya existen como
+valores posibles) para que `PrinterDevice` pueda declararlos sin otro
+cambio de esquema, pero el encoder los ignora por completo en esta fase.
+
+Cada comando está gateado por la capacidad DECLARADA del dispositivo, no
+asumido porque "ESC/POS en general lo soporta" (instrucción explícita
+del pedido): sin `"bold"` nunca emite `ESC E`; sin `"alignment"` nunca
+emite `ESC a`; sin `"textSize"` nunca emite `GS !`; el corte requiere
+`"cut"` EN LAS capabilities Y `options.cut === true` (que
+`PrinterManager` deriva automáticamente de `device.capabilities`, nunca
+lo pide el caller) — probado explícitamente que ninguno de estos
+comandos aparece en los bytes cuando la capacidad correspondiente no
+está declarada. Sin `"text"` (ni siquiera texto plano), `encode()` lanza
+`PrinterError("unsupported-capability", ...)` — la capacidad mínima
+indispensable, y a la vez la prueba de que ese código de error es
+alcanzable de verdad, no solo declarado en un tipo.
+
+### Codificación de texto — decisión documentada, no improvisada
+
+Un ticket puede llevar tildes/ñ/símbolos. Las impresoras ESC/POS reales
+NO usan UTF-8 por default — cada fabricante soporta un subconjunto de
+codepages de un byte (CP437/CP850/CP1252/...), seleccionables con su
+propio comando. Mandar UTF-8 crudo a una impresora que espera CP437 no
+da error: da basura ilegible para cualquier carácter fuera de ASCII.
+Asumir un codepage específico sería aventurado — todavía no se eligió
+ningún modelo de impresora real (eso ocurre junto con el transporte
+Bluetooth/USB real, Offline 4.6+), así que no hay forma de confirmar hoy
+cuál soporta el hardware que se termine usando.
+
+V1 no intenta reproducir tildes/ñ con bytes de un codepage específico:
+transcribe (normalización Unicode NFD + remoción de marcas combinantes,
+`á`→`a`, `ñ`→`n`, ...) y reemplaza cualquier carácter que siga sin ser
+ASCII por `"?"` — nunca bytes corruptos, siempre texto legible aunque
+sin acentos. Se abstrae detrás de `TextEncodingStrategy`
+(`text-encoding.ts`) a propósito: cuando se conozca el codepage real del
+hardware elegido, se agrega una implementación nueva (ej.
+`Cp850Encoding`) sin tocar `EscPosEncoder` en absoluto.
+
+### `TicketData` — independiente del backend, integración con `ReceiptSnapshot`/`LocalSale`
+
+`TicketData` (`ticket-data.ts`) es un modelo propio, nunca importa
+`ReceiptSnapshot` del backend (proyectos TypeScript separados, sin
+paquete de tipos compartido — mismo criterio que `ApiProduct`/
+`ApiCustomer` en `catalog-sync.ts`). `ticket-mapper.ts` define DOS
+conversiones, sin duplicar la forma de `ReceiptSnapshot`:
+
+- `ticketFromReceiptSnapshot(snapshot)`: para una venta con recibo YA
+  EMITIDO del lado del servidor (`POST /receipts`, Fase Comercial 8) —
+  siempre `syncStatus: "synced"`, con el folio real (`fullNumber`).
+  Conversión directa, sin recalcular nada — el snapshot ya es la fuente
+  de verdad inmutable.
+- `ticketFromLocalSale(sale, ctx, syncStatus)`: para una venta OFFLINE o
+  recién confirmada sin recibo emitido. `ctx` trae resuelto lo que
+  `LocalSale`/`LocalSaleItem` no traen directo (nombre/sku de producto
+  desde `db.products`, cliente desde `db.customers`) — el mapper se
+  mantiene puro y síncrono, nunca toca Dexie. `syncStatus` lo decide el
+  CALLER (ya lo tiene vía `sale-sync-state.ts#getSaleSyncState`, que es
+  async) en vez de que el mapper lo re-derive.
+
+**El punto crítico de la venta offline** (instrucción explícita):
+`ticketFromLocalSale` deja `operation.fullNumber` SIEMPRE `null` — una
+`LocalSale` nunca tiene un recibo comercial emitido (eso es el flujo
+separado de `POST /receipts`), así que inventar un folio a partir de
+`sale.serverId` sería exactamente lo que se pidió no hacer. El ticket
+muestra en su lugar `operation.localId` (`LocalSale.id`, siempre
+disponible) y, cuando `syncStatus === "pending-sync"`, una línea
+explícita "PENDIENTE DE SINCRONIZAR" en negrita.
+
+Totales: si la venta ya sincronizó (`sale.serverSummary` no nulo), el
+mapper usa esos valores TAL CUAL — nunca los recalcula, mismo principio
+que ya aplica el feedback del POS desde Offline 3. Si todavía no
+sincronizó, calcula a partir del carrito local — lo mejor disponible
+offline, dejado explícito por `syncStatus`.
+
+**Limitación conocida, documentada**: `LocalOrgContext` no cachea hoy
+NIT/razón social/dirección/teléfono de la organización — un ticket
+armado 100% offline desde `ticketFromLocalSale` no va a poder mostrar
+esos campos hasta que una fase futura los agregue al catálogo offline
+(ampliar `runFullInitialSync`/`LocalOrgContext`, ya señalado en la
+auditoría original de "Offline 4"). `TicketMapperContext` ya tiene esos
+campos como opcionales para no bloquear esa extensión.
+
+### Manejo de errores — nunca un error genérico cuando existe uno específico
+
+`PrinterError extends Error` (mismo patrón que `ApiError` en `lib/api
+.ts`: un `code` discriminante en vez de parsear el mensaje) con
+`PrinterErrorCode` = `"printer-not-found" | "not-connected" |
+"connection-failed" | "write-failed" | "unsupported-capability" |
+"invalid-ticket"`. Cada uno tiene un disparador real y probado — no son
+solo valores declarados en un tipo: `printer-not-found` (id
+desconocido, o de otra organización — `getDevice`), `not-connected`
+(imprimir sin conectar antes, o un `write()` sobre un transporte que ya
+no está `"connected"`), `connection-failed` (sin fábrica registrada
+para el `kind`, o el transporte real falla al conectar),
+`write-failed` (el transporte falla al escribir), `unsupported
+-capability` (falta la capacidad `"text"`), `invalid-ticket` (sin
+ítems, o sin los datos mínimos).
+
+### Política de reintentos de impresión — explícita, nunca automática
+
+**"Print retry must be explicit unless the transport can guarantee
+delivery semantics."** La impresión física puede fallar DESPUÉS de que
+la impresora ya recibió parte de los bytes — un reintento automático
+ciego tras un timeout podría imprimir el ticket dos veces. Por eso
+`PrinterManager#printTicket` nunca reintenta sola: un `write-failed` se
+propaga tal cual, una sola vez, y cualquier reintento es una acción
+NUEVA y explícita del caller. Se descubrió además, escribiendo los
+tests, que `FakePrinterTransport` deja el transporte en estado
+`"error"` tras un fallo de escritura — un reintento real necesita
+reconectar explícitamente primero (`connect()` de nuevo), nunca asume
+que la conexión sigue siendo confiable después de un `write()` fallido.
+Probado explícitamente: un fallo de escritura dispara `write-failed`;
+un segundo intento SIN reconectar da `not-connected` (nunca reintenta
+solo); reconectar y volver a intentar imprime exactamente una vez, nunca
+dos.
+
+No se implementa en esta fase ningún sistema de deduplicación física
+(ej. un id de impresión con el que la impresora confirme "ya recibí
+este ticket completo") — queda fuera de alcance hasta que un transporte
+real exponga alguna semántica de entrega confiable de la que valga la
+pena depender.
+
+### `testPrint()` — mismo pipeline real, no un camino aparte
+
+`PrinterManager#testPrint` arma un `TicketData` fijo ("KIPU" / "PRUEBA
+DE IMPRESIÓN" / "Impresora conectada correctamente") y lo manda por el
+MISMO `printTicket()` que usaría una venta real — probar que "funciona"
+significa probar el camino real (encoder + transporte), no un atajo de
+mentira que pudiera divergir con el tiempo.
+
+### Qué NO se implementó en esta fase (deliberado)
+
+Bluetooth (Web Bluetooth, Bluetooth Classic, SPP), USB (WebUSB, USB
+nativo), red (TCP, puerto 9100), Tauri/Rust, Windows, Android,
+Capacitor, Electron, drivers, spooler de Windows, permisos de hardware,
+código de barras, QR, apertura de cajón, imágenes/logos rasterizados,
+comandos ESC/POS avanzados, Administrador de Dispositivos (UI),
+cualquier botón de impresión visible en el POS. Todo lo anterior queda
+para subfases futuras explícitamente autorizadas — la arquitectura de
+esta fase está deliberadamente preparada para recibirlas sin
+reescribirse (transportes nuevos = nueva clase + fábrica registrada;
+capacidades nuevas = ya existen en el tipo, el encoder las empieza a
+usar cuando se implementen).
+
+### Endpoints nuevos en esta fase: ninguno
+
+Fase exclusivamente de arquitectura/frontend. Cero cambios de backend.

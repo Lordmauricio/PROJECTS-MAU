@@ -1330,6 +1330,64 @@ completo.
       (3 errores de lint pre-existentes en `products.service.ts`,
       confirmados contra el SHA base, no introducidos por esta subfase).
 
+## Fase Offline 4.4 — Arquitectura de dispositivos e impresión ESC/POS ✅
+
+Cuarta subfase de "Offline 4", autorizada explícitamente por separado.
+Alcance exclusivo: arquitectura AGNÓSTICA DE PLATAFORMA para imprimir
+tickets — contratos, lógica pura, persistencia y tests, sin ningún
+transporte real (Bluetooth/USB/red/Tauri/Windows/Android quedan para
+subfases futuras). Ver `docs/architecture.md` sección 23 para el detalle
+técnico completo.
+
+- [x] `PrinterTransport` (contrato): `connect`/`disconnect`/`write`/
+      `getStatus`/`onStatusChange`; `TransportKind` (`bluetooth`/`usb`/
+      `network`/`native`); `TransportStatus` (`disconnected`/
+      `connecting`/`connected`/`printing`/`error`).
+- [x] `PrinterDevice` + tabla Dexie `printers` (versión 3, aditiva) —
+      misma base física por-organización de siempre, aislamiento
+      multi-tenant probado explícitamente (no solo asumido). A lo sumo
+      una impresora predeterminada por organización, garantizado dentro
+      de una transacción Dexie.
+- [x] `PrinterManager`: única abstracción que el POS necesitará —
+      extensibilidad vía inyección de fábricas de transporte/discoverers
+      por `TransportKind` (vacías por defecto en esta fase: sin ninguna
+      registrada, `connect()` falla con un error claro y `discover()`
+      devuelve `[]`, nunca toca hardware).
+- [x] `FakePrinterTransport`: transporte 100% en memoria — conectar,
+      desconectar, recibir bytes, simular fallo de conexión/escritura,
+      simular desconexión espontánea. Único transporte real de esta
+      fase y prueba viva de que el contrato es suficientemente
+      abstracto.
+- [x] `EscPosEncoder`: función pura `TicketData → Uint8Array`. Comandos
+      V1: init (`ESC @`), texto, alineación (`ESC a`), negrita
+      (`ESC E`), tamaño (`GS !`), salto de línea, corte opcional
+      (`GS V 0`). Cada comando gateado por la capacidad DECLARADA del
+      dispositivo — nunca asumido porque "ESC/POS en general lo
+      soporta".
+- [x] Codificación de texto: decisión documentada (no improvisada) — V1
+      transcribe tildes/ñ a ASCII legible (nunca bytes corruptos) detrás
+      de `TextEncodingStrategy`, en vez de asumir un codepage de un
+      fabricante todavía no elegido.
+- [x] `TicketData` independiente del backend; `ticketFromReceiptSnapshot`
+      y `ticketFromLocalSale` (sin duplicar `ReceiptSnapshot`). El punto
+      crítico: una venta offline NUNCA muestra un folio inventado
+      (`fullNumber` siempre `null` desde `LocalSale`) — usa el id local
+      y una marca explícita "PENDIENTE DE SINCRONIZAR".
+- [x] Errores específicos (`PrinterError` + 6 códigos), cada uno con un
+      disparador real y probado — nunca un error genérico.
+- [x] Política de reintentos: explícita, nunca automática — un fallo de
+      escritura nunca reintenta solo. Hallazgo real durante los tests:
+      un fallo de escritura deja el transporte en `"error"`, un
+      reintento necesita reconectar explícitamente primero.
+- [x] `testPrint()` reutiliza el mismo pipeline real que una venta —
+      nunca un camino de mentira aparte.
+- [x] 65 tests nuevos (23 encoder + 28 `PrinterManager` + 11 mapper + 3
+      integración end-to-end). 206/206 frontend, 335/335 backend
+      (sin cambios), `verify:tenant-isolation` 23/23, builds y lint
+      limpios. Cero cambios de backend, cero cambios visuales del POS,
+      cero código de la nueva arquitectura importado todavía desde
+      ninguna pantalla (confirmado explícitamente).
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,

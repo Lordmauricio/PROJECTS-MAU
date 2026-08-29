@@ -7,6 +7,7 @@ import type {
   LocalSale,
   SyncQueueItem,
 } from "./types";
+import type { PrinterDevice } from "./printing/types";
 
 /**
  * Aislamiento multi-tenant en el cliente: UNA base de datos IndexedDB física
@@ -30,6 +31,7 @@ export class KipuLocalDB extends Dexie {
   sales!: EntityTable<LocalSale, "id">;
   syncQueue!: EntityTable<SyncQueueItem, "id">;
   syncState!: EntityTable<CatalogSyncState, "organizationId">;
+  printers!: EntityTable<PrinterDevice, "id">;
 
   constructor(organizationId: string) {
     super(`kipu_local_${organizationId}`);
@@ -51,6 +53,18 @@ export class KipuLocalDB extends Dexie {
     // tabla nueva simplemente empieza vacía.
     this.version(2).stores({
       syncState: "organizationId",
+    });
+    // Versión 3 (Offline 4.4): agrega el registro de impresoras conocidas
+    // (`PrinterDevice`) — arquitectura de dispositivos, sin ningún
+    // transporte real todavía. También aditiva, mismo criterio que la
+    // versión 2: nada de lo anterior se toca. `organizationId` indexado
+    // (igual que `products`/`customers`) para listar/filtrar, aunque cada
+    // base física ya pertenece a una sola organización por construcción —
+    // defensa en profundidad, no la única barrera. `isDefault` indexado
+    // para resolver "la impresora predeterminada" sin recorrer toda la
+    // tabla.
+    this.version(3).stores({
+      printers: "id, organizationId, isDefault",
     });
   }
 }
