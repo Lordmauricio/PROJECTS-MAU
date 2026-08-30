@@ -527,6 +527,136 @@ describe("POS — prueba fundamental de UI (sección 22): render → agregar pro
   });
 });
 
+describe("POS — ticket PDF térmico offline (Offline 4.6B)", () => {
+  beforeEach(() => {
+    // jsdom no implementa URL.createObjectURL/revokeObjectURL por defecto
+    // (mismo criterio que `lib/api.test.ts`).
+    (URL as unknown as { createObjectURL: () => string }).createObjectURL = () => "blob:mock-ticket";
+    (URL as unknown as { revokeObjectURL: () => void }).revokeObjectURL = () => {};
+  });
+
+  it("después de una venta ONLINE confirmada, aparecen 'Ver / Imprimir ticket' y 'Descargar ticket', y abren el PDF sin red", async () => {
+    const user = userEvent.setup();
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    await renderPosWithCatalog();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith("/sales")) return Promise.resolve(jsonResponse(201, { id: "server-ticket-1" }));
+        if (url.includes("/confirm")) {
+          return Promise.resolve(
+            jsonResponse(201, { id: "server-ticket-1", status: "PAID", total: "15.00", paidTotal: "15.00", balance: "0.00" }),
+          );
+        }
+        return baseFetchStub(url);
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: /Coca Cola 2L/ }));
+    await user.click(screen.getByRole("button", { name: "Confirmar venta" }));
+    await screen.findByText(/Venta confirmada \(PAID\)/);
+
+    const viewButton = await screen.findByRole("button", { name: "Ver / Imprimir ticket" });
+    await user.click(viewButton);
+
+    await waitFor(() => expect(openSpy).toHaveBeenCalledWith("blob:mock-ticket", "_blank"));
+  });
+
+  it("después de una venta OFFLINE-PENDING, las acciones de ticket funcionan igual — sin depender del servidor", async () => {
+    const user = userEvent.setup();
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    await renderPosWithCatalog();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("sin conexión")));
+
+    await user.click(screen.getByRole("button", { name: /Coca Cola 2L/ }));
+    await user.click(screen.getByRole("button", { name: "Confirmar venta" }));
+    await screen.findByText(/Venta guardada sin conexión/);
+
+    const viewButton = await screen.findByRole("button", { name: "Ver / Imprimir ticket" });
+    await user.click(viewButton);
+    await waitFor(() => expect(openSpy).toHaveBeenCalledWith("blob:mock-ticket", "_blank"));
+  });
+
+  it("'Descargar ticket' genera el PDF y dispara la descarga vía un <a download> temporal, sin lanzar", async () => {
+    const user = userEvent.setup();
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await renderPosWithCatalog();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("sin conexión")));
+
+    await user.click(screen.getByRole("button", { name: /Coca Cola 2L/ }));
+    await user.click(screen.getByRole("button", { name: "Confirmar venta" }));
+    await screen.findByText(/Venta guardada sin conexión/);
+
+    await user.click(await screen.findByRole("button", { name: "Descargar ticket" }));
+    await waitFor(() => expect(clickSpy).toHaveBeenCalled());
+  });
+
+  it("historial: 'Ver ticket' funciona para CUALQUIER venta local (acá, una en estado Error) — nunca bloquea la impresión por el estado de sincronización", async () => {
+    const user = userEvent.setup();
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const orgId = uniqueOrgId();
+    mockOrg = { id: orgId, name: "Mi Negocio" };
+    setOffline();
+    const db = await seedCatalog(orgId);
+    const { createSaleOffline, confirmSaleOffline } = await import("@/lib/offline/sales-repo");
+    const sale = await createSaleOffline(db, {
+      organizationId: orgId,
+      posTerminalId: "pos-1",
+      warehouseId: "wh-1",
+      items: [{ productId: "prod-pan", quantity: "1", unitPrice: "8.50", discount: "0" }],
+    });
+    await confirmSaleOffline(db, {
+      localSaleId: sale.id,
+      payments: [{ method: "CASH", amount: "8.50", idempotencyKey: "pago-ticket-error" }],
+    });
+    const updated = await db.sales.get(sale.id);
+    await db.syncQueue.update(updated!.confirmSyncOperationId!, {
+      status: "FAILED",
+      attempts: 8,
+      error: "Error de validación permanente",
+    });
+
+    render(<POSPage />);
+    await screen.findByText("Error de validación permanente");
+
+    await user.click(screen.getByRole("button", { name: "Ver ticket" }));
+    await waitFor(() => expect(openSpy).toHaveBeenCalledWith("blob:mock-ticket", "_blank"));
+  });
+
+  it("si la generación del ticket falla, muestra un mensaje comprensible — nunca el error técnico crudo", async () => {
+    const user = userEvent.setup();
+    await renderPosWithCatalog();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith("/sales")) return Promise.resolve(jsonResponse(201, { id: "server-ticket-err" }));
+        if (url.includes("/confirm")) {
+          return Promise.resolve(
+            jsonResponse(201, { id: "server-ticket-err", status: "PAID", total: "15.00", paidTotal: "15.00", balance: "0.00" }),
+          );
+        }
+        return baseFetchStub(url);
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /Coca Cola 2L/ }));
+    await user.click(screen.getByRole("button", { name: "Confirmar venta" }));
+    await screen.findByText(/Venta confirmada \(PAID\)/);
+
+    // Simula una condición de carrera real (la venta desaparece de la base
+    // entre listarla y que el usuario clickee) en vez de inventar un error
+    // artificial — `buildTicketFromLocalSale` ya valida esto y lanza un
+    // error claro (cubierto en `build-ticket.test.ts`); acá se confirma que
+    // la UI lo traduce a un mensaje comprensible, nunca el `Error` crudo.
+    const db = getLocalDb(mockOrg.id);
+    await db.sales.clear();
+
+    await user.click(await screen.findByRole("button", { name: "Ver / Imprimir ticket" }));
+
+    await screen.findByText("No se pudo generar el ticket. Podés reintentar en un momento.");
+    expect(screen.queryByText(/Venta local no encontrada/)).not.toBeInTheDocument();
+  });
+});
+
 /** Helper local: cambiar un `<input>` controlado sin pelear con las reglas de `userEvent` para `type="number"`. */
 function fireEventChange(element: HTMLElement, value: string) {
   const input = element as HTMLInputElement;

@@ -21,6 +21,7 @@ import {
 } from "@/lib/offline/sale-sync-state";
 import { newIdempotencyKey } from "@/lib/offline/ids";
 import type { LocalOrgContext } from "@/lib/offline/types";
+import { downloadPdfBytes, pdfBlobUrl } from "@/lib/offline/printing/pdf-blob";
 
 interface ProductView {
   id: string;
@@ -84,6 +85,10 @@ export default function POSPage() {
   const [localSales, setLocalSales] = useState<LocalSaleWithState[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+
+  const [lastSaleId, setLastSaleId] = useState<string | null>(null);
+  const [ticketBusy, setTicketBusy] = useState<string | null>(null);
+  const [ticketError, setTicketError] = useState<string | null>(null);
 
   async function loadFromLocalDb() {
     if (!db) return;
@@ -219,6 +224,7 @@ export default function POSPage() {
     setSubmitting(true);
     setError(null);
     setFeedback(null);
+    setTicketError(null);
     try {
       const validPayments = payments.filter((p) => Number(p.amount) > 0);
       const result = await submitSaleOffline(db, {
@@ -259,6 +265,7 @@ export default function POSPage() {
           message: result.message ?? "No se pudo completar la venta.",
         });
       }
+      setLastSaleId(result.localSaleId);
       resetSale();
       await refreshHistory();
     } catch (err) {
@@ -276,6 +283,45 @@ export default function POSPage() {
       await refreshHistory();
     } finally {
       setRetryingId(null);
+    }
+  }
+
+  /**
+   * Genera el PDF térmico 100% offline (Offline 4.6B) y lo abre o lo
+   * descarga — nunca depende del backend ni de que la venta ya haya
+   * sincronizado. Un fallo acá (ej. datos corruptos, cuota de memoria)
+   * nunca debe verse como un error técnico crudo — mensaje comprensible,
+   * y la venta en sí queda intacta (la impresión es una operación
+   * separada del commit comercial, ver docs/architecture.md).
+   *
+   * `pdf-lib` (~180KB gzip, medido en el build de producción) se importa
+   * DINÁMICAMENTE acá adentro, no arriba del archivo — el POS tiene que
+   * abrir rápido incluso sin red (prioridad ya establecida desde Offline
+   * 3), y la enorme mayoría de aperturas del POS nunca llegan a generar
+   * un ticket. `import()` sigue funcionando sin conexión: una vez que el
+   * navegador cacheó el chunk (visita anterior, o el Service Worker que
+   * llegue a futuro), no hace falta red para resolverlo.
+   */
+  async function handleTicket(localSaleId: string, action: "view" | "download") {
+    if (!db || !orgContext) return;
+    setTicketBusy(`${action}-${localSaleId}`);
+    setTicketError(null);
+    try {
+      const [{ buildTicketFromLocalSale }, { renderThermalPdf }] = await Promise.all([
+        import("@/lib/offline/printing/build-ticket"),
+        import("@/lib/offline/printing/thermal-pdf-renderer"),
+      ]);
+      const ticket = await buildTicketFromLocalSale(db, orgContext, localSaleId);
+      const bytes = await renderThermalPdf(ticket);
+      if (action === "view") {
+        window.open(pdfBlobUrl(bytes), "_blank");
+      } else {
+        downloadPdfBytes(bytes, `ticket-${localSaleId}.pdf`);
+      }
+    } catch {
+      setTicketError("No se pudo generar el ticket. Podés reintentar en un momento.");
+    } finally {
+      setTicketBusy(null);
     }
   }
 
@@ -339,8 +385,29 @@ export default function POSPage() {
             <h2 className="font-medium text-sm">Carrito</h2>
             {error && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>}
             {feedback && (
-              <p className={`text-sm rounded p-2 ${FEEDBACK_STYLES[feedback.kind]}`}>{feedback.message}</p>
+              <div className={`text-sm rounded p-2 ${FEEDBACK_STYLES[feedback.kind]}`}>
+                <p>{feedback.message}</p>
+                {lastSaleId && (feedback.kind === "synced" || feedback.kind === "offline") && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      onClick={() => handleTicket(lastSaleId, "view")}
+                      disabled={ticketBusy !== null}
+                      className="text-xs rounded border border-current px-2 py-1 disabled:opacity-50"
+                    >
+                      {ticketBusy === `view-${lastSaleId}` ? "Generando..." : "Ver / Imprimir ticket"}
+                    </button>
+                    <button
+                      onClick={() => handleTicket(lastSaleId, "download")}
+                      disabled={ticketBusy !== null}
+                      className="text-xs rounded border border-current px-2 py-1 disabled:opacity-50"
+                    >
+                      {ticketBusy === `download-${lastSaleId}` ? "Descargando..." : "Descargar ticket"}
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
+            {ticketError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{ticketError}</p>}
 
             {cart.length === 0 && <p className="text-sm text-zinc-400">Agregá productos desde la lista</p>}
             {cart.map((line) => (
@@ -546,6 +613,13 @@ export default function POSPage() {
                     <span className={`rounded px-2 py-0.5 text-xs ${SYNC_BADGE[state.kind].className}`}>
                       {SYNC_BADGE[state.kind].label}
                     </span>
+                    <button
+                      onClick={() => handleTicket(sale.id, "view")}
+                      disabled={ticketBusy !== null}
+                      className="text-xs underline text-zinc-600 disabled:opacity-50"
+                    >
+                      {ticketBusy === `view-${sale.id}` ? "Generando…" : "Ver ticket"}
+                    </button>
                     {(state.kind === "conflict" || state.kind === "error") && (
                       <button
                         onClick={() => handleRetry(sale.id)}

@@ -1575,6 +1575,74 @@ diseño ni de la arquitectura de KIPU.
       diseñar el proceso "sidecar" de producción (cómo distribuir Node
       junto al binario) y la capability `shell` mínima que necesitaría.
 
+## Fase Offline 4.6B — Ticket PDF térmico 80mm ✅
+
+Reemplaza el objetivo de impresión directa (Bluetooth/USB/red/Tauri,
+detenido en Offline 4.6/4.10.1) por un PDF térmico 80mm generado 100%
+offline, sin depender del backend. Ver `docs/architecture.md` sección
+27 para el detalle técnico completo.
+
+- [x] Auditoría previa: el backend YA genera PDFs térmicos
+      (`receipt-pdf.util.ts`, `format=thermal80`) desde un
+      `ReceiptSnapshot` — pero eso solo existe tras `POST /receipts`
+      (venta sincronizada + recibo emitido explícitamente). Ese flujo
+      ONLINE (`sales/[id]/page.tsx`, "Ver ticket 80mm"/"Descargar
+      ticket") queda intacto, sin tocarlo ni duplicarlo.
+- [x] `renderThermalPdf(ticket: TicketData): Promise<Uint8Array>`
+      (`thermal-pdf-renderer.ts`) — función pura, sin React ni
+      `PrinterManager`/`EscPosEncoder`/Bluetooth/USB, reutiliza
+      `TicketData`/`ticketFromLocalSale`/`ticketFromReceiptSnapshot`
+      (Offline 4.4/4.5) sin ningún cambio. `PrinterTransport`/
+      `PrinterManager`/`EscPosEncoder` quedan intactos, sin usarse
+      todavía.
+- [x] `pdf-lib@1.17.1` elegido sobre `pdfkit`/`jsPDF`/`@react-pdf
+      /renderer` — sin dependencias nativas, corre en Node y
+      navegador, permite altura de página EXACTA calculada del
+      contenido (nunca A4 reducido, nunca la paginación fija de 1500pt
+      que usa el backend). Acentos españoles (á é í ó ú ü ñ Ñ) vía
+      WinAnsiEncoding de las fuentes estándar — sin incrustar ninguna
+      fuente Unicode — **verificado empíricamente**: se generaron PDFs
+      reales y se volvió a extraer su texto con `pdfjs-dist`,
+      confirmando que los acentos se leen de vuelta correctamente.
+- [x] Altura dinámica real de una sola página, medida en PDFs
+      generados de verdad: 1 producto → 305pt; 20 productos → 670pt;
+      ancho SIEMPRE exactamente 80.0mm. Nombres de producto/cliente
+      largos se envuelven automáticamente sin desbordar.
+- [x] Impacto de la dependencia medido en el BUILD REAL (no estimado):
+      el chunk con `pdf-lib` pesa ~177KB gzip — se carga con
+      `import()` DINÁMICO dentro del handler del botón de ticket, así
+      que el POS sigue abriendo con el mismo peso de siempre;
+      verificado que ese chunk no aparece en el manifest de carga
+      inicial de `/sales/pos`. `pdfjs-dist` es devDependency, solo
+      para tests, cero impacto en el bundle de producción.
+- [x] Integración POS: `ticket-context.ts` (mapeo `LocalOrgContext →
+      TicketMapperContext`, el punto que Offline 4.5 dejó pendiente),
+      `build-ticket.ts` (arma el `TicketData` desde una `LocalSale`
+      real de Dexie, reutilizando `getSaleSyncState` sin duplicar esa
+      lógica), `pdf-blob.ts` (abrir/descargar, mismo patrón que
+      `apiBlobUrl`/`apiDownload` pero sin `fetch()`). Botones "Ver /
+      Imprimir ticket" y "Descargar ticket" tras confirmar una venta
+      (online u offline) y en cada fila del historial local, en
+      CUALQUIER estado de sincronización — nunca bloquea la
+      impresión. Fallo de generación → mensaje comprensible, nunca el
+      error técnico crudo. Cero cambios a la creación/confirmación/
+      pago de una venta.
+- [x] Nunca inventa un folio: offline pendiente muestra "PENDIENTE DE
+      SINCRONIZAR" + el id local; una `LocalSale` sincronizada sigue
+      sin folio (eso solo existe vía un recibo YA emitido); el folio
+      real del servidor solo aparece con `ticketFromReceiptSnapshot`.
+- [x] Aislamiento multi-tenant probado explícitamente, incluido el PDF
+      final (dos organizaciones con el mismo id de producto nunca
+      mezclan su ticket). Sin tokens/contraseñas/credenciales en el
+      PDF (probado).
+- [x] 28 tests nuevos (18 `thermal-pdf-renderer.test.ts` + 5
+      `build-ticket.test.ts` + 5 en `page.test.tsx`) — todos verifican
+      contenido REAL extraído del PDF generado (`pdfjs-dist`), no solo
+      que "se generó algo". 243/243 frontend, 335/335 backend (sin
+      cambios), `verify:tenant-isolation` 23/23, builds y lint
+      limpios. Cero cambios de backend, cero Bluetooth/USB/red/Tauri,
+      cero hardware.
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,

@@ -3367,3 +3367,200 @@ pasando — sección 26.10 — pero no se tocó ni un archivo de
 Win32/COM/spooler específicas de Windows, ni ningún instalador firmado
 de producción. Cero cambios a la lógica comercial, autenticación,
 sincronización, backend, Prisma o RLS.
+
+## 27. Fase Offline 4.6B — Ticket PDF térmico 80mm
+
+Reemplaza el objetivo de impresión directa (Bluetooth/USB/red/Tauri,
+detenido en Offline 4.6/4.10.1) por una estrategia más simple: generar un
+PDF pensado para papel térmico de 80mm, que el usuario abre/descarga e
+imprime con el sistema de impresión de su propio dispositivo. Objetivo
+central: **una venta offline nunca depende del backend para poder
+imprimir su ticket**.
+
+### 27.1. Auditoría previa — qué ya existía
+
+`backend/src/receipts/receipt-pdf.util.ts` ya genera PDFs térmicos
+(`format=thermal80`, con `pdfkit`) desde un `ReceiptSnapshot` — pero
+`ReceiptSnapshot` SOLO existe después de `POST /receipts`, que a su vez
+requiere una venta ya SINCRONIZADA con el servidor. `frontend/src/app
+/sales/[id]/page.tsx` ya expone "Ver ticket 80mm"/"Descargar ticket"
+contra `GET /receipts/:id/pdf?format=thermal80` — un flujo ONLINE
+completo y funcional, que esta fase NO toca ni duplica.
+
+La brecha real: una `LocalSale` (Offline 2/3) nunca tiene un
+`receipt.id` con el que llamar a ese endpoint — ni sin sincronizar, ni
+recién sincronizada (emitir un recibo es un paso EXPLÍCITO y separado,
+`POST /receipts`). Por eso hacía falta un segundo camino,
+100% cliente, que nunca llame al backend.
+
+### 27.2. Arquitectura: `TicketData → renderThermalPdf() → PDF`, independiente de todo lo demás
+
+`frontend/src/lib/offline/printing/thermal-pdf-renderer.ts` exporta
+`renderThermalPdf(ticket: TicketData): Promise<Uint8Array>` — función
+pura, sin importar React, `PrinterManager`, `EscPosEncoder`, Bluetooth
+ni USB (verificado: el archivo solo importa `pdf-lib` y `./ticket-data`).
+Reutiliza el `TicketData`/`ticketFromLocalSale`/`ticketFromReceiptSnapshot`
+de Offline 4.4/4.5 SIN NINGÚN CAMBIO — el mismo dato alimenta ahora dos
+caminos:
+
+```
+TicketData
+├── EscPosEncoder      (Offline 4.4 — impresión física, sin usar todavía)
+└── renderThermalPdf   (Offline 4.6B — PDF térmico, el camino real de hoy)
+```
+
+`PrinterTransport`/`PrinterManager`/`EscPosEncoder` quedan INTACTOS
+(compilan, sus 65+ tests siguen pasando) — esta fase no los toca ni los
+usa, solo confirma que la abstracción de Offline 4.4 sí soportaba un
+segundo consumidor de `TicketData` sin fricción.
+
+### 27.3. Por qué `pdf-lib` y no `pdfkit` (lo que ya usa el backend)
+
+`pdfkit` es una librería de streaming pensada para Node — tiene un
+build de navegador, pero es pesado y no encaja con el pedido explícito
+de un renderer "independiente de React... testeable con datos falsos
+sin hardware" de forma simple. Se evaluaron:
+
+- **`pdf-lib`** (elegido): sin dependencias nativas, corre igual en
+  Node y navegador, modelo de documento EN MEMORIA (a diferencia del
+  streaming de pdfkit) — permite medir el texto PRIMERO y crear la
+  página con la altura EXACTA que necesita, en vez de un tamaño fijo
+  generoso con paginación (lo que hace hoy `receipt-pdf.util.ts`:
+  1500pt fijos + `addPage` si no alcanza). MIT, ~180KB gzip medido en
+  el build real de este proyecto (sección 27.5).
+- **`jsPDF`**: alternativa viable, pero su modelo (más parecido a
+  pdfkit: "empezar una página de tamaño fijo e ir agregando") encaja
+  peor con el requisito de altura dinámica de una sola página.
+- **`@react-pdf/renderer`**: descartado — depende de React (yoga-layout
+  WASM incluido), contradice directamente "el renderer debe ser
+  independiente de React".
+
+**Acentos españoles sin fuente incrustada**: las 14 fuentes estándar de
+PDF (acá `Helvetica`/`Helvetica-Bold`) usan codificación WinAnsi por
+defecto, que YA cubre á/é/í/ó/ú/ü/ñ/Ñ/Á/É/Í/Ó/Ú/Ü — nunca hizo falta
+incrustar una fuente Unicode personalizada ni usar `fontkit`.
+**Verificado empíricamente, no asumido**: se generaron PDFs de prueba
+con texto real ("María José Peñaranda Núñez", "Av. Simón Bolívar",
+"Juan Pérez Áñez") y se volvieron a leer con `pdfjs-dist` (el motor de
+PDF de Firefox) — el texto extraído coincide exactamente, acentos
+incluidos. Cero transliteración ASCII (a diferencia de
+`AsciiFallbackEncoding`, necesaria para ESC/POS por el codepage de una
+impresora física — un PDF no tiene ese problema).
+
+### 27.4. Altura dinámica real — una sola página, siempre
+
+`TicketLayout` (clase interna de `thermal-pdf-renderer.ts`) arma
+PRIMERO la lista de líneas del ticket (con *word-wrap* real usando las
+métricas de la fuente — `font.widthOfTextAtSize`, nunca un límite de
+caracteres a ojo) y SUMA su alto total; recién con ese número se crea
+la página (`doc.addPage([80mm, altoExacto])`). Verificado con PDFs
+reales: 1 producto → 305pt de alto; 20 productos → 670pt; SIEMPRE 1
+sola página (nunca pagina como el backend). El ancho es SIEMPRE
+exactamente `80 * 2.834645669 ≈ 226.77pt` (80.0mm confirmado en cada
+PDF de prueba) — nunca un A4 reducido.
+
+Nombres de producto/cliente largos se envuelven automáticamente
+(palabra por palabra; una palabra sola más larga que el ancho se corta
+letra por letra como salvaguarda) — probado explícitamente con un
+nombre de producto de 111 caracteres y un nombre de cliente de 61
+caracteres, sin desbordar el ancho ni lanzar.
+
+### 27.5. Dependencias nuevas — tamaño, motivo, impacto medido
+
+- **`pdf-lib@1.17.1`** (dependency real, se envía al navegador): MIT,
+  sin dependencias nativas. Impacto medido EN EL BUILD REAL de este
+  proyecto (no una estimación externa): el chunk que contiene
+  `pdf-lib` pesa 420KB sin comprimir, **~177KB gzip**. Se verificó
+  además que ese chunk NO aparece en el manifest de carga inicial de
+  `/sales/pos` (`.next/server/app/sales/pos/page/build-manifest.json`)
+  — porque `renderThermalPdf`/`buildTicketFromLocalSale` se importan
+  con `import()` DINÁMICO dentro del handler del botón de ticket
+  (`page.tsx`), no arriba del archivo. El POS sigue abriendo con el
+  mismo peso de siempre; el costo de `pdf-lib` solo se paga la PRIMERA
+  vez que alguien realmente genera un ticket.
+- **`pdfjs-dist@6.3.289`** (devDependency, SOLO tests): el motor de PDF
+  de Firefox — se usa exclusivamente en
+  `test-support/pdf-text.ts` para extraer el texto real de un PDF
+  generado y verificar contenido/acentos en los tests. Nunca se
+  importa desde código de producción — cero impacto en el bundle que
+  se sirve al navegador.
+
+### 27.6. Integración con el POS — nuevos archivos, sin tocar el flujo comercial
+
+- `ticket-context.ts`: `ticketContextFromOrgContext(orgContext,
+  customer, products)` — el mapeo `LocalOrgContext → TicketMapperContext`
+  que Offline 4.5 dejó pendiente para "el día que un caller real lo
+  necesite". `ticket-mapper.ts` sigue sin tocarse.
+- `build-ticket.ts`: `buildTicketFromLocalSale(db, orgContext,
+  localSaleId)` — resuelve cliente/productos de Dexie y decide
+  `pending-sync` vs `synced` reutilizando `getSaleSyncState` (Offline
+  3, sin duplicar esa lógica): cualquier estado que no sea
+  `"synced"` (offline-pending, syncing, conflict, error) se trata como
+  `pending-sync` para el ticket.
+- `pdf-blob.ts`: `pdfBlobUrl`/`downloadPdfBytes` — mismo patrón que
+  `apiBlobUrl`/`apiDownload` (`lib/api.ts`), pero sin ningún `fetch()`
+  (el PDF ya está en memoria).
+- `sales/pos/page.tsx`: se agregaron `lastSaleId`/`ticketBusy`/
+  `ticketError` al estado y `handleTicket(localSaleId, "view"|"download")`.
+  Botones "Ver / Imprimir ticket" y "Descargar ticket" aparecen (a)
+  junto al mensaje de resultado tras confirmar una venta (online u
+  offline) y (b) en cada fila del historial local, sin importar su
+  estado de sincronización (pendiente, sincronizada, en conflicto o con
+  error — nunca se bloquea la posibilidad de imprimir por el estado).
+  Un fallo al generar el PDF muestra "No se pudo generar el ticket.
+  Podés reintentar en un momento." — nunca el error técnico crudo.
+  **Cero cambios** a `pos-cart.ts`, `pos-submit.ts`, `sales-repo.ts`,
+  `sync-engine.ts` ni a la creación/confirmación/pago de una venta — la
+  impresión sigue siendo una operación separada del commit comercial.
+
+**"Ver / Imprimir ticket" e "Imprimir" son la misma acción** (abre el
+PDF en una pestaña nueva vía `window.open` con una blob URL): se evaluó
+intentar un `window.print()` automático tras abrir, pero se descartó —
+no hay forma de verificar esa temporización/comportamiento en este
+entorno (sin navegador real ni pantalla), y el patrón YA establecido en
+`sales/[id]/page.tsx` (recibos online) es exactamente el mismo: abrir
+el PDF y usar el botón de imprimir del visor nativo. Nunca se prometió
+ni se implementó impresión silenciosa/automática.
+
+### 27.7. Multi-tenant y seguridad
+
+El aislamiento sigue viniendo de la base física por-organización de
+siempre (sección 18) — `buildTicketFromLocalSale` nunca cruza bases.
+Probado explícitamente: dos organizaciones con el MISMO id de producto
+generan tickets y PDFs (extraídos y comparados por texto real) que
+nunca mezclan nombre/NIT/sucursal/productos. El PDF solo contiene datos
+comerciales que `TicketData` ya exponía desde Offline 4.4/4.5 — nunca
+tokens, contraseñas ni credenciales (probado con una aserción explícita
+sobre el texto extraído del PDF).
+
+### 27.8. Tests nuevos: 28 (18 renderer + 5 build-ticket + 5 integración POS)
+
+`thermal-pdf-renderer.test.ts`: ancho/alto reales, contenido comercial
+(negocio/sucursal/POS/cajero/NIT), folio ausente vs presente (offline
+pendiente, offline sincronizada, recibo emitido), productos/cantidades/
+precios, descuento condicional, múltiples pagos, saldo pendiente
+condicional, observaciones, sin cliente, NO FISCAL siempre presente,
+sin secretos, Unicode, nombre de producto/cliente largo.
+
+`build-ticket.test.ts`: resuelve datos reales de Dexie, estados
+pending-sync/synced, venta inexistente lanza error claro, aislamiento
+multi-tenant (incluido el PDF final).
+
+`page.test.tsx` (nuevo describe): acciones de ticket tras venta online
+y offline-pending, "Descargar ticket" dispara la descarga, "Ver ticket"
+funciona desde el historial en CUALQUIER estado (probado con una venta
+en "Error"), fallo de generación muestra un mensaje comprensible.
+
+243/243 frontend (215 + 28 nuevos), 335/335 backend (sin cambios),
+`verify:tenant-isolation` 23/23, builds y lint limpios.
+
+### 27.9. Qué NO se implementó en esta fase (deliberado)
+
+Ninguna comunicación directa con impresoras (`navigator.bluetooth`,
+`navigator.usb`, TCP, Tauri), ningún cambio de backend/Prisma/RLS/RBAC,
+ninguna descarga/incrustación de logo (`businessLogoUrl` sigue sin
+usarse en el ticket, misma decisión documentada de Offline 4.5), ningún
+Administrador de Dispositivos, ninguna aplicación Android — el diseño
+del PDF (ancho fijo, sin JS embebido, sin dependencias de plataforma)
+es compatible con un navegador móvil/PWA/una futura app Tauri/Android
+sin cambios, pero ninguna de esas plataformas se implementó acá.
