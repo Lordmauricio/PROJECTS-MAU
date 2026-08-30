@@ -1503,6 +1503,78 @@ no cumpla el objetivo").
       `verify:tenant-isolation` 23/23 — sin cambios, exactamente los
       mismos números que al cierre de Offline 4.5 (nada se tocó).
 
+## Fase Offline 4.10.1 — Fundación del shell de escritorio Tauri 🛑 DETENIDA (scaffold creado, bloqueo de entorno identificado)
+
+Autorizada explícitamente para crear ÚNICAMENTE la fundación del shell
+de escritorio Tauri 2. Ver `docs/architecture.md` sección 26 para el
+detalle técnico completo. La fase avanzó sustancialmente (auditoría
+empírica, decisión de arquitectura, scaffold completo, intento real de
+build) pero se detiene antes de poder abrir una ventana real, por un
+bloqueo de dependencias del sistema en este entorno — no un problema de
+diseño ni de la arquitectura de KIPU.
+
+- [x] Auditoría empírica (no asumida) de `output: "export"` vs
+      `output: "standalone"`: se probó realmente cambiar la
+      configuración y correr `next build` — falla de verdad en las 4
+      rutas dinámicas por id (`/cash/[id]`, `/sales/[id]`,
+      `/purchases/[id]`, `/receivables/[id]`) por falta de
+      `generateStaticParams()`. Se descartó la exportación estática sin
+      reestructurar esas páginas.
+- [x] Arquitectura elegida y validada empíricamente: Tauri sirve el
+      frontend vía el propio `output: "standalone"` YA configurado
+      (`node .next/standalone/server.js`, arrancado y probado en este
+      entorno — responde `200` con el HTML real de KIPU en
+      milisegundos) como proceso local ("sidecar" en producción, `next
+      dev` normal en desarrollo) — CERO cambios a `next.config.ts`,
+      CERO reescritura de rutas, mismo frontend que la web.
+- [x] `frontend/src-tauri/` creado con Tauri 2.11.4: `Cargo.toml`
+      mínimo (sin plugins de Bluetooth/USB/shell/filesystem/red),
+      `capabilities/default.json` con `core:default` únicamente,
+      `tauri.conf.json` con `identifier: com.kipu.desktop`, ventana
+      `1280x800` razonable, `devUrl`/`beforeDevCommand` apuntando a
+      `next dev` sin tocarlo, y una CSP explícita (reemplaza el `null`
+      del scaffold por defecto) sin `unsafe-eval`. `src/lib.rs` sin
+      ningún comando Rust propio — backend nativo prácticamente vacío,
+      tal como pedía la fase.
+- [x] Dependencias nuevas: `@tauri-apps/cli@2.11.4` (dev),
+      `@tauri-apps/api@2.11.1` — las oficiales de Tauri, sin ningún
+      plugin adicional agregado "por si acaso".
+- [x] Variables de entorno auditadas: `NEXT_PUBLIC_API_URL` se inlinea
+      en build (limitación documentada, no resuelta esta fase); cero
+      secretos copiados dentro de `src-tauri/`.
+- [x] Auth/IndexedDB/Dexie/sync/routing: se documenta por qué deberían
+      funcionar sin cambios (APIs web estándar, soportadas de forma
+      nativa por los 3 motores WebView de Tauri, sin plugin necesario)
+      — pero se deja EXPLÍCITO que no se pudieron probar en vivo en
+      este entorno (sin ventana real, ver el bloqueo abajo). Cero
+      cambios a `auth-context.tsx`, `db.ts`, `catalog-sync.ts`,
+      `pos-submit.ts`, `sync-engine.ts` ni `sales/pos/page.tsx`.
+- [x] **Bloqueo real, verificado, no asumido**: `cargo build` dentro de
+      `src-tauri/` falla compilando `gdk-sys` (`Package gdk-3.0 was not
+      found in the pkg-config search path`) — confirma que este
+      contenedor no tiene `libwebkit2gtk-4.1-dev`/`libgtk-3-dev` ni las
+      demás dependencias de sistema que Tauri necesita en Linux
+      (verificado contra la documentación actual de Tauri), y tampoco
+      tiene un servidor de ventanas (`$DISPLAY` vacío). Por instrucción
+      explícita de la fase, NO se instalaron esos paquetes sin
+      autorización — se documenta exactamente cuáles faltan.
+- [x] `PrinterTransport`/`PrinterManager`/`TicketData`/`EscPosEncoder`
+      (Offline 4.4) verificados intactos, sin ninguna integración con
+      Tauri en esta fase (ningún `TauriPrinterTransport`).
+- [x] 215/215 frontend, 335/335 backend, `verify:tenant-isolation`
+      23/23, frontend build OK, backend build OK — sin cambios respecto
+      a Offline 4.6 (ningún archivo de `src/` del frontend ni del
+      backend se tocó; solo `package.json`/`package-lock.json`
+      [dependencias Tauri] y el nuevo `src-tauri/`).
+- [x] Recomendación entregada para desbloquear: autorizar la
+      instalación de las dependencias de sistema en un entorno de
+      desarrollo real (esta sandbox no alcanza), luego ejecutar la
+      prueba práctica de offline real (crear venta sin Internet, cerrar/
+      reabrir la app, verificar persistencia) y navegar las rutas
+      principales dentro de una ventana real — y, en una fase separada,
+      diseñar el proceso "sidecar" de producción (cómo distribuir Node
+      junto al binario) y la capability `shell` mínima que necesitaría.
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,

@@ -3077,3 +3077,293 @@ correspondiente en `docs/PROJECT_PLAN.md`. No se agregó ningún tipo
 esos cambios sin una vía de conexión real hubiera sido exactamente la
 "solución parecida que técnicamente no cumple el objetivo" que la
 instrucción de esta fase pidió explícitamente evitar.
+
+## 26. Fase Offline 4.10.1 — Fundación del shell de escritorio Tauri
+
+Subfase autorizada explícitamente para crear ÚNICAMENTE la fundación del
+shell de escritorio: comprobar que el frontend actual de KIPU puede
+ejecutarse dentro de un WebView nativo (Tauri 2) sin romper POS/
+IndexedDB/offline/auth/sync/navegación — nada de hardware, Bluetooth,
+USB, impresión, Windows/Android específicos. Esta sección documenta la
+auditoría, la decisión de arquitectura, la configuración creada, y por
+qué la fase se DETIENE al llegar al punto de compilar/ejecutar realmente
+el shell (bloqueo de dependencias del sistema en ESTE entorno, no un
+problema de diseño).
+
+### 26.1. Auditoría previa — cómo está construido el frontend hoy
+
+`next.config.ts` usa `output: "standalone"` — Next.js produce un
+servidor Node.js autocontenido (`server.js` + `node_modules` podados +
+`.next/`), pensado para correr como proceso de servidor (`node
+server.js`), NO una exportación estática de archivos HTML. No hay
+`middleware.ts`, no hay `app/api/**/route.ts` (cero rutas de servidor
+propias) — pero SÍ hay 4 rutas dinámicas por id
+(`/cash/[id]`, `/sales/[id]`, `/purchases/[id]`, `/receivables/[id]`),
+todas ya `"use client"` que resuelven el id vía `useParams()` y traen
+sus datos con `fetch()` en el cliente (mismo patrón que el resto del
+POS/offline).
+
+**Se verificó EMPÍRICAMENTE, no se asumió**, si `next build` con
+`output: "export"` (exportación estática — lo que Tauri puede embeber
+directamente como assets sin ningún servidor) funciona con el código
+actual: se cambió temporalmente `next.config.ts` a `output: "export"` y
+se corrió `npm run build`. Resultado real:
+
+```
+Build error occurred
+Error: Page "/cash/[id]" is missing "generateStaticParams()" so it
+cannot be used with "output: export" config.
+```
+
+Confirmado: la exportación estática de Next.js **requiere**
+`generateStaticParams()` en cada ruta dinámica — imposible de proveer
+de forma significativa acá porque los ids de venta/compra/caja/cuenta
+por cobrar se crean en tiempo real, no se conocen en tiempo de build.
+Resolverlo habría exigido reestructurar esas 4 páginas (separar en un
+`page.tsx` servidor + un componente cliente), un cambio real a la
+forma de esas rutas — se decidió NO hacerlo (ver 26.2) en vez de forzar
+una reescritura no pedida por esta fase. El cambio de `next.config.ts`
+se revirtió inmediatamente después de la prueba (`git diff` confirmado
+vacío en ese archivo).
+
+### 26.2. Decisión de arquitectura: opción B (servidor Next.js standalone como sidecar local), no opción A (export estático)
+
+Se evaluaron las opciones de la sección 2 del pedido:
+
+- **A. Next.js static export**: descartada — 26.1 demuestra que rompe
+  con el código real de HOY (rutas `[id]` dinámicas), y arreglarlo
+  exigiría reestructurar 4 páginas, más que "conservar el máximo
+  posible del frontend actual".
+- **B. Next.js servido localmente por Tauri**: `output: "standalone"`
+  (ya configurado, CERO cambios) ya produce exactamente lo que hace
+  falta — se verificó EMPÍRICAMENTE arrancándolo:
+  `PORT=39871 HOSTNAME=127.0.0.1 node .next/standalone/server.js`
+  levantó el servidor real en milisegundos (`✓ Ready in 0ms`) y
+  `GET http://127.0.0.1:39871/login` devolvió `200` con el HTML real de
+  KIPU. La arquitectura elegida es: Tauri arranca este mismo
+  `server.js` como proceso local (en dev, vía `next dev` normal; en
+  producción, como un proceso "sidecar" que Tauri administra) y el
+  WebView carga `http://127.0.0.1:<puerto>` — CERO cambios al frontend,
+  CERO reescritura de rutas, el mismo código que corre hoy en la web.
+- **C. Otro mecanismo**: no aplica, B ya resuelve el objetivo sin
+  fricción.
+
+Arquitectura resultante (coincide exactamente con la pedida en la
+sección 10 del prompt):
+
+```
+Tauri (WebView)
+  ↓ carga http://127.0.0.1:<puerto>
+Frontend KIPU (el mismo Next.js de siempre, sin cambios)
+  ↓ fetch()/XHR
+API KIPU (NEXT_PUBLIC_API_URL, backend NestJS existente, SIN cambios)
+  ↓ (sin Internet)
+IndexedDB / Sync Queue (Dexie, sin cambios)
+```
+
+El backend nunca se mueve dentro de Tauri, nunca se crea una copia
+local ni un SQLite — exactamente como pedía la sección 10.
+
+### 26.3. Estructura Tauri creada
+
+`frontend/src-tauri/` (Tauri 2.11.4, Rust 1.94.1/`rustc`, `cargo` ya
+disponibles en el entorno):
+
+- `Cargo.toml`: crate `app` (`app_lib` como lib), dependencias
+  `tauri 2.11.3`, `tauri-plugin-log 2` (solo activo en `debug_assertions`,
+  ver `src/lib.rs`), `serde`/`serde_json`/`log`. **Cero plugins de
+  Bluetooth/USB/shell/filesystem/network** — ninguno se agregó "por si
+  acaso", cumpliendo la sección 25 del pedido.
+- `src/lib.rs`/`src/main.rs`: el `main.rs` generado por el propio
+  `tauri init` (comentario original preservado: "Prevents additional
+  console window on Windows in release, DO NOT REMOVE!!"); `lib.rs`
+  registra ÚNICAMENTE el plugin de logging (solo en debug) y arranca
+  `tauri::Builder::default()` — CERO comandos Rust propios, CERO
+  lógica de hardware. El backend nativo queda "prácticamente vacío",
+  tal como pedía la sección 4.
+- `capabilities/default.json`: `"permissions": ["core:default"]` — el
+  mínimo que trae Tauri por defecto (operaciones básicas de
+  ventana/app), sin agregar `shell`, `fs`, `http`/`network`, ni ningún
+  otro plugin. Cumple la sección 20 (mínimo privilegio) sin necesitar
+  ninguna decisión adicional en esta fase.
+- `tauri.conf.json`:
+  - `identifier`: `com.kipu.desktop` (se cambió del placeholder
+    `com.tauri.dev` que genera `tauri init` por defecto).
+  - `productName`/ventana: `"KIPU"`, `1280x800` (mínimo `960x600`),
+    redimensionable, no fullscreen — ventana de escritorio razonable,
+    sin ninguna UI distinta a la web.
+  - `build.devUrl`: `http://localhost:3000` +
+    `build.beforeDevCommand`: `"npm run dev"` — en desarrollo, es el
+    propio CLI de Tauri quien levanta `next dev` (el comando YA
+    existente, sin tocarlo) y espera a que el puerto responda antes de
+    abrir la ventana. `web: npm run dev` y `desktop: cargo tauri dev`
+    (dentro de `src-tauri/`) conviven sin pisarse — ninguno de los
+    scripts existentes del frontend se modificó.
+  - `build.beforeBuildCommand`: `"npm run build"` (el build
+    `standalone` ya existente, sin cambios).
+  - `build.frontendDist`: `"../public"` — **placeholder documentado,
+    no la fuente real de contenido**: como la arquitectura elegida
+    (26.2) sirve todo vía el sidecar HTTP en vez del protocolo de
+    assets embebidos de Tauri, este valor solo satisface el schema de
+    configuración (Tauri exige una carpeta válida) — apuntar a la
+    verdadera carpeta `public/` de Next.js (ya existente, con los 3
+    SVG de ejemplo del scaffold de Next) evita inventar un directorio
+    nuevo sin uso real.
+  - `app.security.csp`: se reemplazó el `null` que genera `tauri init`
+    por defecto (sin ninguna política) por una CSP explícita:
+    `default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:* https://localhost:*; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'`
+    — permite el propio origen (el sidecar), llamadas HTTP al API real
+    del backend (que igual queda fuera del `connect-src 'self'`
+    estricto y necesitará ampliarse explícitamente al dominio real de
+    `NEXT_PUBLIC_API_URL` cuando ese valor de producción se conozca,
+    ver 26.5), imágenes/datos locales, y estilos inline (Tailwind los
+    necesita). **Sin `unsafe-eval`** — no se encontró ninguna
+    dependencia real que lo exigiera; si Turbopack en modo `next dev`
+    resulta necesitarlo para HMR, queda para verificar cuando el
+    entorno permita levantar la ventana de verdad (26.6) y, de
+    confirmarse, debe documentarse y acotarse solo a builds de debug,
+    nunca a producción.
+
+### 26.4. `Cargo.lock` y dependencias nuevas
+
+Se agregó `@tauri-apps/cli@2.11.4` (devDependency) y
+`@tauri-apps/api@2.11.1` (dependency) a `frontend/package.json` — las
+dependencias oficiales de Tauri que la propia sección 3 del pedido
+autoriza sin necesitar detenerse. **Ningún plugin adicional** (sin
+`@tauri-apps/plugin-shell`, `-fs`, `-http`, etc.) — no hay necesidad
+todavía, y agregar cualquiera de esos "por si acaso" está
+explícitamente prohibido por la sección 25. `Cargo.lock` (generado por
+`cargo build`) se versiona tal cual es práctica estándar para una
+aplicación (no una librería) Rust — fija las versiones exactas de
+TODAS las dependencias transitivas, evitando builds no reproducibles.
+
+### 26.5. Variables de entorno — auditoría
+
+`NEXT_PUBLIC_API_URL` (`lib/api.ts`) es la única variable de entorno
+que el frontend usa para saber dónde está el backend — Next.js la
+INLINEA en el bundle JS en tiempo de `next build` (no es leíble ni
+cambiable en runtime sin reconstruir). Esto aplica igual dentro de
+Tauri: el valor que tenga `NEXT_PUBLIC_API_URL` cuando corra
+`beforeBuildCommand` (`npm run build`) queda fijo dentro del binario de
+escritorio — **limitación conocida, no resuelta en esta fase** (hacer
+la URL del backend configurable en runtime dentro de la app de
+escritorio, ej. una pantalla de configuración, es trabajo de una fase
+posterior si se necesita). Ningún `.env` con secretos se copia dentro
+de `src-tauri/` ni del bundle — no existe tal archivo en el frontend
+hoy, y no se creó ninguno. Confirmado: cero contraseñas, tokens o
+claves privadas en cualquier archivo nuevo de esta fase.
+
+### 26.6. Autenticación / IndexedDB / Dexie / offline / sync / routing — verificación documentada, NO ejecutada en vivo
+
+**Esto es lo más importante a dejar explícito**: esta fase NO logró
+abrir una ventana Tauri real en este entorno (ver 26.7), así que los
+puntos 12–16 del pedido (probar login/logout/POS/offline real dentro
+de la ventana, navegar las rutas, cerrar/reabrir y verificar
+persistencia) **no se ejecutaron en vivo** — no porque se hayan
+omitido, sino porque el entorno no permite levantar el WebView (26.7).
+Lo que SÍ se puede afirmar con confianza, y por qué:
+
+- **IndexedDB/Dexie**: es una API web estándar, soportada de forma
+  nativa por los tres motores WebView que usa Tauri (WebKitGTK en
+  Linux, WebView2/Chromium en Windows, WKWebView en macOS) — a
+  diferencia de Bluetooth/USB, no requiere ningún plugin ni permiso
+  especial de Tauri. Es la MISMA razón por la que Dexie/IndexedDB ya
+  funciona hoy en cualquier navegador de escritorio. No se trata de una
+  suposición sin fundamento, pero tampoco de un hallazgo VERIFICADO en
+  este entorno — queda como el primer punto a confirmar en cuanto
+  exista una ventana real (26.8).
+- **Autenticación** (`auth-context.tsx`): usa `localStorage` (otra API
+  web estándar, igualmente soportada sin plugin) para
+  access/refresh token — el ciclo de refresh (Offline 4.1) es lógica
+  JS pura sobre `fetch()`, sin ninguna dependencia de una API específica
+  del navegador que un WebView no tenga.
+- **Sync Queue/offline** (Offline 2/3): Dexie + `navigator.onLine`/
+  eventos `online`/`offline` — ambos estándar, sin plugin necesario.
+- **Routing**: Next.js App Router client-side, sin nada específico del
+  navegador que un WebView no soporte.
+
+Ninguna de estas piezas fue MODIFICADA en esta fase — cero cambios a
+`auth-context.tsx`, `db.ts`, `catalog-sync.ts`, `pos-submit.ts`,
+`sync-engine.ts`, `sales/pos/page.tsx` ni ningún otro archivo de
+lógica comercial u offline, tal como exigía la sección 9/22 del pedido.
+
+### 26.7. El bloqueo real: dependencias del sistema faltantes en ESTE entorno
+
+Se instaló el CLI de Tauri, se corrió `tauri init` para generar el
+scaffold, y se intentó `cargo build` dentro de `src-tauri/` (compilar
+el proyecto Rust — el primer paso indispensable antes de poder siquiera
+plantear `cargo tauri dev`/`build`). Resultado real, verificado, no
+asumido:
+
+```
+error: failed to run custom build command for `gdk-sys v0.18.2`
+...
+pkg-config output:
+  Package gdk-3.0 was not found in the pkg-config search path.
+  ...
+The system library `gdk-3.0` required by crate `gdk-sys` was not found.
+```
+
+Auditoría previa ya había confirmado (sección 25.1, reutilizada acá)
+que este contenedor NO tiene `webkit2gtk`, `gtk3`, `libsoup` — y
+tampoco tiene un servidor de ventanas (`$DISPLAY` vacío, sin X11/
+Wayland). El paquete que falla primero (`gdk-sys`, parte de GTK3) es
+justamente uno de los que exige la cadena de dependencias de Tauri en
+Linux. Se verificó contra la documentación actual de Tauri (búsqueda
+web, ya que el dominio `v2.tauri.app` está bloqueado por el proxy de
+egreso de este entorno) qué paquetes apt hacen falta en Ubuntu 24.04:
+`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `build-essential`, `curl`,
+`wget`, `file`, `libxdo-dev`, `libssl-dev`,
+`libayatana-appindicator3-dev`, `librsvg2-dev` — **ninguno instalado**,
+tal como exige explícitamente la sección 24 del pedido ("NO instalar
+cosas arbitrariamente. DETENTE y documenta exactamente qué falta").
+
+Esto significa que, en este contenedor específico, es imposible:
+compilar el crate `tauri` completo (falla antes de llegar siquiera al
+linker), abrir una ventana real (sin `$DISPLAY`), o por lo tanto probar
+en vivo login/POS/IndexedDB/offline/routing dentro del WebView (26.6).
+**No es un problema de arquitectura ni de diseño** — es exactamente el
+tipo de bloqueo de entorno que la sección 24 anticipaba y pedía
+documentar en vez de improvisar (instalando paquetes sin autorización)
+o simular.
+
+### 26.8. Qué queda pendiente para poder verificar de verdad (recomendación)
+
+1. Autorizar la instalación de los paquetes apt listados en 26.7 en un
+   entorno de desarrollo real (esta sandbox u otro con las mismas
+   limitaciones no alcanza) — o directamente hacer esta verificación en
+   una máquina de desarrollo real (Linux con GTK/webkit2gtk, o
+   Windows/macOS, que no tienen esta limitación en absoluto).
+2. Una vez exista una ventana real: ejecutar la prueba práctica de la
+   sección 14 del pedido (cargar KIPU → cargar catálogo → desconectar
+   Internet → abrir POS → crear venta → cerrar/reabrir la app →
+   verificar que la venta sigue ahí) y las rutas principales (login,
+   dashboard, POS, productos, clientes, ventas, inventario, caja,
+   configuración) navegando de verdad, no solo revisando el código.
+3. Implementar el proceso "sidecar" real en Rust: `src/lib.rs` todavía
+   NO arranca `server.js` — hoy solo apunta a `devUrl` (para
+   `cargo tauri dev`) sin ningún mecanismo de producción. Esto es una
+   decisión de alcance DELIBERADA de esta fase (mantener el backend
+   nativo "prácticamente vacío", sección 4) y no un descuido: requiere
+   decidir cómo distribuir un runtime Node junto al binario de Tauri
+   (bundlear Node completo — pesado, o compilar `server.js` a un
+   ejecutable standalone con una herramienta como `pkg`/`nexe` —
+   dependencia nueva a evaluar), y agregar la capability `shell`
+   (spawn de proceso) con el permiso más acotado posible — exactamente
+   el tipo de decisión que esta fase, por alcance, no debía tomar sin
+   poder verificarla.
+4. Confirmar si `next dev`/Turbopack necesita `unsafe-eval` en la CSP
+   para HMR (26.3) — solo se puede confirmar con una ventana real
+   corriendo `cargo tauri dev`.
+
+### 26.9. Qué NO se implementó en esta fase (deliberado)
+
+Ningún comando Rust propio, ningún `TauriPrinterTransport`, ningún
+plugin de Bluetooth/USB/shell/filesystem/network, ninguna integración
+con `PrinterTransport`/`PrinterManager`/`EscPosEncoder`/`TicketData`
+(se verificó que siguen compilando y sus 65+ tests de impresión siguen
+pasando — sección 26.10 — pero no se tocó ni un archivo de
+`lib/offline/printing/`), Android, iOS, Capacitor, Electron, APIs
+Win32/COM/spooler específicas de Windows, ni ningún instalador firmado
+de producción. Cero cambios a la lógica comercial, autenticación,
+sincronización, backend, Prisma o RLS.
