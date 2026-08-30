@@ -2843,3 +2843,237 @@ existir ningún botón de imprimir visible), ninguna selección de
 sucursal/POS multi-sucursal, ningún campo `cashierId`/`cashierName` en
 `LocalSale`, ninguna descarga/renderizado de logo como imagen,
 Bluetooth, USB, red, Tauri, Windows, Android, impresión física.
+
+## 25. Fase Offline 4.6 — Transporte de impresión por red/IP: auditoría técnica y decisión de DETENER la fase
+
+Sexta subfase de "Offline 4", autorizada explícitamente por separado
+para implementar `NetworkTransport`. Esta sección documenta por qué la
+fase se DETIENE en la etapa de auditoría (sección 3 del pedido) en vez
+de completarse: la implementación real de un transporte TCP hacia una
+impresora de red desde el navegador **no es posible** con el stack
+actual (Next.js SPA client-rendered, sin Tauri/Electron), y la
+instrucción explícita de la fase es detenerse ante ese hallazgo en vez
+de simular una solución.
+
+### 25.1. Qué es técnicamente posible desde el navegador — auditoría exhaustiva
+
+Se revisaron TODAS las APIs de red disponibles en un navegador estándar
+que podrían, en principio, alcanzar `IP:9100` (el puerto RAW/JetDirect
+que usa la inmensa mayoría de impresoras térmicas ESC/POS de red):
+
+- **`fetch()`/`XMLHttpRequest`**: solo HTTP(S). Una impresora de red en
+  el puerto 9100 no habla HTTP — es un socket TCP crudo que espera
+  bytes ESC/POS directos. Un `fetch("http://192.168.x.x:9100", ...)`
+  no abre ese socket: intenta un handshake HTTP que la impresora no
+  entiende, y falla (o, peor, algunas impresoras devuelven basura/se
+  cuelgan ante bytes HTTP no esperados). Confirmado: **no es una
+  solución TCP real**, exactamente la trampa que la instrucción pidió
+  no caer.
+- **`WebSocket`**: viaja sobre TCP, pero exige que el destino complete
+  un handshake HTTP Upgrade específico del protocolo WebSocket antes de
+  aceptar ningún byte de aplicación. Una impresora RAW/9100 no
+  implementa ese handshake — un `new WebSocket("ws://ip:9100")` nunca
+  llega a `OPEN`, se cae con un error de conexión.
+- **`WebTransport`**: requiere un servidor HTTP/3 (QUIC) del lado
+  destino. Ninguna impresora térmica lo implementa.
+- **`RTCPeerConnection`/`RTCDataChannel` (WebRTC)**: requiere
+  señalización SDP/ICE con un peer que hable WebRTC (típicamente vía un
+  servidor de señalización); no existe forma de abrir un canal punto a
+  punto no negociado hacia una IP:puerto arbitraria, y una impresora no
+  es un peer WebRTC.
+- **`WebUSB`/`WebSerial`/`Web Bluetooth`**: transportes DISTINTOS (USB,
+  serie, BLE) — no aplican a red/IP, y además quedan fuera del alcance
+  de ESTA fase de todos modos (reservados a subfases futuras).
+- **Extensión de navegador con permisos de socket** (ej. la API legada
+  `chrome.sockets.tcp` de Chrome Apps): API descontinuada — Chrome Apps
+  está eliminado de Chrome desde 2025 en la mayoría de plataformas, y de
+  todas formas requeriría distribuir/instalar una extensión con
+  permisos elevados, infraestructura equivalente en espíritu a "una
+  aplicación nativa" — explícitamente fuera de esta fase.
+
+**Conclusión de la auditoría**: ningún navegador estándar expone una
+API para que una página web abra un socket TCP arbitrario hacia una
+`IP:puerto` arbitraria. Esto no es un descuido de la plataforma — es
+una restricción DELIBERADA del modelo de seguridad del navegador (la
+misma razón de fondo detrás de CORS/mixed-content/SSRF: una página web
+no debe poder tocar libremente servicios internos de la red del
+usuario). No existe ningún "truco" de `fetch()`/WebSocket/etc. que lo
+evite genuinamente.
+
+### 25.2. Punto adicional específico de una SaaS con backend en la nube
+
+Incluso descartando la limitación del navegador: KIPU es una SaaS —
+`next.config.ts` usa `output: "standalone"` (servido típicamente desde
+un entorno de despliegue centralizado, no necesariamente en la LAN del
+comercio) y el backend NestJS igual. Un proxy del lado servidor
+(cualquiera, Next.js o el backend) que reenviara bytes hacia
+`192.168.x.x:9100` **tampoco alcanzaría la impresora**: las direcciones
+IP privadas (RFC 1918, `192.168.x.x`/`10.x.x.x`/`172.16-31.x.x`) no son
+enrutables desde Internet — ningún servidor fuera de la LAN del
+comercio puede alcanzarlas, sin importar el lenguaje o runtime que use.
+Esto es justamente por qué la instrucción de esta fase prohíbe depender
+del backend para imprimir (sección 24/20 del pedido): **solo un
+proceso que corra físicamente dentro de la LAN del comercio** — el
+navegador del cajero, o un agente/app instalado en ese mismo
+dispositivo — puede alcanzar la impresora. El navegador es lo único que
+hoy corre ahí, y carece de la API necesaria (25.1).
+
+### 25.3. Dónde entraría `NetworkTransport` — arquitectura ya preparada desde Offline 4.4
+
+La auditoría de `PrinterTransport`/`PrinterManager`/`PrinterDevice`
+confirma que el punto de extensión YA es correcto y no necesita ningún
+cambio para recibir un transporte real el día que exista una vía de
+conexión real:
+
+- `TransportKind` (`printer-transport.ts`) ya incluye `"network"` desde
+  Offline 4.4 — sin cambios necesarios.
+- `PrinterManager.connect()` ya resuelve el transporte real vía una
+  `transportFactories[kind]` inyectada DESDE AFUERA (nunca instanciada
+  dentro de `PrinterManager`) — agregar `NetworkTransport` es, en
+  teoría, registrar `{ network: (config) => new NetworkTransport(config) }`
+  al construir `PrinterManager` (en la futura UI de Offline 4.9), CERO
+  cambios en `PrinterManager`, `EscPosEncoder`, `TicketData`,
+  `ticket-mapper.ts` ni el POS — exactamente como pedía esta fase.
+- `PrinterTransportConfig` (`types.ts`) hoy solo declara `address?:
+  string` — insuficiente para `{ host, port }` por separado. Ampliarlo
+  es un cambio trivial y NO se hizo en esta fase (no tiene sentido
+  agregar un campo de configuración para un transporte que no puede
+  conectar de verdad todavía — se dejaría un tipo "a medio implementar"
+  sin ningún consumidor real).
+
+Es decir: **el trabajo de diseño de la arquitectura de impresión (Offline
+4.4) ya está listo para recibir `NetworkTransport` sin fricción**. Lo
+que falta no es diseño de esa arquitectura — es la infraestructura de
+transporte real (agente/puente local, o un shell nativo), que la
+sección 25.1/25.2 muestra que no puede resolverse solo con código de
+navegador.
+
+### 25.4. Opciones evaluadas (pedidas explícitamente en la sección 3 del pedido)
+
+**A. Agente/puente local** (un proceso pequeño — ej. Node/Go/Rust —
+que el cajero instala UNA vez en el dispositivo que tiene la impresora
+conectada, y que corre en segundo plano):
+
+- *Arquitectura propuesta*: navegador (KIPU, `https://...`) →
+  `fetch()`/`WebSocket` a `http://localhost:PUERTO_AGENTE` (el
+  navegador SÍ permite llamadas HTTP en texto plano hacia `localhost`
+  desde una página HTTPS — no es mixed-content, es una excepción
+  estándar del navegador) → el agente abre un socket TCP crudo real
+  (`net.Socket` en Node, o equivalente) hacia `IP:puerto` de la
+  impresora → reenvía los bytes ESC/POS tal cual los generó
+  `EscPosEncoder`, sin tocarlos.
+- *Protocolo propuesto*: HTTP `POST /print` con el `Uint8Array` como
+  cuerpo binario (`application/octet-stream`) + `host`/`port` de la
+  impresora destino en query string o headers; respuesta HTTP con éxito/
+  error mapeable a `PrinterErrorCode`. Un `WebSocket` alternativo
+  permitiría notificar estados intermedios (`connecting`/`printing`) en
+  vez de un único request/response, pero HTTP simple ya alcanza para
+  el contrato mínimo de `PrinterTransport` (`connect`/`write`/
+  `disconnect`/`getStatus`).
+- *Seguridad — riesgos reales, no hipotéticos*: un servicio HTTP en
+  `localhost` es alcanzable por CUALQUIER pestaña/proceso de la MISMA
+  máquina, no solo por KIPU — sin una validación estricta de origen
+  (header `Origin`/`Referer` == el dominio real de KIPU) cualquier sitio
+  malicioso abierto en otra pestaña podría usar el agente como un proxy
+  para escribir bytes arbitrarios hacia cualquier `IP:puerto` de la LAN
+  del comercio (variante local de SSRF). CSRF aplica en el mismo
+  sentido si el agente acepta requests simples sin verificar origen. No
+  hay forma de servir el agente por HTTPS real sin un certificado válido
+  para `localhost` (los navegadores no permiten certificados
+  autofirmados sin advertencias) — HTTP plano en `localhost` es
+  aceptado por el navegador, pero sigue siendo texto plano dentro de la
+  propia máquina (riesgo menor, pero no cero, si hay otro proceso
+  local hostil). **Tensión con la instrucción de esta fase**: la
+  sección 6 del pedido prohíbe guardar contraseñas/tokens/secretos, pero
+  un agente sin ningún mecanismo de emparejamiento/token es exactamente
+  el escenario de SSRF local descrito arriba — resolver esto bien
+  probablemente necesita ALGÚN secreto de emparejamiento (aunque sea
+  efímero, generado por el agente y mostrado una vez al usuario para
+  pegarlo en KIPU), lo cual esta fase no puede decidir unilateralmente
+  y por eso queda señalado para autorización explícita, no
+  implementado.
+- *Instalación/mantenimiento*: el cajero (o un técnico de soporte)
+  tendría que descargar, instalar y mantener corriendo un binario por
+  sistema operativo (Windows/Mac/Linux) en cada dispositivo físico con
+  impresora — fricción de despliegue real para un producto SaaS que hoy
+  no requiere instalar nada; superficie de mantenimiento nueva
+  (versionado propio, actualizaciones, soporte multiplataforma).
+- *Ventajas*: no exige reescribir el POS como aplicación nativa; el
+  navegador sigue siendo el shell principal de KIPU; es el mismo patrón
+  que usan productos de impresión web ya establecidos en el mercado
+  (agentes de impresión de terceros para POS web).
+  *Desventajas*: fricción de instalación por dispositivo, superficie de
+  ataque local nueva que exige un diseño de seguridad cuidadoso
+  (autenticación del agente, binding solo a `127.0.0.1`, validación de
+  origen), tensión sin resolver con la regla de "no guardar secretos".
+
+**B. Aplicación nativa completa** (reescribir el cliente de KIPU como
+app de escritorio dedicada): descartada — desproporcionada frente al
+problema puntual (imprimir), y contradice la naturaleza de KIPU como
+producto SaaS accesible por navegador.
+
+**C. Tauri** (envolver el mismo frontend Next.js/React existente en un
+shell Tauri, que sí puede abrir sockets TCP reales vía su backend en
+Rust, expuestos al JS del front mediante comandos Tauri con permisos
+explícitos):
+
+- *Ventaja principal*: reutiliza el 100% del código React/Next.js del
+  POS actual — no es una reescritura, es empaquetar la misma SPA con
+  capacidades nativas adicionales, con un modelo de permisos explícito
+  y auditable (a diferencia de un agente HTTP casero, Tauri ya resuelve
+  el problema de "qué puede pedir el JS y qué no" de forma madura).
+  Arquitectónicamente es la opción más limpia a mediano/largo plazo.
+- *Desventaja*: adoptar Rust + un pipeline de build/distribución/firma
+  de instaladores por sistema operativo es un cambio de plataforma
+  mayor, no una subfase — explícitamente fuera de alcance aquí (la
+  instrucción lo prohíbe expresamente para esta fase).
+
+**D. Impresoras con interfaz HTTP/IPP propia** (en vez de socket crudo
+9100): algunos modelos exponen una API HTTP/IPP/AirPrint además del
+puerto RAW. En teoría, si la impresora sirve HTTP con CORS permisivo,
+un `fetch()` directo desde el navegador podría funcionar SIN agente ni
+Tauri — pero (a) exige HTTPS en la propia impresora para evitar
+mixed-content desde una página HTTPS de KIPU, algo rarísimo en
+impresoras térmicas económicas; (b) depende 100% del modelo/fabricante,
+sin ninguna garantía general; (c) el pedido de esta fase es soportar
+"una impresora térmica compatible" genérica, no un fabricante
+específico. Se documenta como opción residual — no una solución
+general que esta fase pueda declarar "implementada".
+
+### 25.5. Recomendación
+
+Ninguna opción es implementable HOY dentro del alcance autorizado de
+esta subfase (`NetworkTransport` sin agente ni Tauri). Para desbloquear
+impresión de red real, recomiendo presentarle al usuario dos caminos
+posibles, cada uno como su PROPIA subfase separada, explícitamente
+autorizada:
+
+1. **Diseño de seguridad detallado del agente/puente local (opción A)**
+   como su propia subfase — antes de escribir código, decidir
+   explícitamente: mecanismo de emparejamiento/token (tensiona con "no
+   guardar secretos", necesita una decisión consciente del usuario),
+   validación de origen, alcance del agente (¿un binario por SO,
+   distribuido cómo?), y solo DESPUÉS de esa autorización, implementar
+   `NetworkTransport` (el lado navegador, que sí respetaría
+   `PrinterTransport` sin tocar `PrinterManager`) contra ese agente.
+2. **Evaluar Tauri como cambio de plataforma** (opción C) — más limpio
+   a mediano plazo pero un compromiso de arquitectura mucho mayor que
+   una subfase, con su propio proceso de decisión.
+
+No recomiendo avanzar a "Offline 4.7 Bluetooth BLE" asumiendo que ese
+transporte no tiene el mismo problema: Web Bluetooth SÍ es una API real
+del navegador (a diferencia de TCP crudo), pero trae sus propias
+restricciones (requiere gesto explícito del usuario, soporte de
+navegador limitado, GATT en vez de un socket simple) que ameritan su
+propia auditoría dedicada antes de asumir que es viable sin fricción.
+
+### 25.6. Qué se implementó en esta fase: nada de código de producción
+
+Cero archivos en `src/` (frontend o backend) modificados o creados.
+Únicamente esta sección de `docs/architecture.md` y la entrada
+correspondiente en `docs/PROJECT_PLAN.md`. No se agregó ningún tipo
+`NetworkTransport`, ningún campo `host`/`port` a
+`PrinterTransportConfig`, ningún test nuevo — implementar cualquiera de
+esos cambios sin una vía de conexión real hubiera sido exactamente la
+"solución parecida que técnicamente no cumple el objetivo" que la
+instrucción de esta fase pidió explícitamente evitar.

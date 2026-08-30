@@ -1452,6 +1452,57 @@ detalle técnico completo.
       cambios de backend, cero botón de imprimir en el POS, cero
       transporte real, cero Bluetooth/USB/red/Tauri/Windows/Android.
 
+## Fase Offline 4.6 — Transporte de impresión por red/IP 🛑 DETENIDA (auditoría entregada, sin implementación)
+
+Sexta subfase de "Offline 4", autorizada explícitamente para
+`NetworkTransport`. Ver `docs/architecture.md` sección 25 para el
+detalle técnico completo — se documenta acá el resultado, no una lista
+de tareas completadas, porque la fase NO se completó: se detuvo en la
+etapa de auditoría, tal como pedía explícitamente la instrucción ante
+este hallazgo ("no implementes una solución 'parecida' que técnicamente
+no cumpla el objetivo").
+
+- [x] Auditoría exhaustiva de las APIs de red del navegador (`fetch`/
+      `XMLHttpRequest`, `WebSocket`, `WebTransport`, `WebRTC`,
+      extensiones con permisos de socket): **ninguna permite abrir un
+      socket TCP arbitrario hacia `IP:puerto`** — restricción
+      deliberada del modelo de seguridad del navegador, no un descuido.
+      `fetch("http://ip:9100", ...)` NO es una solución TCP real
+      (intenta un handshake HTTP que la impresora RAW/9100 no entiende).
+- [x] Punto adicional auditado: tampoco un proxy del lado servidor
+      (Next.js o el backend NestJS) alcanzaría la impresora — las IPs
+      privadas de la LAN del comercio no son enrutables desde un
+      servidor en la nube. Solo algo que corra físicamente en esa LAN
+      (el navegador del cajero, o un agente instalado ahí) puede
+      alcanzarla.
+- [x] Arquitectura de Offline 4.4 confirmada como YA lista para recibir
+      `NetworkTransport` sin fricción el día que exista una vía de
+      conexión real (`TransportKind` ya incluye `"network"`,
+      `PrinterManager` ya resuelve transportes vía fábricas inyectadas
+      desde afuera) — el punto de extensión no necesita ningún cambio.
+- [x] Opciones evaluadas y documentadas con arquitectura/protocolo/
+      seguridad/instalación/mantenimiento/ventajas/desventajas: (A)
+      agente/puente local — HTTP en `localhost` reenviando bytes por
+      TCP crudo, con riesgos reales de SSRF local/CSRF y una tensión sin
+      resolver con "no guardar secretos" (necesitaría algún
+      emparejamiento); (B) aplicación nativa completa — descartada,
+      desproporcionada; (C) Tauri — arquitectónicamente la más limpia a
+      mediano plazo, pero un cambio de plataforma mayor, fuera de
+      alcance de una subfase; (D) impresoras con interfaz HTTP/IPP
+      propia — opción residual, no generalizable.
+- [x] Recomendación entregada: autorizar por separado, como subfases
+      propias, (1) el diseño de seguridad detallado del agente/puente
+      local, o (2) evaluar Tauri como cambio de plataforma. NO se
+      recomienda avanzar a Bluetooth BLE asumiendo que no tiene
+      problemas similares — amerita su propia auditoría.
+- [x] **Cero código de producción implementado** — ningún
+      `NetworkTransport`, ningún campo `host`/`port` en
+      `PrinterTransportConfig`, ningún test nuevo, cero dependencias
+      nuevas. Solo documentación (`architecture.md` sección 25 y esta
+      entrada). 215/215 frontend, 335/335 backend,
+      `verify:tenant-isolation` 23/23 — sin cambios, exactamente los
+      mismos números que al cierre de Offline 4.5 (nada se tocó).
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,
