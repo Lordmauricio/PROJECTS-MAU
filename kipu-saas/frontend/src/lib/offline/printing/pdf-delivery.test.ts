@@ -14,7 +14,11 @@ import { downloadPdfBytes, presentTicketPdf } from "./pdf-blob";
 
 const BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // "%PDF"
 
-type NavWithShare = Navigator & {
+// `Omit` y no una intersección: `lib.dom` declara `share`/`canShare` como
+// propiedades requeridas de Navigator, y `delete` sobre una propiedad
+// requerida es un error de tipos. Acá se necesitan opcionales porque el test
+// simula justamente un navegador que NO las tiene.
+type NavWithShare = Omit<Navigator, "share" | "canShare"> & {
   share?: (data: ShareData) => Promise<void>;
   canShare?: (data?: ShareData) => boolean;
 };
