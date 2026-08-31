@@ -1643,6 +1643,80 @@ offline, sin depender del backend. Ver `docs/architecture.md` sección
       limpios. Cero cambios de backend, cero Bluetooth/USB/red/Tauri,
       cero hardware.
 
+## Fase Offline 4.14 — PWA / App Shell offline ✅
+
+Primera fase que hace de KIPU una aplicación **utilizable sin Internet**,
+no solo una aplicación con datos offline. Ver `docs/architecture.md`
+sección 28 para el detalle técnico completo y el procedimiento de prueba
+en un Android real.
+
+El diagnóstico que la originó: Offline 1–4.6B habían construido y probado
+todo lo que ocurre DESPUÉS de que la app abre (catálogo local, venta
+offline, cola de sincronización, ticket PDF térmico), pero todo eso vivía
+aguas abajo de un paso que no existía — que el navegador pudiera entregar
+el HTML sin conexión. La documentación de Next 16 lo dice explícitamente:
+sin Service Worker, una recarga sin red falla siempre.
+
+- [x] **4.14.1 — Manifest.** `app/manifest.ts` (ruta de metadatos del App
+      Router, servida en `/manifest.webmanifest`), CERO cambios a
+      `next.config.ts`. Identidad visual NO inventada: `theme_color`
+      `#18181b` es el `zinc-900` del sidebar y `background_color`
+      `#fafafa` el `zinc-50` del `<body>`. Iconos 192/512 `any` + 512
+      `maskable` generados con el MISMO wordmark que ya muestra la app
+      (KIPU en Geist SemiBold sobre zinc-900). `viewport` explícito, sin
+      bloquear el zoom (accesibilidad en un POS de uso diario).
+- [x] **4.14.2/4.14.3 — Service Worker y navegación offline.**
+      `public/sw.js` con alcance `/` (un worker bajo `/_next/static/...`
+      no puede tomar la raíz sin cabecera `Service-Worker-Allowed`). Se
+      descartaron `experimental.useOffline` (solo cubre navegaciones soft,
+      exige tocar `next.config.ts`) y Serwist (dependencia de runtime
+      innecesaria). Precarga de `/`, `/login`, `/dashboard` y
+      `/sales/pos` descubriendo los chunks con hash DESDE el HTML —
+      ninguna lista escrita a mano que se rompa en el próximo build— y las
+      fuentes de `next/font` desde el CSS. Verificado en Chromium real:
+      tras poner el navegador offline y recargar, la app abre.
+- [x] **4.14.4 — Ticket PDF en Android.** `presentTicketPdf` elige el
+      mejor camino: `navigator.share` con archivos (hoja del sistema de
+      Android → visor, Imprimir, guardar), `window.open` en escritorio
+      (comportamiento previo intacto), `<a download>` como último
+      recurso. Bug real corregido: se revocaba el object URL en el mismo
+      tick del `click()`, lo que abortaba la descarga en Android.
+- [x] **4.14.5 — Recorrido móvil.** Desborde horizontal medido de verdad
+      a 360x780 en login, dashboard, POS, historial y menú: cero en
+      todos. Corregido un bug real de accesibilidad que encontró el
+      propio E2E: los `<label>` de `/login` no estaban asociados a sus
+      campos. Las 13 pantallas con tablas que desbordan siguen sin
+      corregirse — quedan fuera del recorrido que el negocio necesita.
+- [x] **4.14.6 — Prueba fundamental en navegador real.** Playwright
+      (`@playwright/test`, devDependency) recorre los 25 pasos del flujo
+      en Chromium contra el build de producción: login, catálogo, App
+      Shell instalado, corte de red, recarga sin conexión, venta offline,
+      historial, ticket PDF (verificado con pdfjs: 1 página, 226.77 pt =
+      80 mm, contenido real, "PENDIENTE DE SINCRONIZAR"), segunda recarga
+      sin red con la venta intacta, reconexión y sincronización
+      EXACTAMENTE UNA VEZ con su `idempotencyKey`. Pasa entero.
+- [x] **4.14.7 — Documentación y regresión.** Guía paso a paso para
+      probar en un Android real vía `adb reverse` (sección 28.8), que es
+      lo que da contexto seguro sin VPS ni dominio HTTPS.
+
+**Reglas respetadas, verificadas por tests:** el Service Worker nunca
+intercepta un método distinto de GET (un POST de venta jamás pasa por
+él), nunca cachea otro origen (la API), nunca cachea una petición con
+`Authorization`, y no guarda ningún dato de negocio — Dexie/IndexedDB y
+`sync_queue` siguen siendo la única fuente de verdad offline. `activate`
+no toca IndexedDB: actualizar la app no puede perder una venta pendiente.
+
+**Limitación explícita, NO marcada como verificada:** pulsar "Instalar
+aplicación" y el comportamiento de la hoja de compartir de Chrome Android
+no se pueden automatizar — son diálogos del navegador y del sistema
+operativo. Quedan como prueba manual documentada.
+
+**Fuera de alcance, sin tocar:** Bluetooth, USB, WebUSB, Bluetooth
+Classic, ESC/POS físico, `NetworkTransport`, Administrador de
+Dispositivos, Tauri Desktop, Tauri Android, Capacitor, React Native,
+aplicación Android nativa, VPS, despliegue público, notificaciones push.
+Cero cambios de backend.
+
 ## Reglas de desarrollo aplicadas (sección 16 del prompt)
 
 - Se investigó el entorno antes de elegir versiones (Node 22, Prisma 7,

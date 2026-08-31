@@ -3564,3 +3564,216 @@ Administrador de Dispositivos, ninguna aplicación Android — el diseño
 del PDF (ancho fijo, sin JS embebido, sin dependencias de plataforma)
 es compatible con un navegador móvil/PWA/una futura app Tauri/Android
 sin cambios, pero ninguna de esas plataformas se implementó acá.
+
+## 28. Fase Offline 4.14 — PWA / App Shell offline
+
+Cierra el hueco que dejaban Offline 1–4.6B. Toda la maquinaria offline
+(IndexedDB/Dexie, `sync_queue`, Sync Engine, POS offline, ticket PDF
+térmico) estaba construida y probada, pero vivía **aguas abajo de un
+primer paso que no existía**: que el navegador pudiera entregar el HTML
+sin conexión. Sin eso, KIPU era una app web con datos offline, no una
+app offline.
+
+### 28.1. Por qué un Service Worker y no otra cosa
+
+La documentación de Next 16 lo dice sin rodeos
+(`node_modules/next/dist/docs/01-app/02-guides/offline-support.md`):
+
+> *"A full page reload while offline still fails because the browser
+> needs the network to deliver the HTML; full offline loads would need a
+> service worker."*
+
+Se evaluaron y descartaron dos alternativas:
+
+- **`experimental.useOffline` (Next 16)**: solo cubre navegaciones
+  *soft* y Server Actions —mantiene la petición pendiente y la reintenta
+  al volver la red—, no un arranque en frío. Además es experimental y
+  exigiría activar `cacheComponents` y `partialPrefetching` en
+  `next.config.ts`, que esta fase no toca.
+- **Serwist** (la opción que recomienda la propia guía de Next para
+  caché offline): habría agregado una dependencia de runtime y una capa
+  de generación de manifiestos. Un SW escrito a mano no agrega ninguna
+  dependencia y deja auditable, línea por línea, qué se cachea y qué no
+  — que en este proyecto es un requisito de seguridad, no una
+  preferencia estética.
+
+### 28.2. `public/sw.js` y no un módulo empaquetado
+
+La guía de PWA de Next sugiere registrar el worker con
+`new URL('../lib/service-worker.js', import.meta.url)`, lo que hace que
+Turbopack lo empaquete y lo sirva bajo `/_next/static/...`. Un worker
+servido desde ahí **solo puede tomar ese directorio como alcance** salvo
+que el servidor mande la cabecera `Service-Worker-Allowed`, y hace falta
+alcance `/` para controlar `/login`, `/dashboard` y `/sales/pos`. Desde
+`public/` el alcance raíz es automático y no depende de ninguna cabecera.
+
+Contrapartida asumida: el SW no pasa por TypeScript ni por el bundler.
+Se compensa con los tests, que **cargan y ejecutan el archivo real**
+dentro de un scope simulado (`src/lib/pwa/test-support/sw-harness.ts`)
+en vez de reimplementar sus reglas — si alguien cambia una regla de
+caché, los tests cambian de resultado.
+
+### 28.3. Estrategia de caché
+
+| Petición | Estrategia | Motivo |
+|---|---|---|
+| Método ≠ GET | **passthrough** | El handler retorna sin `respondWith`: un POST de venta nunca es interceptado |
+| Otro origen (la API) | **passthrough** | El backend vive en `NEXT_PUBLIC_API_URL`, otro origen |
+| Cabecera `Authorization` | **passthrough** | Defensa en profundidad si la API pasara al mismo dominio |
+| Petición RSC (`?_rsc=`/`RSC:1`) | **passthrough** | Un flujo RSC viejo rompe el enrutado |
+| `/_next/static/**` | **cache-first** | El nombre lleva el hash del contenido: no puede quedar obsoleto |
+| Navegación | **network-first** | No servir HTML viejo estando online; caché como red de seguridad |
+| Resto same-origin GET | **stale-while-revalidate** | Iconos, manifest, favicon |
+
+**Cero datos de negocio en la caché.** Productos, clientes, ventas, cola
+de sincronización y contexto local siguen SOLO en IndexedDB. `activate`
+borra únicamente cachés `kipu-*` de versiones anteriores y **nunca toca
+IndexedDB**: actualizar la app no puede perder una venta sin
+sincronizar. No hay Background Sync — reintentar es trabajo de
+`auto-sync.ts`, y duplicarlo abriría la puerta a dos motores compitiendo
+por la misma cola.
+
+### 28.4. Precarga sin lista escrita a mano
+
+Turbopack emite los chunks con el hash del contenido en el nombre
+(`/_next/static/chunks/08ttfj81-47mu.js`), así que cualquier lista de
+precarga escrita a mano quedaría obsoleta en el primer build. En el
+`install`, el SW descarga el HTML de `/`, `/login`, `/dashboard` y
+`/sales/pos` y **extrae sus propias referencias** `/_next/static/**`;
+después lee el CSS ya cacheado para recuperar las fuentes de
+`next/font`, que solo aparecen ahí y en relativo
+(`url(../media/*.woff2)`). Sin ese segundo nivel la app abre offline
+pero con la tipografía de reserva.
+
+Las tres rutas de negocio son **estáticas** en el build (`○` en la
+salida de `next build`), así que su HTML es un archivo prerenderizado y
+precachearlo no depende del servidor en runtime.
+
+### 28.5. Hallazgo verificado sobre las navegaciones RSC
+
+Se anticipó como riesgo que las navegaciones *soft* del App Router
+fallaran offline al no poder cargar su payload RSC. Verificado en
+Chromium real: Chrome reporta
+
+```
+Failed to fetch RSC payload for /login. Falling back to browser navigation.
+```
+
+es decir, **Next cae solo a una navegación dura**, que el SW resuelve
+desde caché. No hizo falta ningún código adicional.
+
+### 28.6. El ticket PDF en Android
+
+`window.open(blobUrl)` —el único camino hasta Offline 4.6B— no sirve en
+Chrome Android: no renderiza PDFs `blob:` en una pestaña (los descarga o
+ignora la apertura) y fuera de un gesto de usuario vigente se bloquea
+como popup. `presentTicketPdf` (`printing/pdf-blob.ts`) elige el mejor
+camino disponible:
+
+1. **`navigator.share` con archivos** (Web Share API nivel 2) — en
+   Android abre la hoja del sistema: visor de PDF, **Imprimir** (que
+   llega al servicio de impresión de Android y de ahí a cualquier
+   impresora configurada), guardar, compartir. Funciona sin conexión: el
+   archivo ya está en memoria. La capacidad se consulta con el archivo
+   REAL (`canShare({files:[file]})`), porque hay navegadores que
+   comparten texto pero no PDFs.
+2. **`window.open`** — el comportamiento previo, intacto en escritorio.
+3. **`<a download>`** — último recurso universal.
+
+Esto **no es impresión física**: no hay Bluetooth, USB ni ESC/POS. El
+usuario imprime con el sistema de impresión de su propio dispositivo,
+que es la estrategia V1.
+
+Casos de borde resueltos: cancelar la hoja de compartir devuelve
+`"cancelled"` y no es un error; `NotAllowedError` (activación por gesto
+perdida mientras se generaba el PDF) cae al camino siguiente.
+
+**Bug real corregido**: `downloadPdfBytes` revocaba el object URL en el
+mismo tick que el `click()`. El click solo PROGRAMA la descarga, así que
+en Android el navegador se quedaba sin el blob antes de empezar a
+escribir el archivo. Ahora se libera 1 s después.
+
+### 28.7. Contexto seguro — condiciona cómo se prueba
+
+Un Service Worker **solo se registra sobre HTTPS o `localhost`**. Servir
+KIPU al teléfono como `http://192.168.1.x:3000` **no registra el worker**
+y nada del arranque offline funciona. No es un defecto de la
+implementación: es una regla del navegador.
+
+### 28.8. Cómo probar en un Android real (sin VPS ni dominio HTTPS)
+
+Procedimiento verificado en su parte de PC; los pasos del teléfono son
+**prueba manual pendiente**, no verificada en este entorno.
+
+**En la PC**
+
+```bash
+cd kipu-saas/frontend
+npm run build
+npm run start           # sirve en http://localhost:3000
+```
+
+> Nota: `next start` avisa que no es lo indicado con
+> `output: "standalone"`. Funciona igual para esta prueba. Para un
+> despliegue real, lo correcto es `node .next/standalone/server.js`,
+> copiando antes `public/` y `.next/static/` junto al `server.js` — el
+> servidor standalone no los sirve por sí solo.
+
+**Conectar el teléfono (esto es lo que da contexto seguro)**
+
+1. En Android: Ajustes → Acerca del teléfono → tocar 7 veces "Número de
+   compilación" → volver → Opciones de desarrollador → **Depuración USB**.
+2. Conectar el teléfono por cable USB y aceptar el diálogo de confianza.
+3. En la PC: `adb devices` debe listarlo.
+4. Redirigir el puerto: **`adb reverse tcp:3000 tcp:3000`**.
+
+Ahora el teléfono ve la app en `http://localhost:3000`, que **sí es
+contexto seguro**, y el Service Worker se registra.
+
+**En el teléfono**
+
+5. Abrir Chrome → `http://localhost:3000`.
+6. Menú ⋮ → **Instalar aplicación** / *Añadir a pantalla de inicio*. Debe
+   aparecer el icono KIPU.
+7. Iniciar sesión (con Internet) y abrir el POS una vez, para que baje
+   el catálogo y se precachee el App Shell.
+8. **Activar modo avión** (o apagar Wi-Fi y datos).
+9. Cerrar KIPU por completo (sacarla de recientes).
+10. Abrir KIPU **desde el icono instalado**. Debe cargar sin conexión.
+11. Ir al POS: el catálogo local debe estar.
+12. Agregar productos, confirmar una venta. Debe quedar "pendiente de
+    sincronizar".
+13. "Ver / Imprimir ticket" → debe abrirse la hoja de compartir de
+    Android con el PDF. Desde ahí, "Imprimir".
+14. Cerrar y volver a abrir KIPU, todavía sin conexión: la venta sigue.
+15. Reactivar Internet y esperar. La venta debe sincronizarse **una sola
+    vez**.
+
+**Qué mirar si algo falla**: en la PC, `chrome://inspect#devices` →
+*inspect* sobre la pestaña del teléfono abre las DevTools remotas.
+En Application → Service Workers debe verse uno activo; en Cache Storage,
+`kipu-shell-v1` y `kipu-assets-v1`.
+
+### 28.9. Windows
+
+Misma PWA, sin trabajo adicional: Chrome o Edge → menú → *Instalar
+KIPU*. Queda como ventana propia (`display: "standalone"`) con el mismo
+comportamiento offline. En `localhost` el contexto ya es seguro, así que
+no hace falta nada equivalente a `adb reverse`.
+
+Esto reemplaza a Tauri como vía de acceso a escritorio para V1: Offline
+4.10.1 quedó detenida (dependencias de sistema ausentes, `frontendDist`
+apuntando a `public/`, proceso sidecar sin implementar) y **sigue
+detenida y pospuesta**.
+
+### 28.10. Qué NO se implementó en esta fase (deliberado)
+
+Ningún Bluetooth, USB, WebUSB, Bluetooth Classic, ESC/POS físico,
+`NetworkTransport`, Administrador de Dispositivos, Tauri Desktop, Tauri
+Android, Capacitor, React Native, aplicación Android nativa, VPS ni
+despliegue público. Ninguna notificación push (el manifest no declara
+`gcm_sender_id` ni se pide permiso de notificaciones). Ningún cambio de
+backend, de la lógica comercial, de la sincronización, de Dexie ni del
+generador del PDF térmico. Las 13 pantallas con tablas que desbordan en
+móvil siguen sin corregirse: quedan fuera del recorrido que el negocio
+necesita en Android.

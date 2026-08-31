@@ -768,6 +768,83 @@ RLS ni RBAC.
   mismos dos endpoints — solo cambia CUÁNDO se cachea localmente lo que
   ya era accesible.
 
+## Fase Offline 4.14 — PWA / App Shell offline: notas de seguridad específicas
+
+Una PWA agrega dos superficies nuevas que antes no existían: un Service
+Worker que puede interceptar TODAS las peticiones del origen, y un
+almacenamiento de caché persistente en el disco del dispositivo. Ambas se
+trataron como superficies de riesgo, no como detalles de rendimiento.
+
+**Qué NUNCA entra en la caché (verificado por tests, no solo declarado)**
+
+- **Cualquier método distinto de GET.** El handler `fetch` retorna sin
+  llamar a `respondWith`, así que la petición sale del navegador como si
+  el Service Worker no existiera. Un `POST /sales` jamás es interceptado,
+  cacheado ni encolado por el worker: la `sync_queue` de Offline 2 sigue
+  siendo la única cola de operaciones offline. Esto además elimina de raíz
+  el riesgo de que una venta se duplique por una capa de reintentos
+  paralela.
+- **Todo lo que no sea del propio origen.** El backend vive en
+  `NEXT_PUBLIC_API_URL`, otro origen, así que ninguna respuesta de la API
+  —catálogo, ventas, datos de la organización— puede quedar en disco.
+- **Cualquier petición con cabecera `Authorization`.** Defensa en
+  profundidad: si algún día la API pasara a servirse bajo el mismo
+  dominio que el frontend, `authorizedFetch` seguiría mandando el token y
+  esta regla impediría igual que una respuesta autenticada se guardara.
+- **Peticiones RSC** (`?_rsc=` o cabecera `RSC`), que son datos de
+  navegación ligados a un build concreto.
+- **Respuestas no OK, opacas o con `no-store`.**
+
+Un test recorre una sesión completa y audita que, al terminar, no queda
+NINGUNA URL de otro origen en ninguna caché, ni nada que contenga `/auth/`
+o `token`. Otro test hace la misma auditoría dentro del navegador real
+(Playwright), sobre las cachés que realmente escribió el worker.
+
+**Aislamiento multi-tenant.** No cambia: el Service Worker solo guarda el
+App Shell —HTML de rutas estáticas, JS, CSS, fuentes, iconos—, que es
+idéntico para todas las organizaciones y no contiene ningún dato de
+negocio. Los datos siguen en una base IndexedDB física distinta por
+organización (`kipu_local_<organizationId>`), exactamente como desde
+Offline 2. Un cambio de organización no necesita limpiar ninguna caché
+del worker porque no hay nada de esa organización adentro.
+
+**Actualizaciones no destruyen datos.** `activate` borra únicamente
+cachés cuyo nombre empieza por `kipu-` y no pertenecen a la versión
+actual. No toca IndexedDB ni `localStorage`: actualizar la app nunca puede
+perder una venta sin sincronizar. `skipWaiting` no se ejecuta
+automáticamente — activar un worker nuevo bajo una página que ya cargó los
+chunks del build anterior puede dejarla pidiendo archivos que ya no
+existen.
+
+**El manifest es un archivo público.** No contiene ningún dato de negocio,
+identificador de organización ni secreto; un test lo verifica
+explícitamente contra una lista de términos prohibidos.
+
+**El ticket PDF nunca sale del dispositivo.** `presentTicketPdf` y
+`downloadPdfBytes` no hacen ninguna petición de red (verificado con un
+espía sobre `fetch`): el PDF se genera en memoria y se entrega al sistema
+operativo por `navigator.share`, `window.open` o `<a download>`. No se
+sube a ningún servidor, no se cachea en el Service Worker y no lleva
+tokens ni credenciales dentro.
+
+**Autenticación sin cambios.** El arranque offline NO introdujo ninguna
+credencial local, ninguna contraseña almacenada ni ninguna verificación de
+sesión propia. Se conserva íntegra la lógica de Offline 4.1: un error de
+red al refrescar nunca se trata como sesión revocada. Iniciar sesión por
+primera vez en un dispositivo sigue requiriendo Internet, y es
+deliberado.
+
+**Contexto seguro.** Un Service Worker solo se registra sobre HTTPS o
+`localhost`; el navegador lo impone. Servir KIPU por HTTP en una IP de LAN
+no registra el worker (ver `docs/architecture.md` 28.7/28.8). Es una
+limitación de despliegue, no del código, y la vía recomendada para probar
+en un teléfono —`adb reverse`— la respeta en vez de evadirla.
+
+**Registro deshabilitado en desarrollo.** El worker no se registra bajo
+`next dev`, y además desregistra cualquiera que hubiera quedado de una
+sesión de producción en el mismo `localhost`, para que una caché vieja no
+enmascare un cambio de código durante el desarrollo.
+
 ## Qué queda pendiente (explícito, no oculto)
 
 - Administrador de dispositivos (UI + endpoint de solo lectura para listar
