@@ -21,7 +21,7 @@ import {
 } from "@/lib/offline/sale-sync-state";
 import { newIdempotencyKey } from "@/lib/offline/ids";
 import type { LocalOrgContext } from "@/lib/offline/types";
-import { downloadPdfBytes, pdfBlobUrl } from "@/lib/offline/printing/pdf-blob";
+import { downloadPdfBytes, presentTicketPdf } from "@/lib/offline/printing/pdf-blob";
 
 interface ProductView {
   id: string;
@@ -313,10 +313,14 @@ export default function POSPage() {
       ]);
       const ticket = await buildTicketFromLocalSale(db, orgContext, localSaleId);
       const bytes = await renderThermalPdf(ticket);
+      const filename = `ticket-${localSaleId}.pdf`;
       if (action === "view") {
-        window.open(pdfBlobUrl(bytes), "_blank");
+        // Offline 4.14.4: en Android abre la hoja del sistema (visor/
+        // Imprimir/guardar); en escritorio, la pestaña de siempre. Ver
+        // `pdf-blob.ts` para por qué no basta con `window.open`.
+        await presentTicketPdf(bytes, filename);
       } else {
-        downloadPdfBytes(bytes, `ticket-${localSaleId}.pdf`);
+        downloadPdfBytes(bytes, filename);
       }
     } catch {
       setTicketError("No se pudo generar el ticket. Podés reintentar en un momento.");
