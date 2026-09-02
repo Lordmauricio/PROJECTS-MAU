@@ -22,6 +22,50 @@ import {
 import { newIdempotencyKey } from "@/lib/offline/ids";
 import type { LocalOrgContext } from "@/lib/offline/types";
 import { downloadPdfBytes, presentTicketPdf } from "@/lib/offline/printing/pdf-blob";
+import { Badge, Button, Icon, IconButton, Sheet, EmptyState, ErrorState, type BadgeTone } from "@/components/ui";
+
+/**
+ * Offline 4.15 (rediseño Stitch) — ¿el viewport actual es de escritorio?
+ *
+ * Decide entre DOS layouts mutuamente excluyentes del carrito: panel
+ * persistente en escritorio (`aside`) vs. barra flotante + bottom sheet en
+ * móvil (`kipu_pos_m_vil_android`, la referencia visual de esta fase). Es
+ * una decisión real de qué renderizar, no solo CSS (`hidden md:flex`
+ * dejaría las DOS copias montadas en el DOM a la vez — mismos
+ * aria-label/htmlFor duplicados, rompe `getByLabelText` en los tests Y la
+ * accesibilidad real). Por eso se resuelve con `matchMedia`, con guarda
+ * explícita: este entorno de test (jsdom) no lo implementa, así que el
+ * valor por defecto (`false`, layout móvil) es exactamente el que ya
+ * esperaban los 25 tests existentes de esta pantalla.
+ */
+function useIsDesktopViewport(breakpointPx = 768): boolean {
+  // El valor inicial se lee en el inicializador perezoso de `useState`
+  // (parte del render, no del efecto) — el efecto de abajo SOLO se suscribe
+  // al evento `change` y llama a `setIsDesktop` desde ese callback, nunca de
+  // forma síncrona en el cuerpo del efecto (evita
+  // `react-hooks/set-state-in-effect`, que si se dispara acá SÍ es un error
+  // nuevo de esta fase, no uno de los preexistentes).
+  const [isDesktop, setIsDesktop] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia(`(min-width: ${breakpointPx}px)`).matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(`(min-width: ${breakpointPx}px)`);
+    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [breakpointPx]);
+  return isDesktop;
+}
+
+/** Iniciales para el placeholder del producto — Offline 4.15 decidió explícitamente NO mostrar fotos (sin sistema de imágenes real detrás). */
+function productInitials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "?";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
 
 interface ProductView {
   id: string;
@@ -48,18 +92,18 @@ interface PaymentLine {
 type Feedback = { kind: "synced" | "offline" | "conflict" | "error"; message: string };
 
 const FEEDBACK_STYLES: Record<Feedback["kind"], string> = {
-  synced: "bg-emerald-50 text-emerald-700",
-  offline: "bg-amber-50 text-amber-800",
-  conflict: "bg-red-50 text-red-700",
-  error: "bg-red-50 text-red-700",
+  synced: "bg-success-soft text-green-800",
+  offline: "bg-warning-soft text-amber-800",
+  conflict: "bg-danger-soft text-red-800",
+  error: "bg-danger-soft text-red-800",
 };
 
-const SYNC_BADGE: Record<SaleSyncState["kind"], { label: string; className: string }> = {
-  synced: { label: "Sincronizada", className: "bg-emerald-50 text-emerald-700" },
-  "offline-pending": { label: "Pendiente de sincronizar", className: "bg-amber-50 text-amber-700" },
-  syncing: { label: "Sincronizando…", className: "bg-sky-50 text-sky-700" },
-  conflict: { label: "Conflicto", className: "bg-red-50 text-red-700" },
-  error: { label: "Error", className: "bg-red-50 text-red-700" },
+const SYNC_BADGE: Record<SaleSyncState["kind"], { label: string; tone: BadgeTone }> = {
+  synced: { label: "Sincronizada", tone: "success" },
+  "offline-pending": { label: "Pendiente de sincronizar", tone: "warning" },
+  syncing: { label: "Sincronizando…", tone: "info" },
+  conflict: { label: "Conflicto", tone: "danger" },
+  error: { label: "Error", tone: "danger" },
 };
 
 export default function POSPage() {
@@ -89,6 +133,12 @@ export default function POSPage() {
   const [lastSaleId, setLastSaleId] = useState<string | null>(null);
   const [ticketBusy, setTicketBusy] = useState<string | null>(null);
   const [ticketError, setTicketError] = useState<string | null>(null);
+
+  // Offline 4.15 — puramente visual: en escritorio el carrito es un panel
+  // siempre visible (no usa este estado); en móvil vive en un bottom sheet
+  // que arranca cerrado y se abre solo al agregar el primer producto.
+  const [cartSheetOpen, setCartSheetOpen] = useState(false);
+  const isDesktop = useIsDesktopViewport();
 
   async function loadFromLocalDb() {
     if (!db) return;
@@ -179,6 +229,7 @@ export default function POSPage() {
   function handleAddToCart(product: ProductView) {
     setFeedback(null);
     setCart((prev) => addToCart(prev, product));
+    setCartSheetOpen(true);
   }
 
   function handleUpdateLine(productId: string, patch: Partial<CartLine>) {
@@ -336,310 +387,427 @@ export default function POSPage() {
 
   return (
     <AppShell>
-      <div className="p-4 md:p-6 grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
-        {/* 1) Búsqueda + 2) productos — primero en el orden del documento, así en celular aparecen arriba de todo. */}
-        <div className="md:col-span-2 space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <h1 className="text-lg font-semibold">Punto de venta</h1>
+      <div className="flex h-full flex-col md:flex-row md:gap-6 md:p-6">
+        {/* Columna principal: encabezado + buscador + grid de productos. */}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-center justify-between gap-2 px-4 py-3 md:px-0 md:py-0 md:pb-4">
+            <h1 className="text-lg font-semibold text-text">Punto de venta</h1>
             <ConnectionBadge />
           </div>
-          {loadError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>}
-          {neverSynced && !loadError && (
-            <p className="text-sm text-amber-800 bg-amber-50 rounded p-2">
-              Necesitás conexión a internet una primera vez para descargar tu catálogo de
-              productos y poder vender desde este dispositivo.
-            </p>
-          )}
 
-          <label htmlFor="pos-search" className="sr-only">
-            Buscar producto por nombre o SKU
-          </label>
-          <input
-            id="pos-search"
-            placeholder="Buscar producto por nombre o SKU..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded border border-zinc-300 px-3 py-2.5 text-sm"
-          />
-
-          <div className="bg-white rounded-lg border border-zinc-200 divide-y divide-zinc-100 max-h-[50vh] md:max-h-[420px] overflow-y-auto">
-            {filteredProducts.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => handleAddToCart(p)}
-                className="w-full flex justify-between items-center gap-3 px-4 py-3 text-sm hover:bg-zinc-50 active:bg-zinc-100 text-left min-h-[44px]"
-              >
-                <span>
-                  {p.name} {p.sku && <span className="text-zinc-400">({p.sku})</span>}
-                </span>
-                <span className="text-zinc-600 shrink-0">Bs. {Number(p.price).toFixed(2)}</span>
-              </button>
-            ))}
-            {filteredProducts.length === 0 && (
-              <p className="px-4 py-6 text-center text-zinc-400 text-sm">
-                {products.length === 0 ? "Sin productos cacheados todavía" : "Sin resultados"}
-              </p>
+          <div className="space-y-2 px-4 md:px-0">
+            {loadError && <ErrorState message={loadError} />}
+            {neverSynced && !loadError && (
+              <div className="rounded-lg bg-warning-soft px-3 py-2.5 text-sm text-amber-800">
+                Necesitás conexión a internet una primera vez para descargar tu catálogo de
+                productos y poder vender desde este dispositivo.
+              </div>
             )}
           </div>
-        </div>
 
-        {/* 3) Carrito + 4) total + 5) método de pago + 6) confirmar. */}
-        <div className="space-y-4">
-          <div className="bg-white rounded-lg border border-zinc-200 p-4 space-y-3">
-            <h2 className="font-medium text-sm">Carrito</h2>
-            {error && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>}
-            {feedback && (
-              <div className={`text-sm rounded p-2 ${FEEDBACK_STYLES[feedback.kind]}`}>
-                <p>{feedback.message}</p>
-                {lastSaleId && (feedback.kind === "synced" || feedback.kind === "offline") && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      onClick={() => handleTicket(lastSaleId, "view")}
-                      disabled={ticketBusy !== null}
-                      className="text-xs rounded border border-current px-2 py-1 disabled:opacity-50"
-                    >
-                      {ticketBusy === `view-${lastSaleId}` ? "Generando..." : "Ver / Imprimir ticket"}
-                    </button>
-                    <button
-                      onClick={() => handleTicket(lastSaleId, "download")}
-                      disabled={ticketBusy !== null}
-                      className="text-xs rounded border border-current px-2 py-1 disabled:opacity-50"
-                    >
-                      {ticketBusy === `download-${lastSaleId}` ? "Descargando..." : "Descargar ticket"}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            {ticketError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{ticketError}</p>}
-
-            {cart.length === 0 && <p className="text-sm text-zinc-400">Agregá productos desde la lista</p>}
-            {cart.map((line) => (
-              <div key={line.productId} className="border-b border-zinc-100 pb-3 text-sm space-y-1.5">
-                <div className="flex justify-between items-start gap-2">
-                  <span>{line.name}</span>
-                  <button
-                    onClick={() => handleRemoveLine(line.productId)}
-                    className="text-red-600 text-xs underline shrink-0 py-1"
-                  >
-                    Quitar
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-2 items-center text-xs">
-                  <span className="flex items-center gap-1">
-                    <span className="text-zinc-500">Cant.</span>
-                    <input
-                      aria-label={`Cantidad de ${line.name}`}
-                      type="number"
-                      min={0.01}
-                      step="0.01"
-                      value={line.quantity}
-                      onChange={(e) => handleUpdateLine(line.productId, { quantity: Number(e.target.value) })}
-                      className="w-16 rounded border border-zinc-300 px-2 py-1.5"
-                    />
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="text-zinc-500">Precio</span>
-                    <input
-                      aria-label={`Precio de ${line.name}`}
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      value={line.unitPrice}
-                      onChange={(e) => handleUpdateLine(line.productId, { unitPrice: Number(e.target.value) })}
-                      className="w-20 rounded border border-zinc-300 px-2 py-1.5"
-                    />
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="text-zinc-500">Desc.</span>
-                    <input
-                      aria-label={`Descuento de ${line.name}`}
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      value={line.discount}
-                      onChange={(e) => handleUpdateLine(line.productId, { discount: Number(e.target.value) })}
-                      className="w-16 rounded border border-zinc-300 px-2 py-1.5"
-                    />
-                  </span>
-                </div>
-                <div className="text-right text-zinc-500">
-                  Subtotal: Bs. {(line.quantity * line.unitPrice - line.discount).toFixed(2)}
-                </div>
-              </div>
-            ))}
-
-            <label htmlFor="pos-customer" className="sr-only">
-              Cliente
+          <div className="px-4 pt-3 md:px-0">
+            <label htmlFor="pos-search" className="sr-only">
+              Buscar producto por nombre o SKU
             </label>
-            <select
-              id="pos-customer"
-              value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
-              className="w-full rounded border border-zinc-300 px-2 py-2 text-sm"
-            >
-              <option value="">Cliente ocasional</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-
-            <div className="flex justify-between items-center text-sm">
-              <label htmlFor="pos-sale-discount">Descuento venta</label>
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-text-muted">
+                <Icon name="search" size={18} />
+              </span>
               <input
-                id="pos-sale-discount"
-                type="number"
-                min={0}
-                step="0.01"
-                value={saleDiscount}
-                onChange={(e) => setSaleDiscount(e.target.value)}
-                className="w-24 rounded border border-zinc-300 px-2 py-1.5"
+                id="pos-search"
+                placeholder="Buscar producto por nombre o SKU..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-11 w-full rounded-lg border border-border bg-white pl-10 pr-3 text-sm text-text placeholder:text-text-muted focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary-soft"
               />
             </div>
-
-            {/* El total es lo más visible de toda la pantalla — nunca compite en tamaño con nada más. */}
-            <div className="flex justify-between items-baseline border-t border-zinc-200 pt-3">
-              <span className="text-sm font-medium text-zinc-600">Total</span>
-              <span className="text-2xl font-semibold tabular-nums">Bs. {total.toFixed(2)}</span>
-            </div>
-            {subtotal !== total && (
-              <p className="text-xs text-zinc-400 text-right -mt-2">Subtotal Bs. {subtotal.toFixed(2)}</p>
-            )}
           </div>
 
-          <div className="bg-white rounded-lg border border-zinc-200 p-4 space-y-2">
-            <div className="flex justify-between items-center">
-              <h2 className="font-medium text-sm">Pago (opcional — vacío = venta a crédito)</h2>
-              <button onClick={addPaymentLine} className="text-xs text-zinc-600 underline py-1">
-                + método
-              </button>
+          {/*
+            Offline 4.15 — deliberadamente SIN chips de categoría: Stitch las
+            muestra, pero `LocalProduct` (Dexie) no trae categoría —
+            `catalog-sync.ts` no la sincroniza todavía, solo vive en el
+            backend. Un filtro que no filtra nada real sería peor que no
+            tenerlo. Queda documentado en el informe de esta fase, no
+            inventado acá.
+          */}
+
+          <div className="flex-1 overflow-y-auto px-4 py-3 pb-28 md:px-0 md:pb-3">
+            {filteredProducts.length === 0 ? (
+              <EmptyState
+                icon="box"
+                title={products.length === 0 ? "Sin productos cacheados todavía" : "Sin resultados"}
+              />
+            ) : (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+                {filteredProducts.map((p) => {
+                  const inCart = cart.find((l) => l.productId === p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => handleAddToCart(p)}
+                      className="relative flex min-h-[44px] flex-col items-start gap-2 rounded-xl border border-border bg-surface p-3 text-left transition-colors hover:border-primary hover:bg-page active:scale-[0.98]"
+                    >
+                      {inCart && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute right-2 top-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-xs font-semibold text-white"
+                        >
+                          {inCart.quantity}
+                        </span>
+                      )}
+                      {/* Placeholder sin foto (decisión ya tomada): iniciales del producto sobre un cuadro de color de marca. */}
+                      <span
+                        aria-hidden="true"
+                        className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-soft text-sm font-semibold text-green-800"
+                      >
+                        {productInitials(p.name)}
+                      </span>
+                      <span className="line-clamp-2 text-sm font-medium text-text">{p.name}</span>
+                      {p.sku && <span className="text-xs text-text-muted">{p.sku}</span>}
+                      <span className="text-sm font-semibold text-primary">
+                        Bs. {Number(p.price).toFixed(2)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Escritorio: panel de carrito siempre visible. Nunca coexiste en el DOM con el bottom sheet móvil (ver useIsDesktopViewport). */}
+        {isDesktop && (
+          <aside className="flex w-[380px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface">
+            <div className="border-b border-border px-4 py-3">
+              <h2 className="text-sm font-semibold text-text">Carrito</h2>
             </div>
-            {payments.map((p, i) => (
-              <div key={i} className="flex gap-2 items-center text-xs">
-                <label className="sr-only" htmlFor={`pos-payment-method-${i}`}>
-                  Método de pago
-                </label>
-                <select
-                  id={`pos-payment-method-${i}`}
-                  value={p.method}
-                  onChange={(e) => updatePaymentLine(i, { method: e.target.value as PaymentMethod })}
-                  className="rounded border border-zinc-300 px-2 py-1.5"
-                >
-                  <option value="CASH">Efectivo</option>
-                  <option value="CARD">Tarjeta</option>
-                  <option value="TRANSFER">Transferencia</option>
-                  <option value="QR">QR</option>
-                </select>
-                <label className="sr-only" htmlFor={`pos-payment-amount-${i}`}>
-                  Monto
-                </label>
-                <input
-                  id={`pos-payment-amount-${i}`}
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  placeholder="Monto"
-                  value={p.amount}
-                  onChange={(e) => updatePaymentLine(i, { amount: e.target.value })}
-                  className="w-24 rounded border border-zinc-300 px-2 py-1.5"
-                />
-                <button onClick={() => removePaymentLine(i)} className="text-red-600 underline py-1.5">
-                  Quitar
-                </button>
+            <div className="flex-1 overflow-y-auto px-4 py-3">{renderCartFields()}</div>
+          </aside>
+        )}
+      </div>
+
+      {/* Móvil: barra flotante + bottom sheet. Ver useIsDesktopViewport — nunca montado junto con el <aside> de arriba. */}
+      {!isDesktop && (
+        <>
+          <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface p-3 md:hidden">
+            <button
+              onClick={() => setCartSheetOpen(true)}
+              className="flex min-h-[44px] w-full items-center justify-between rounded-xl bg-primary px-4 py-3.5 text-white"
+            >
+              <span className="flex items-center gap-2 font-medium">
+                <Icon name="cart" />
+                {cart.length > 0 && (
+                  <span
+                    aria-hidden="true"
+                    className="flex h-5 min-w-5 items-center justify-center rounded-full bg-white/25 px-1 text-xs font-semibold"
+                  >
+                    {cart.length}
+                  </span>
+                )}
+                Ver carrito
+              </span>
+              <span className="font-semibold tabular-nums">Bs. {total.toFixed(2)}</span>
+            </button>
+          </div>
+
+          <Sheet
+            variant="sheet"
+            open={cartSheetOpen}
+            onClose={() => setCartSheetOpen(false)}
+            title={cart.length > 0 ? `Carrito (${cart.length})` : "Carrito"}
+          >
+            {renderCartFields()}
+          </Sheet>
+        </>
+      )}
+
+      {/* Ventas creadas en ESTE dispositivo — sincronizadas o no. Nunca se borra una venta local porque no pudo sincronizar. */}
+      <div className="px-4 pb-6 md:px-6">
+        <button
+          onClick={() => setHistoryOpen((v) => !v)}
+          className="flex w-full items-center justify-between rounded-xl border border-border bg-surface px-4 py-3 text-sm font-medium text-text"
+        >
+          <span className="flex items-center gap-2">
+            <Icon name="receipt" size={18} className="text-text-muted" />
+            Ventas de este dispositivo
+            {pendingCount > 0 && (
+              <span className="text-xs font-normal text-amber-700">
+                · {pendingCount} pendiente{pendingCount !== 1 && "s"} de sincronizar
+              </span>
+            )}
+            {attentionCount > 0 && (
+              <span className="text-xs font-normal text-red-700">
+                · {attentionCount} necesita{attentionCount === 1 ? "" : "n"} atención
+              </span>
+            )}
+          </span>
+          <Icon name={historyOpen ? "chevron-up" : "chevron-down"} size={18} />
+        </button>
+        {(historyOpen || attentionCount > 0) && (
+          <div className="divide-y divide-border rounded-b-xl border border-t-0 border-border bg-surface">
+            {localSales.length === 0 && (
+              <EmptyState icon="receipt" title="Todavía no se registró ninguna venta desde este dispositivo" />
+            )}
+            {localSales.map(({ sale, state }) => (
+              <div key={sale.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                <div>
+                  <p className="text-text">
+                    {new Date(sale.createdAt).toLocaleString()} — {sale.items.length}{" "}
+                    {sale.items.length === 1 ? "ítem" : "ítems"}
+                  </p>
+                  {(state.kind === "conflict" || state.kind === "error") && (
+                    <p className="mt-0.5 text-xs text-danger">{state.message}</p>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge tone={SYNC_BADGE[state.kind].tone}>{SYNC_BADGE[state.kind].label}</Badge>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleTicket(sale.id, "view")}
+                    disabled={ticketBusy !== null}
+                  >
+                    {ticketBusy === `view-${sale.id}` ? "Generando…" : "Ver ticket"}
+                  </Button>
+                  {(state.kind === "conflict" || state.kind === "error") && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleRetry(sale.id)}
+                      disabled={retryingId === sale.id}
+                    >
+                      {retryingId === sale.id ? "Reintentando…" : "Reintentar"}
+                    </Button>
+                  )}
+                </div>
               </div>
             ))}
-            {payments.length > 0 && (
-              <p className="text-xs text-zinc-500 text-right">
-                Pagado: Bs. {paidSoFar.toFixed(2)} de Bs. {total.toFixed(2)}
-              </p>
-            )}
           </div>
-
-          <div className="flex gap-2">
-            <button
-              onClick={confirmSale}
-              disabled={submitting || cart.length === 0}
-              className="flex-1 bg-zinc-900 text-white rounded px-3 py-3.5 text-sm font-medium disabled:opacity-50 min-h-[44px]"
-            >
-              {submitting ? "Confirmando..." : "Confirmar venta"}
-            </button>
-            <button
-              onClick={resetSale}
-              className="rounded border border-zinc-300 px-3 py-3.5 text-sm min-h-[44px]"
-            >
-              Limpiar
-            </button>
-          </div>
-        </div>
-
-        {/* Ventas creadas en ESTE dispositivo — sincronizadas o no. Nunca se borra una venta local porque no pudo sincronizar. */}
-        <div className="md:col-span-3">
-          <button
-            onClick={() => setHistoryOpen((v) => !v)}
-            className="w-full flex items-center justify-between bg-white rounded-lg border border-zinc-200 px-4 py-3 text-sm font-medium"
-          >
-            <span>
-              Ventas de este dispositivo
-              {pendingCount > 0 && (
-                <span className="ml-2 text-xs font-normal text-amber-700">
-                  · {pendingCount} pendiente{pendingCount !== 1 && "s"} de sincronizar
-                </span>
-              )}
-              {attentionCount > 0 && (
-                <span className="ml-2 text-xs font-normal text-red-700">
-                  · {attentionCount} necesita{attentionCount === 1 ? "" : "n"} atención
-                </span>
-              )}
-            </span>
-            <span aria-hidden="true">{historyOpen ? "▲" : "▼"}</span>
-          </button>
-          {(historyOpen || attentionCount > 0) && (
-            <div className="bg-white rounded-lg border border-zinc-200 border-t-0 rounded-t-none divide-y divide-zinc-100">
-              {localSales.length === 0 && (
-                <p className="px-4 py-6 text-center text-zinc-400 text-sm">
-                  Todavía no se registró ninguna venta desde este dispositivo
-                </p>
-              )}
-              {localSales.map(({ sale, state }) => (
-                <div key={sale.id} className="px-4 py-3 flex items-center justify-between gap-3 text-sm">
-                  <div>
-                    <p>
-                      {new Date(sale.createdAt).toLocaleString()} — {sale.items.length}{" "}
-                      {sale.items.length === 1 ? "ítem" : "ítems"}
-                    </p>
-                    {(state.kind === "conflict" || state.kind === "error") && (
-                      <p className="text-xs text-red-600 mt-0.5">{state.message}</p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className={`rounded px-2 py-0.5 text-xs ${SYNC_BADGE[state.kind].className}`}>
-                      {SYNC_BADGE[state.kind].label}
-                    </span>
-                    <button
-                      onClick={() => handleTicket(sale.id, "view")}
-                      disabled={ticketBusy !== null}
-                      className="text-xs underline text-zinc-600 disabled:opacity-50"
-                    >
-                      {ticketBusy === `view-${sale.id}` ? "Generando…" : "Ver ticket"}
-                    </button>
-                    {(state.kind === "conflict" || state.kind === "error") && (
-                      <button
-                        onClick={() => handleRetry(sale.id)}
-                        disabled={retryingId === sale.id}
-                        className="text-xs underline text-zinc-600 disabled:opacity-50"
-                      >
-                        {retryingId === sale.id ? "Reintentando…" : "Reintentar"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        )}
       </div>
     </AppShell>
   );
+
+  /**
+   * El contenido del carrito — líneas, cliente, descuento, total, pagos y
+   * confirmar — es EXACTAMENTE el mismo nodo React sea que lo muestre el
+   * `<aside>` de escritorio o el `<Sheet>` móvil (nunca los dos montados a
+   * la vez, ver `useIsDesktopViewport`): una sola función local, cero
+   * duplicación de marcado ni de lógica.
+   */
+  function renderCartFields() {
+    return (
+      <div className="flex h-full flex-col gap-3">
+        {error && <ErrorState message={error} />}
+        {feedback && (
+          <div className={`rounded-lg px-3 py-2.5 text-sm ${FEEDBACK_STYLES[feedback.kind]}`}>
+            <p>{feedback.message}</p>
+            {lastSaleId && (feedback.kind === "synced" || feedback.kind === "offline") && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon="printer"
+                  onClick={() => handleTicket(lastSaleId, "view")}
+                  disabled={ticketBusy !== null}
+                >
+                  {ticketBusy === `view-${lastSaleId}` ? "Generando..." : "Ver / Imprimir ticket"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon="download"
+                  onClick={() => handleTicket(lastSaleId, "download")}
+                  disabled={ticketBusy !== null}
+                >
+                  {ticketBusy === `download-${lastSaleId}` ? "Descargando..." : "Descargar ticket"}
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+        {ticketError && <ErrorState message={ticketError} />}
+
+        <div className="space-y-3">
+          {cart.length === 0 && <p className="text-sm text-text-muted">Agregá productos desde la lista</p>}
+          {cart.map((line) => (
+            <div key={line.productId} className="space-y-2 border-b border-border pb-3 text-sm">
+              <div className="flex items-start justify-between gap-2">
+                <span className="font-medium text-text">{line.name}</span>
+                <Button size="sm" variant="ghost" className="text-danger" onClick={() => handleRemoveLine(line.productId)}>
+                  Quitar
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <div className="flex items-center gap-1 rounded-lg border border-border">
+                  <IconButton
+                    icon="minus"
+                    label={`Restar una unidad de ${line.name}`}
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      handleUpdateLine(line.productId, { quantity: Math.max(0.01, line.quantity - 1) })
+                    }
+                  />
+                  <input
+                    aria-label={`Cantidad de ${line.name}`}
+                    type="number"
+                    min={0.01}
+                    step="0.01"
+                    value={line.quantity}
+                    onChange={(e) => handleUpdateLine(line.productId, { quantity: Number(e.target.value) })}
+                    className="w-12 border-none bg-transparent text-center text-sm focus:outline-none"
+                  />
+                  <IconButton
+                    icon="plus"
+                    label={`Sumar una unidad de ${line.name}`}
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleUpdateLine(line.productId, { quantity: line.quantity + 1 })}
+                  />
+                </div>
+                <span className="flex items-center gap-1">
+                  <span className="text-text-muted">Precio</span>
+                  <input
+                    aria-label={`Precio de ${line.name}`}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={line.unitPrice}
+                    onChange={(e) => handleUpdateLine(line.productId, { unitPrice: Number(e.target.value) })}
+                    className="w-20 rounded-lg border border-border px-2 py-1.5"
+                  />
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="text-text-muted">Desc.</span>
+                  <input
+                    aria-label={`Descuento de ${line.name}`}
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={line.discount}
+                    onChange={(e) => handleUpdateLine(line.productId, { discount: Number(e.target.value) })}
+                    className="w-16 rounded-lg border border-border px-2 py-1.5"
+                  />
+                </span>
+              </div>
+              <div className="text-right text-text-muted">
+                Subtotal: Bs. {(line.quantity * line.unitPrice - line.discount).toFixed(2)}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <label htmlFor="pos-customer" className="sr-only">
+          Cliente
+        </label>
+        <select
+          id="pos-customer"
+          value={customerId}
+          onChange={(e) => setCustomerId(e.target.value)}
+          className="h-11 w-full rounded-lg border border-border bg-white px-3 text-sm text-text focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary-soft"
+        >
+          <option value="">Cliente ocasional</option>
+          {customers.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+
+        <div className="flex items-center justify-between text-sm">
+          <label htmlFor="pos-sale-discount" className="text-text-muted">
+            Descuento venta
+          </label>
+          <input
+            id="pos-sale-discount"
+            type="number"
+            min={0}
+            step="0.01"
+            value={saleDiscount}
+            onChange={(e) => setSaleDiscount(e.target.value)}
+            className="w-24 rounded-lg border border-border px-2 py-1.5 text-sm"
+          />
+        </div>
+
+        {/* El total es lo más visible de todo el panel — nunca compite en tamaño con nada más. */}
+        <div className="flex items-baseline justify-between border-t border-border pt-3">
+          <span className="text-sm font-medium text-text-muted">Total</span>
+          <span className="text-2xl font-semibold tabular-nums text-text">Bs. {total.toFixed(2)}</span>
+        </div>
+        {subtotal !== total && (
+          <p className="-mt-2 text-right text-xs text-text-muted">Subtotal Bs. {subtotal.toFixed(2)}</p>
+        )}
+
+        <div className="space-y-2 border-t border-border pt-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-text">Pago (opcional — vacío = venta a crédito)</h2>
+            <Button size="sm" variant="ghost" onClick={addPaymentLine}>
+              + método
+            </Button>
+          </div>
+          {/*
+            Offline 4.15 — se mantienen los 4 métodos reales (CASH/CARD/
+            TRANSFER/QR) y la posibilidad de varias líneas (pago dividido):
+            Stitch muestra solo un toggle Efectivo/Tarjeta de UN método por
+            venta, que no alcanza a representar lo que KIPU ya soporta.
+          */}
+          {payments.map((p, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <label className="sr-only" htmlFor={`pos-payment-method-${i}`}>
+                Método de pago
+              </label>
+              <select
+                id={`pos-payment-method-${i}`}
+                value={p.method}
+                onChange={(e) => updatePaymentLine(i, { method: e.target.value as PaymentMethod })}
+                className="h-10 rounded-lg border border-border bg-white px-2 text-xs text-text focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary-soft"
+              >
+                <option value="CASH">Efectivo</option>
+                <option value="CARD">Tarjeta</option>
+                <option value="TRANSFER">Transferencia</option>
+                <option value="QR">QR</option>
+              </select>
+              <label className="sr-only" htmlFor={`pos-payment-amount-${i}`}>
+                Monto
+              </label>
+              <input
+                id={`pos-payment-amount-${i}`}
+                type="number"
+                min={0}
+                step="0.01"
+                placeholder="Monto"
+                value={p.amount}
+                onChange={(e) => updatePaymentLine(i, { amount: e.target.value })}
+                className="h-10 w-24 rounded-lg border border-border px-2 text-xs"
+              />
+              <IconButton
+                icon="trash"
+                label="Quitar"
+                size="sm"
+                variant="ghost"
+                className="text-danger"
+                onClick={() => removePaymentLine(i)}
+              />
+            </div>
+          ))}
+          {payments.length > 0 && (
+            <p className="text-right text-xs text-text-muted">
+              Pagado: Bs. {paidSoFar.toFixed(2)} de Bs. {total.toFixed(2)}
+            </p>
+          )}
+        </div>
+
+        <div className="flex gap-2 pt-1">
+          <Button size="lg" className="flex-1" onClick={confirmSale} disabled={submitting || cart.length === 0} loading={submitting}>
+            {submitting ? "Confirmando..." : "Confirmar venta"}
+          </Button>
+          <Button size="lg" variant="secondary" onClick={resetSale}>
+            Limpiar
+          </Button>
+        </div>
+      </div>
+    );
+  }
 }

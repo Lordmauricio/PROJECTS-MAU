@@ -264,9 +264,15 @@ describe("POS — pagos (formulario real, no la función pura)", () => {
   });
 
   it("botón 'Confirmar venta': deshabilitado con el carrito vacío, habilitado con productos", async () => {
+    // Offline 4.15: el carrito vive en un bottom sheet que arranca cerrado
+    // (comportamiento nuevo, real, no un detalle de implementación) — la
+    // barra "Ver carrito" sigue disponible con el carrito vacío, así que se
+    // abre a mano para poder ver el botón "Confirmar venta" deshabilitado
+    // antes de agregar nada.
     const user = userEvent.setup();
     await renderPosWithCatalog();
 
+    await user.click(screen.getByRole("button", { name: /Ver carrito/ }));
     expect(screen.getByRole("button", { name: "Confirmar venta" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /Coca Cola 2L/ }));
     expect(screen.getByRole("button", { name: "Confirmar venta" })).toBeEnabled();

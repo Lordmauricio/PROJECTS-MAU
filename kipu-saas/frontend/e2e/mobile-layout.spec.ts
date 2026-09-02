@@ -52,9 +52,22 @@ test("el recorrido de venta en Android no obliga a desplazarse en horizontal", a
     await page.goto("/sales/pos");
     await expect(page.getByRole("heading", { name: "Punto de venta" })).toBeVisible();
     await page.getByRole("button", { name: new RegExp(PRODUCTS[0].name) }).click();
+    // Offline 4.15: agregar un producto abre el bottom sheet del carrito
+    // automáticamente — comportamiento nuevo y real, no un detalle de test.
+    // El resto del recorrido (pago, historial) sigue ocurriendo con el
+    // carrito ya cargado, así que ninguna aserción de datos cambia.
+    await expect(page.getByRole("dialog", { name: /Carrito/ })).toBeVisible();
     await page.getByRole("button", { name: "+ método" }).click();
     await page.getByLabel("Monto").fill("25.00");
     expect(await horizontalOverflow(page)).toBeLessThanOrEqual(1);
+  });
+
+  await test.step("cerrar el bottom sheet del carrito", async () => {
+    // Es un modal real (aria-modal): mientras está abierto, tapa a propósito
+    // el resto de la pantalla — hay que cerrarlo para seguir navegando,
+    // exactamente como haría un cajero real con el dedo.
+    await page.getByRole("button", { name: "Cerrar" }).click();
+    await expect(page.getByRole("dialog")).not.toBeVisible();
   });
 
   await test.step("historial local desplegado", async () => {
@@ -63,11 +76,18 @@ test("el recorrido de venta en Android no obliga a desplazarse en horizontal", a
   });
 
   await test.step("los controles del POS se pueden tocar con el dedo", async () => {
+    // El botón vive dentro del bottom sheet del carrito — se reabre con la
+    // barra flotante "Ver carrito" antes de medirlo.
+    await page.getByRole("button", { name: /Ver carrito/ }).click();
+    await expect(page.getByRole("dialog", { name: /Carrito/ })).toBeVisible();
+
     // 44 px es el mínimo recomendado para un objetivo táctil; por debajo, un
     // cajero con prisa falla el toque una de cada varias veces.
     const box = await page.getByRole("button", { name: "Confirmar venta" }).boundingBox();
     expect(box, "el botón de confirmar debe ser visible").not.toBeNull();
     expect(box!.height).toBeGreaterThanOrEqual(44);
+
+    await page.getByRole("button", { name: "Cerrar" }).click();
   });
 
   await test.step("menú lateral móvil abierto", async () => {

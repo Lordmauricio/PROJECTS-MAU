@@ -10,12 +10,21 @@ import type { ConnectionState } from "@/lib/offline/types";
 // explícita del pedido ("no depender únicamente del color"): alguien con
 // dificultad para distinguir colores, o mirando la pantalla con poca luz,
 // igual puede diferenciar un círculo lleno de un triángulo o una X.
+//
+// Offline 4.15 (rediseño Stitch): los colores pasan a los tokens de marca
+// (`bg-success-soft`/`bg-warning-soft`/etc., definidos en `globals.css`) en
+// vez de clases `emerald-*`/`amber-*`/`sky-*` sueltas — es el mismo mapeo de
+// tono que usa `Badge` (`components/ui/Badge.tsx`), para que este indicador
+// y cualquier otra insignia de sincronización se vean como el MISMO sistema
+// en vez de dos paletas de verde/ámbar/rojo ligeramente distintas
+// conviviendo en la misma pantalla. Los símbolos y los estados en sí no
+// cambian — sigue siendo la misma fuente (`useConnectionStatus`).
 const STYLES: Record<ConnectionState, { symbol: string; label: string; className: string }> = {
-  ONLINE: { symbol: "●", label: "En línea", className: "bg-emerald-50 text-emerald-700" },
-  OFFLINE: { symbol: "▲", label: "Sin conexión", className: "bg-amber-50 text-amber-700" },
-  SYNCING: { symbol: "↻", label: "Sincronizando…", className: "bg-sky-50 text-sky-700" },
-  PENDING: { symbol: "●", label: "pendientes", className: "bg-amber-50 text-amber-700" },
-  ERROR: { symbol: "✕", label: "Error de sincronización", className: "bg-red-50 text-red-700" },
+  ONLINE: { symbol: "●", label: "En línea", className: "bg-success-soft text-green-800" },
+  OFFLINE: { symbol: "▲", label: "Sin conexión", className: "bg-warning-soft text-amber-800" },
+  SYNCING: { symbol: "↻", label: "Sincronizando…", className: "bg-info-soft text-sky-800" },
+  PENDING: { symbol: "●", label: "pendientes", className: "bg-warning-soft text-amber-800" },
+  ERROR: { symbol: "✕", label: "Error de sincronización", className: "bg-danger-soft text-red-800" },
 };
 
 /**
