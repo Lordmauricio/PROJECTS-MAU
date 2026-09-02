@@ -439,7 +439,7 @@ export default function POSPage() {
                 title={products.length === 0 ? "Sin productos cacheados todavía" : "Sin resultados"}
               />
             ) : (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
                 {filteredProducts.map((p) => {
                   const inCart = cart.find((l) => l.productId === p.id);
                   return (
@@ -479,8 +479,11 @@ export default function POSPage() {
         {/* Escritorio: panel de carrito siempre visible. Nunca coexiste en el DOM con el bottom sheet móvil (ver useIsDesktopViewport). */}
         {isDesktop && (
           <aside className="flex w-[380px] shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-surface">
-            <div className="border-b border-border px-4 py-3">
-              <h2 className="text-sm font-semibold text-text">Carrito</h2>
+            <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+              <Icon name="cart" size={18} className="text-text-muted" />
+              <h2 className="text-sm font-semibold text-text">
+                Carrito{cart.length > 0 && ` (${cart.length})`}
+              </h2>
             </div>
             <div className="flex-1 overflow-y-auto px-4 py-3">{renderCartFields()}</div>
           </aside>
