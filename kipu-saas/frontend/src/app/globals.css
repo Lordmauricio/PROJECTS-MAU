@@ -3,6 +3,37 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /*
+   * Offline 4.15 (rediseño Stitch) — tokens de marca de KIPU.
+   *
+   * Valores fijados explícitamente por decisión de producto, NO tomados del
+   * verde de Material Design 3 que trae el export de Stitch (#006b2c):
+   * Stitch es referencia visual de composición/espaciado, la identidad de
+   * color es la de KIPU. `--kipu-primary` es intercambiable si el día de
+   * mañana cambia la marca; todo lo demás en este archivo deriva de él.
+   */
+  --kipu-primary: #16a34a; /* verde principal */
+  --kipu-primary-hover: #166534; /* verde oscuro — hover/active de acciones primarias */
+  --kipu-primary-soft: #dcfce7; /* verde suave — fondos de estado positivo/seleccionado */
+  --kipu-surface: #ffffff;
+  --kipu-page: #f8fafc; /* fondo de página, detrás de las tarjetas */
+  --kipu-text: #18181b;
+  --kipu-text-muted: #64748b;
+  --kipu-border: #e2e8f0;
+
+  /* Semánticos no-marca: reutilizan la escala de zinc/amber/red que ya usa
+     `ConnectionBadge`/`AppShell` — no se inventa una segunda familia de
+     colores para "warning"/"danger" que compita visualmente con la ya
+     establecida para offline/sync. */
+  --kipu-success: #16a34a;
+  --kipu-success-soft: #dcfce7;
+  --kipu-warning: #b45309;
+  --kipu-warning-soft: #fef3c7;
+  --kipu-danger: #dc2626;
+  --kipu-danger-soft: #fee2e2;
+  --kipu-info: #0369a1;
+  --kipu-info-soft: #e0f2fe;
 }
 
 @theme inline {
@@ -10,6 +41,27 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* Expone los tokens de marca como utilidades Tailwind reales:
+     bg-primary, text-primary, border-primary-soft, etc. — Tailwind v4
+     genera la utilidad a partir de cualquier `--color-*` declarado acá,
+     sin tocar `next.config.ts` ni agregar un archivo de configuración JS. */
+  --color-primary: var(--kipu-primary);
+  --color-primary-hover: var(--kipu-primary-hover);
+  --color-primary-soft: var(--kipu-primary-soft);
+  --color-surface: var(--kipu-surface);
+  --color-page: var(--kipu-page);
+  --color-text: var(--kipu-text);
+  --color-text-muted: var(--kipu-text-muted);
+  --color-border: var(--kipu-border);
+  --color-success: var(--kipu-success);
+  --color-success-soft: var(--kipu-success-soft);
+  --color-warning: var(--kipu-warning);
+  --color-warning-soft: var(--kipu-warning-soft);
+  --color-danger: var(--kipu-danger);
+  --color-danger-soft: var(--kipu-danger-soft);
+  --color-info: var(--kipu-info);
+  --color-info-soft: var(--kipu-info-soft);
 }
 
 @media (prefers-color-scheme: dark) {
