@@ -1,3 +1,4 @@
+import { computeLocalSaleTotals, localSaleItemSubtotal, paymentMethodTotals } from "../sale-totals";
 import type { LocalSale } from "../types";
 import type { TicketData, TicketLineItem, TicketSyncStatus } from "./ticket-data";
 
@@ -122,30 +123,20 @@ export function ticketFromLocalSale(
 ): TicketData {
   const items: TicketLineItem[] = sale.items.map((item) => {
     const product = ctx.products.get(item.productId);
-    const subtotal = (
-      Number(item.quantity) * Number(item.unitPrice) - Number(item.discount)
-    ).toFixed(2);
     return {
       productName: product?.name ?? `Producto ${item.productId}`,
       sku: product?.sku ?? null,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
       discount: item.discount,
-      subtotal,
+      subtotal: localSaleItemSubtotal(item),
     };
   });
 
-  const localSubtotal = items.reduce((acc, i) => acc + Number(i.subtotal), 0);
-  const localTotal = Math.max(0, localSubtotal - Number(sale.discount));
-  const localPaidTotal = sale.payments.reduce((acc, p) => acc + Number(p.amount), 0);
-  const localBalance = Math.max(0, localTotal - localPaidTotal);
-
-  const methodTotals = new Map<string, number>();
-  for (const p of sale.payments) {
-    methodTotals.set(p.method, (methodTotals.get(p.method) ?? 0) + Number(p.amount));
-  }
-
-  const server = sale.serverSummary;
+  // La regla de totales (servidor manda si ya sincronizó, cálculo local si
+  // no) vive ahora en `sale-totals.ts` — la comparte con el historial, que
+  // debe mostrar exactamente el mismo número que imprime este ticket.
+  const totals = computeLocalSaleTotals(sale);
 
   return {
     documentLabel: "RECIBO DE VENTA",
@@ -170,17 +161,14 @@ export function ticketFromLocalSale(
     customer: ctx.customer,
     items,
     totals: {
-      subtotal: localSubtotal.toFixed(2),
-      discount: Number(sale.discount).toFixed(2),
-      total: server ? server.total : localTotal.toFixed(2),
+      subtotal: totals.subtotal,
+      discount: totals.discount,
+      total: totals.total,
     },
     payments: {
-      methods: [...methodTotals.entries()].map(([method, amount]) => ({
-        method,
-        amount: amount.toFixed(2),
-      })),
-      paidTotal: server ? server.paidTotal : localPaidTotal.toFixed(2),
-      balance: server ? server.balance : localBalance.toFixed(2),
+      methods: paymentMethodTotals(sale),
+      paidTotal: totals.paidTotal,
+      balance: totals.balance,
     },
     observations: null,
     syncStatus,

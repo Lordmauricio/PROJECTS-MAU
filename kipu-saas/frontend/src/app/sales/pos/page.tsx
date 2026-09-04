@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import AppShell from "@/components/AppShell";
 import ConnectionBadge from "@/components/ConnectionBadge";
+import LocalSalesHistory from "@/components/LocalSalesHistory";
 import { useAuth } from "@/lib/auth-context";
 import { useLocalDb } from "@/lib/offline/react/useLocalDb";
 import { runFullInitialSync, runIncrementalSync } from "@/lib/offline/catalog-sync";
@@ -14,15 +15,12 @@ import {
   type CartLine,
 } from "@/lib/offline/pos-cart";
 import { retrySale, submitSaleOffline } from "@/lib/offline/pos-submit";
-import {
-  listLocalSalesWithState,
-  type LocalSaleWithState,
-  type SaleSyncState,
-} from "@/lib/offline/sale-sync-state";
+import { listLocalSalesWithState, type LocalSaleWithState } from "@/lib/offline/sale-sync-state";
+import { PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type PaymentMethod } from "@/lib/offline/payment-methods";
 import { newIdempotencyKey } from "@/lib/offline/ids";
 import type { LocalOrgContext } from "@/lib/offline/types";
 import { downloadPdfBytes, presentTicketPdf } from "@/lib/offline/printing/pdf-blob";
-import { Badge, Button, Icon, IconButton, Sheet, EmptyState, ErrorState, type BadgeTone } from "@/components/ui";
+import { Button, Icon, IconButton, Sheet, EmptyState, ErrorState } from "@/components/ui";
 
 /**
  * Offline 4.15 (rediseño Stitch) — ¿el viewport actual es de escritorio?
@@ -81,8 +79,6 @@ interface CustomerView {
   active: boolean;
 }
 
-type PaymentMethod = "CASH" | "CARD" | "TRANSFER" | "QR";
-
 interface PaymentLine {
   method: PaymentMethod;
   amount: string;
@@ -96,14 +92,6 @@ const FEEDBACK_STYLES: Record<Feedback["kind"], string> = {
   offline: "bg-warning-soft text-amber-800",
   conflict: "bg-danger-soft text-red-800",
   error: "bg-danger-soft text-red-800",
-};
-
-const SYNC_BADGE: Record<SaleSyncState["kind"], { label: string; tone: BadgeTone }> = {
-  synced: { label: "Sincronizada", tone: "success" },
-  "offline-pending": { label: "Pendiente de sincronizar", tone: "warning" },
-  syncing: { label: "Sincronizando…", tone: "info" },
-  conflict: { label: "Conflicto", tone: "danger" },
-  error: { label: "Error", tone: "danger" },
 };
 
 export default function POSPage() {
@@ -127,8 +115,8 @@ export default function POSPage() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
 
   const [localSales, setLocalSales] = useState<LocalSaleWithState[]>([]);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [refreshingHistory, setRefreshingHistory] = useState(false);
 
   const [lastSaleId, setLastSaleId] = useState<string | null>(null);
   const [ticketBusy, setTicketBusy] = useState<string | null>(null);
@@ -155,6 +143,21 @@ export default function POSPage() {
   async function refreshHistory() {
     if (!db) return;
     setLocalSales(await listLocalSalesWithState(db));
+  }
+
+  /**
+   * Refresco pedido a mano desde el historial (UI-5). No fuerza una
+   * sincronización —de eso ya se encarga `useAutoSync`—, vuelve a LEER el
+   * estado real de la cola: es lo que necesita un cajero que acaba de
+   * recuperar la señal y quiere ver si su venta ya pasó.
+   */
+  async function handleRefreshHistory() {
+    setRefreshingHistory(true);
+    try {
+      await refreshHistory();
+    } finally {
+      setRefreshingHistory(false);
+    }
   }
 
   useEffect(() => {
@@ -380,11 +383,6 @@ export default function POSPage() {
     }
   }
 
-  const attentionCount = localSales.filter(
-    (s) => s.state.kind === "conflict" || s.state.kind === "error",
-  ).length;
-  const pendingCount = localSales.filter((s) => s.state.kind === "offline-pending").length;
-
   return (
     <AppShell>
       <div className="flex h-full flex-col md:flex-row md:gap-6 md:p-6">
@@ -525,70 +523,22 @@ export default function POSPage() {
         </>
       )}
 
-      {/* Ventas creadas en ESTE dispositivo — sincronizadas o no. Nunca se borra una venta local porque no pudo sincronizar. */}
-      <div className="px-4 pb-6 md:px-6">
-        <button
-          onClick={() => setHistoryOpen((v) => !v)}
-          className="flex w-full items-center justify-between rounded-xl border border-border bg-surface px-4 py-3 text-sm font-medium text-text"
-        >
-          <span className="flex items-center gap-2">
-            <Icon name="receipt" size={18} className="text-text-muted" />
-            Ventas de este dispositivo
-            {pendingCount > 0 && (
-              <span className="text-xs font-normal text-amber-700">
-                · {pendingCount} pendiente{pendingCount !== 1 && "s"} de sincronizar
-              </span>
-            )}
-            {attentionCount > 0 && (
-              <span className="text-xs font-normal text-red-700">
-                · {attentionCount} necesita{attentionCount === 1 ? "" : "n"} atención
-              </span>
-            )}
-          </span>
-          <Icon name={historyOpen ? "chevron-up" : "chevron-down"} size={18} />
-        </button>
-        {(historyOpen || attentionCount > 0) && (
-          <div className="divide-y divide-border rounded-b-xl border border-t-0 border-border bg-surface">
-            {localSales.length === 0 && (
-              <EmptyState icon="receipt" title="Todavía no se registró ninguna venta desde este dispositivo" />
-            )}
-            {localSales.map(({ sale, state }) => (
-              <div key={sale.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
-                <div>
-                  <p className="text-text">
-                    {new Date(sale.createdAt).toLocaleString()} — {sale.items.length}{" "}
-                    {sale.items.length === 1 ? "ítem" : "ítems"}
-                  </p>
-                  {(state.kind === "conflict" || state.kind === "error") && (
-                    <p className="mt-0.5 text-xs text-danger">{state.message}</p>
-                  )}
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Badge tone={SYNC_BADGE[state.kind].tone}>{SYNC_BADGE[state.kind].label}</Badge>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleTicket(sale.id, "view")}
-                    disabled={ticketBusy !== null}
-                  >
-                    {ticketBusy === `view-${sale.id}` ? "Generando…" : "Ver ticket"}
-                  </Button>
-                  {(state.kind === "conflict" || state.kind === "error") && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleRetry(sale.id)}
-                      disabled={retryingId === sale.id}
-                    >
-                      {retryingId === sale.id ? "Reintentando…" : "Reintentar"}
-                    </Button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/*
+        Ventas creadas en ESTE dispositivo — sincronizadas o no. Nunca se
+        borra una venta local porque no pudo sincronizar. El POS sigue
+        siendo el ÚNICO que consulta `listLocalSalesWithState`; el
+        componente solo dibuja lo que esa fuente devuelve (UI-5).
+      */}
+      <LocalSalesHistory
+        sales={localSales}
+        onRefresh={handleRefreshHistory}
+        refreshing={refreshingHistory}
+        onTicket={(localSaleId) => handleTicket(localSaleId, "view")}
+        ticketBusyId={ticketBusy?.startsWith("view-") ? ticketBusy.slice("view-".length) : null}
+        ticketBusy={ticketBusy !== null}
+        onRetry={handleRetry}
+        retryingId={retryingId}
+      />
     </AppShell>
   );
 
@@ -767,10 +717,11 @@ export default function POSPage() {
                 onChange={(e) => updatePaymentLine(i, { method: e.target.value as PaymentMethod })}
                 className="h-10 rounded-lg border border-border bg-white px-2 text-xs text-text focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary-soft"
               >
-                <option value="CASH">Efectivo</option>
-                <option value="CARD">Tarjeta</option>
-                <option value="TRANSFER">Transferencia</option>
-                <option value="QR">QR</option>
+                {PAYMENT_METHODS.map((method) => (
+                  <option key={method} value={method}>
+                    {PAYMENT_METHOD_LABELS[method]}
+                  </option>
+                ))}
               </select>
               <label className="sr-only" htmlFor={`pos-payment-amount-${i}`}>
                 Monto
