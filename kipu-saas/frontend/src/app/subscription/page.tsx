@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
@@ -93,29 +94,29 @@ function UsageBar({ label, entry }: { label: string; entry: UsageEntry }) {
 export default function SubscriptionPage() {
   const [subscription, setSubscription] = useState<SubscriptionSummary | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<"cancel" | "renew" | null>(null);
 
-  async function load() {
-    setLoadError(null);
-    try {
-      const [sub, planList] = await Promise.all([
-        api<SubscriptionSummary>("/organizations/me/subscription"),
-        api<Plan[]>("/organizations/me/subscription/plans"),
-      ]);
-      setSubscription(sub);
-      setPlans(planList);
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la suscripción");
-    }
-  }
-
-  useEffect(() => {
-    load();
+  const fetchData = useCallback(() => {
+    return Promise.all([
+      api<SubscriptionSummary>("/organizations/me/subscription"),
+      api<Plan[]>("/organizations/me/subscription/plans"),
+    ]);
   }, []);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    const [sub, planList] = result;
+    setSubscription(sub);
+    setPlans(planList);
+  }, []);
+
+  const { error: loadError, reload: load } = useRemoteLoad(
+    fetchData,
+    receiveData,
+    "No se pudo cargar la suscripción",
+  );
 
   async function changePlan(planKey: string) {
     setActionError(null);

@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
 import Link from "next/link";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
-import { ApiError } from "@/lib/auth-context";
 
 interface Payable {
   id: string;
@@ -33,26 +33,21 @@ const STATUS_COLORS: Record<string, string> = {
 export default function PayablesPage() {
   const [payables, setPayables] = useState<Payable[]>([]);
   const [status, setStatus] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const query = status ? `?status=${status}` : "";
-      setPayables(await api<Payable[]>(`/payables${query}`));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar las cuentas por pagar");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchData = useCallback(() => {
+    const query = status ? `?status=${status}` : "";
+    return api<Payable[]>(`/payables${query}`);
   }, [status]);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    setPayables(result);
+  }, []);
+
+  const { loading, error: loadError } = useRemoteLoad(
+    fetchData,
+    receiveData,
+    "No se pudo cargar las cuentas por pagar",
+  );
 
   return (
     <AppShell>

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
@@ -19,26 +20,22 @@ interface Customer {
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", documentNumber: "", phone: "", email: "" });
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      setCustomers(await api<Customer[]>("/customers"));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la lista de clientes");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
+  const fetchData = useCallback(() => {
+    return api<Customer[]>("/customers");
   }, []);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    setCustomers(result);
+  }, []);
+
+  const {
+    loading,
+    error: loadError,
+    reload: load,
+  } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar la lista de clientes");
 
   async function addCustomerRequest(e: React.FormEvent) {
     e.preventDefault();

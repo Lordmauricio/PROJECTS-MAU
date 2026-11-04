@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, useCallback } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
@@ -50,7 +51,6 @@ export default function POSPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [branch, setBranch] = useState<Branch | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -62,25 +62,22 @@ export default function POSPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ id: string; status: string; total: string; balance: string } | null>(null);
 
-  async function load() {
-    setLoadError(null);
-    try {
-      const [p, c, branches] = await Promise.all([
-        api<Product[]>("/products"),
-        api<Customer[]>("/customers"),
-        api<Branch[]>("/branches"),
-      ]);
-      setProducts(p.filter((x) => x.active));
-      setCustomers(c);
-      setBranch(branches[0] ?? null);
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el POS");
-    }
-  }
-
-  useEffect(() => {
-    load();
+  const fetchData = useCallback(() => {
+    return Promise.all([
+      api<Product[]>("/products"),
+      api<Customer[]>("/customers"),
+      api<Branch[]>("/branches"),
+    ]);
   }, []);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    const [p, c, branches] = result;
+    setProducts(p.filter((x) => x.active));
+    setCustomers(c);
+    setBranch(branches[0] ?? null);
+  }, []);
+
+  const { error: loadError } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar el POS");
 
   const filteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase();

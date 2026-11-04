@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
@@ -57,7 +58,6 @@ export default function InventoryMovementsPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [stock, setStock] = useState<StockRow[]>([]);
   const [movements, setMovements] = useState<MovementRow[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Filtros que se aplican tanto al stock por almacén como al historial de movimientos.
   const [filters, setFilters] = useState({ warehouseId: "", productId: "", type: "", dateFrom: "", dateTo: "" });
@@ -86,18 +86,19 @@ export default function InventoryMovementsPage() {
   const [kardexRows, setKardexRows] = useState<MovementRow[] | null>(null);
   const [kardexError, setKardexError] = useState<string | null>(null);
 
-  async function loadCatalogs() {
-    try {
-      const [p, branches] = await Promise.all([
-        api<Product[]>("/products"),
-        api<{ warehouses: Warehouse[] }[]>("/branches"),
-      ]);
-      setProducts(p);
-      setWarehouses(branches.flatMap((b) => b.warehouses));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar productos/almacenes");
-    }
-  }
+  const fetchCatalogs = useCallback(
+    () => Promise.all([api<Product[]>("/products"), api<{ warehouses: Warehouse[] }[]>("/branches")]),
+    [],
+  );
+  const receiveCatalogs = useCallback(([p, branches]: Awaited<ReturnType<typeof fetchCatalogs>>) => {
+    setProducts(p);
+    setWarehouses(branches.flatMap((b) => b.warehouses));
+  }, []);
+  const { error: catalogError } = useRemoteLoad(
+    fetchCatalogs,
+    receiveCatalogs,
+    "No se pudo cargar productos/almacenes",
+  );
 
   function buildQuery(params: Record<string, string>) {
     const qs = new URLSearchParams();
@@ -108,36 +109,27 @@ export default function InventoryMovementsPage() {
     return str ? `?${str}` : "";
   }
 
-  async function loadStockAndMovements() {
-    setLoadError(null);
-    try {
-      const [s, m] = await Promise.all([
-        api<StockRow[]>(`/inventory${buildQuery({ warehouseId: filters.warehouseId, productId: filters.productId })}`),
+  const { warehouseId, productId, type, dateFrom, dateTo } = filters;
+  const fetchInventory = useCallback(
+    () =>
+      Promise.all([
+        api<StockRow[]>(`/inventory${buildQuery({ warehouseId, productId })}`),
         api<MovementRow[]>(
-          `/inventory/movements${buildQuery({
-            warehouseId: filters.warehouseId,
-            productId: filters.productId,
-            type: filters.type,
-            dateFrom: filters.dateFrom,
-            dateTo: filters.dateTo,
-          })}`
+          `/inventory/movements${buildQuery({ warehouseId, productId, type, dateFrom, dateTo })}`,
         ),
-      ]);
-      setStock(s);
-      setMovements(m);
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el inventario");
-    }
-  }
-
-  useEffect(() => {
-    loadCatalogs();
+      ]),
+    [warehouseId, productId, type, dateFrom, dateTo],
+  );
+  const receiveInventory = useCallback(([stock, movements]: Awaited<ReturnType<typeof fetchInventory>>) => {
+    setStock(stock);
+    setMovements(movements);
   }, []);
-
-  useEffect(() => {
-    loadStockAndMovements();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.warehouseId, filters.productId, filters.type, filters.dateFrom, filters.dateTo]);
+  const { error: inventoryError, reload: loadStockAndMovements } = useRemoteLoad(
+    fetchInventory,
+    receiveInventory,
+    "No se pudo cargar el inventario",
+  );
+  const loadError = catalogError || inventoryError;
 
   async function registerMovementRequest(e: React.FormEvent) {
     e.preventDefault();

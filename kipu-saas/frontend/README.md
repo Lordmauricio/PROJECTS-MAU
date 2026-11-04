@@ -1,36 +1,46 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Frontend de KIPU
 
-## Getting Started
+Next.js 16 y React 19. La adaptación gastronómica para restaurantes y pollerías
+está documentada en [el plan](../docs/RESTAURANT_ROADMAP.md). Requiere Node 22+;
+los comandos de esta entrega se verificaron con Node 24.
 
-First, run the development server:
+## Desarrollo
+
+Desde esta carpeta, ejecutar `npm ci`, copiar `.env.local.example` a `.env.local`
+solo si no existe, y arrancar con `npm run dev`. La API se configura mediante
+`NEXT_PUBLIC_API_URL`; el backend y su base de datos se preparan según el README
+principal. La tipografía usa fuentes del sistema y no requiere Google Fonts.
+
+## Validación
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run lint
+npm run test:unit
+npm run build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Las pruebas unitarias comprueban recuperación y sincronización de sesiones,
+respuestas fuera de orden, errores de red y cancelación al desmontar pantallas.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Pruebas de navegador
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npx playwright install chromium
+npm run test:browser
+```
 
-## Learn More
+Si Chromium ya está instalado, evitar la descarga y seleccionar su ejecutable:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:browser
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Playwright inicia su propio servidor de desarrollo en el puerto 3100. Las pruebas
+usan respuestas simuladas de la API para probar la interfaz de manera reproducible;
+no validan transacciones reales ni aislamiento entre empresas. No ejecutar build y
+servidores de desarrollo sobre el mismo checkout al mismo tiempo. Las capturas y
+resultados de Playwright están ignorados en Git.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Los fetchers y callbacks de `useRemoteLoad` deben ser estables mediante
+`useCallback`. El hook vuelve a cargar al cambiar sus dependencias, conserva los
+mensajes de error y descarta respuestas obsoletas o posteriores al desmontaje.

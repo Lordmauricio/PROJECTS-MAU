@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
@@ -22,29 +23,26 @@ interface Member {
 export default function UsersPage() {
   const [members, setMembers] = useState<Member[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ email: "", name: "", roleId: "" });
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const [m, r] = await Promise.all([api<Member[]>("/members"), api<Role[]>("/roles")]);
-      setMembers(m);
-      setRoles(r);
-      if (r.length > 0) setForm((f) => ({ ...f, roleId: f.roleId || r.find((x) => x.key === "CASHIER")?.id || r[0].id }));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el equipo");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
+  const fetchData = useCallback(() => {
+    return Promise.all([api<Member[]>("/members"), api<Role[]>("/roles")]);
   }, []);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    const [m, r] = result;
+    setMembers(m);
+    setRoles(r);
+    if (r.length > 0)
+      setForm((f) => ({ ...f, roleId: f.roleId || r.find((x) => x.key === "CASHIER")?.id || r[0].id }));
+  }, []);
+
+  const { error: loadError, reload: load } = useRemoteLoad(
+    fetchData,
+    receiveData,
+    "No se pudo cargar el equipo",
+  );
 
   async function inviteRequest(e: React.FormEvent) {
     e.preventDefault();

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
@@ -41,29 +42,24 @@ function newIdempotencyKey() {
 export default function ReceivableDetailPage() {
   const params = useParams<{ id: string }>();
   const [receivable, setReceivable] = useState<Receivable | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("CASH");
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      setReceivable(await api<Receivable>(`/receivables/${params.id}`));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la cuenta por cobrar");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (params.id) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchData = useCallback(() => {
+    return api<Receivable>(`/receivables/${params.id}`);
   }, [params.id]);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    setReceivable(result);
+  }, []);
+
+  const {
+    loading,
+    error: loadError,
+    reload: load,
+  } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar la cuenta por cobrar");
 
   async function addPayment(e: React.FormEvent) {
     e.preventDefault();

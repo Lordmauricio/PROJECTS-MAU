@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
 import Link from "next/link";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
@@ -36,32 +37,32 @@ export default function CashPage() {
   const [terminals, setTerminals] = useState<PosTerminal[]>([]);
   const [openRegisters, setOpenRegisters] = useState<CashRegister[]>([]);
   const [history, setHistory] = useState<CashRegister[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [form, setForm] = useState({ posTerminalId: "", openingAmount: "" });
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  async function load() {
-    setLoadError(null);
-    try {
-      const [t, open, closed] = await Promise.all([
-        api<PosTerminal[]>("/pos-terminals"),
-        api<CashRegister[]>("/cash-registers?status=OPEN"),
-        api<CashRegister[]>("/cash-registers?status=CLOSED"),
-      ]);
-      setTerminals(t);
-      setOpenRegisters(open);
-      setHistory(closed);
-      if (t.length > 0) setForm((f) => ({ ...f, posTerminalId: f.posTerminalId || t[0].id }));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el estado de caja");
-    }
-  }
-
-  useEffect(() => {
-    load();
+  const fetchData = useCallback(() => {
+    return Promise.all([
+      api<PosTerminal[]>("/pos-terminals"),
+      api<CashRegister[]>("/cash-registers?status=OPEN"),
+      api<CashRegister[]>("/cash-registers?status=CLOSED"),
+    ]);
   }, []);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    const [t, open, closed] = result;
+    setTerminals(t);
+    setOpenRegisters(open);
+    setHistory(closed);
+    if (t.length > 0) setForm((f) => ({ ...f, posTerminalId: f.posTerminalId || t[0].id }));
+  }, []);
+
+  const { error: loadError, reload: load } = useRemoteLoad(
+    fetchData,
+    receiveData,
+    "No se pudo cargar el estado de caja",
+  );
 
   const terminalsWithoutOpenRegister = terminals.filter(
     (t) => !openRegisters.some((r) => r.posTerminalId === t.id)

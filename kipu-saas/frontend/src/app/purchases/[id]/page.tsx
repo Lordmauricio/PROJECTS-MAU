@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
 import { useParams } from "next/navigation";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
@@ -55,8 +56,6 @@ function newIdempotencyKey() {
 export default function PurchaseDetailPage() {
   const params = useParams<{ id: string }>();
   const [purchase, setPurchase] = useState<Purchase | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -67,29 +66,26 @@ export default function PurchaseDetailPage() {
   const [payPosTerminalId, setPayPosTerminalId] = useState("");
   const [openRegisters, setOpenRegisters] = useState<{ id: string; posTerminalId: string; posTerminal?: { name: string } }[]>([]);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const [p, registers] = await Promise.all([
-        api<Purchase>(`/purchases/${params.id}`),
-        api<{ id: string; posTerminalId: string; posTerminal?: { name: string } }[]>(
-          "/cash-registers?status=OPEN"
-        ).catch(() => []),
-      ]);
-      setPurchase(p);
-      setOpenRegisters(registers);
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la compra");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (params.id) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchData = useCallback(() => {
+    return Promise.all([
+      api<Purchase>(`/purchases/${params.id}`),
+      api<{ id: string; posTerminalId: string; posTerminal?: { name: string } }[]>(
+        "/cash-registers?status=OPEN",
+      ).catch(() => []),
+    ]);
   }, [params.id]);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    const [p, registers] = result;
+    setPurchase(p);
+    setOpenRegisters(registers);
+  }, []);
+
+  const {
+    loading,
+    error: loadError,
+    reload: load,
+  } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar la compra");
 
   async function confirmPurchase() {
     setActionError(null);

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
@@ -16,26 +17,22 @@ interface Supplier {
 
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", nit: "", phone: "", email: "" });
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      setSuppliers(await api<Supplier[]>("/suppliers"));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la lista de proveedores");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
+  const fetchData = useCallback(() => {
+    return api<Supplier[]>("/suppliers");
   }, []);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    setSuppliers(result);
+  }, []);
+
+  const {
+    loading,
+    error: loadError,
+    reload: load,
+  } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar la lista de proveedores");
 
   async function addSupplierRequest(e: React.FormEvent) {
     e.preventDefault();

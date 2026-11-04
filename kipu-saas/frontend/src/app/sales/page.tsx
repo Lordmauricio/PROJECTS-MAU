@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
 import Link from "next/link";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
-import { ApiError } from "@/lib/auth-context";
 
 interface Sale {
   id: string;
@@ -35,27 +35,22 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function SalesPage() {
   const [sales, setSales] = useState<Sale[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const query = status ? `?status=${status}` : "";
-      setSales(await api<Sale[]>(`/sales${query}`));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el listado de ventas");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchData = useCallback(() => {
+    const query = status ? `?status=${status}` : "";
+    return api<Sale[]>(`/sales${query}`);
   }, [status]);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    setSales(result);
+  }, []);
+
+  const { loading, error: loadError } = useRemoteLoad(
+    fetchData,
+    receiveData,
+    "No se pudo cargar el listado de ventas",
+  );
 
   return (
     <AppShell>

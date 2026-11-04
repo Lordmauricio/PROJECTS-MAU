@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
@@ -60,8 +61,6 @@ function newIdempotencyKey() {
 export default function CashRegisterDetailPage() {
   const params = useParams<{ id: string }>();
   const [register, setRegister] = useState<CashRegister | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [movForm, setMovForm] = useState({ type: "CASH_IN", amount: "", reason: "" });
   const [movError, setMovError] = useState<string | null>(null);
@@ -72,23 +71,20 @@ export default function CashRegisterDetailPage() {
   const [closeForm, setCloseForm] = useState({ countedAmount: "", observation: "" });
   const [closeError, setCloseError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const r = await api<CashRegister>(`/cash-registers/${params.id}`);
-      setRegister(r);
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la caja");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchData = useCallback(() => {
+    return api<CashRegister>(`/cash-registers/${params.id}`);
   }, [params.id]);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    const r = result;
+    setRegister(r);
+  }, []);
+
+  const {
+    loading,
+    error: loadError,
+    reload: load,
+  } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar la caja");
 
   const currentBalance = register
     ? register.movements.reduce(
@@ -179,7 +175,6 @@ export default function CashRegisterDetailPage() {
   if (!register) return <AppShell><div className="p-6 text-sm text-zinc-500">Caja no encontrada</div></AppShell>;
 
   const isOpen = register.status === "OPEN";
-
 
   return (
     <AppShell>

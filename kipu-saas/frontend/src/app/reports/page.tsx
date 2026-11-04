@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api, apiDownload } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
@@ -74,6 +75,10 @@ function formatDate(value: unknown): string {
 
 export default function ReportsPage() {
   const [reportKey, setReportKey] = useState<string>("sales");
+  return <ReportsContent key={reportKey} reportKey={reportKey} onReportChange={setReportKey} />;
+}
+
+function ReportsContent({ reportKey, onReportChange }: { reportKey: string; onReportChange: (key: string) => void }) {
   const definition = useMemo<ReportDefinition>(
     () => REPORTS.find((r) => r.key === reportKey) ?? REPORTS[0],
     [reportKey],
@@ -91,7 +96,6 @@ export default function ReportsPage() {
   const [users, setUsers] = useState<Option[]>([]);
 
   const [data, setData] = useState<ReportViewData | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState<"csv" | "xlsx" | null>(null);
 
@@ -133,28 +137,25 @@ export default function ReportsPage() {
     return params.toString();
   }
 
-  async function load(targetPage = page) {
-    setLoading(true);
-    setError(null);
-    try {
-      const qs = buildQuery({ page: targetPage });
-      const result = await api<ReportViewData>(`/reports/${definition.key}${qs ? `?${qs}` : ""}`);
-      setData(result);
-      setPage(targetPage);
-    } catch (err) {
-      setData(null);
-      setError(err instanceof ApiError ? err.message : "No se pudo cargar el reporte");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [query, setQuery] = useState(() => buildQuery({ page: 1 }));
+  const fetchReport = useCallback(
+    () => api<ReportViewData>(`/reports/${definition.key}${query ? `?${query}` : ""}`),
+    [definition.key, query],
+  );
+  const receiveReport = useCallback((result: ReportViewData) => setData(result), []);
+  const {
+    loading,
+    error: loadError,
+    reload,
+  } = useRemoteLoad(fetchReport, receiveReport, "No se pudo cargar el reporte");
 
-  useEffect(() => {
-    setFilters({});
-    setPage(1);
-    load(1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportKey]);
+  function load(targetPage = page) {
+    setError(null);
+    const nextQuery = buildQuery({ page: targetPage });
+    setPage(targetPage);
+    if (nextQuery === query) void reload();
+    else setQuery(nextQuery);
+  }
 
   async function handleExport(format: "csv" | "xlsx") {
     setExporting(format);
@@ -209,7 +210,7 @@ export default function ReportsPage() {
                 {items.map((r) => (
                   <button
                     key={r.key}
-                    onClick={() => setReportKey(r.key)}
+                    onClick={() => onReportChange(r.key)}
                     className={`block w-full text-left px-2 py-1.5 rounded text-sm ${
                       r.key === reportKey ? "bg-zinc-900 text-white" : "text-zinc-700 hover:bg-zinc-100"
                     }`}
@@ -277,10 +278,10 @@ export default function ReportsPage() {
               </div>
             </div>
 
-            {error && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>}
+            {(error || loadError) && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error || loadError}</p>}
 
             {/* Resumen */}
-            {!loading && !error && summaryEntries.length > 0 && (
+            {!loading && !error && !loadError && summaryEntries.length > 0 && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {summaryEntries.map(([key, value]) => (
                   <div key={key} className="bg-white border border-zinc-200 rounded-lg p-3">
@@ -299,7 +300,7 @@ export default function ReportsPage() {
               </div>
             )}
 
-            {byType.length > 0 && (
+            {!loadError && byType.length > 0 && (
               <div className="bg-white border border-zinc-200 rounded-lg p-4">
                 <p className="text-xs font-semibold text-zinc-500 mb-2">Desglose por tipo</p>
                 <div className="flex flex-wrap gap-4">
@@ -334,7 +335,7 @@ export default function ReportsPage() {
                       </td>
                     </tr>
                   )}
-                  {!loading &&
+                  {!loading && !loadError &&
                     data?.rows.map((row, i) => (
                       <tr key={i} className="border-t border-zinc-100">
                         {definition.columns.map((c) => {
@@ -355,7 +356,7 @@ export default function ReportsPage() {
                         })}
                       </tr>
                     ))}
-                  {!loading && (!data || data.rows.length === 0) && !error && (
+                  {!loading && (!data || data.rows.length === 0) && !error && !loadError && (
                     <tr>
                       <td colSpan={definition.columns.length} className="px-4 py-6 text-center text-zinc-400">
                         Sin datos para los filtros seleccionados

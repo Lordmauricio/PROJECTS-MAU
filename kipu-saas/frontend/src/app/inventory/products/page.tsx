@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
@@ -24,31 +25,24 @@ interface Product {
 export default function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", price: "", sku: "", categoryId: "" });
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const [p, c] = await Promise.all([
-        api<Product[]>("/products"),
-        api<Category[]>("/product-categories"),
-      ]);
-      setProducts(p);
-      setCategories(c);
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el catálogo de productos");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
+  const fetchData = useCallback(() => {
+    return Promise.all([api<Product[]>("/products"), api<Category[]>("/product-categories")]);
   }, []);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    const [p, c] = result;
+    setProducts(p);
+    setCategories(c);
+  }, []);
+
+  const {
+    loading,
+    error: loadError,
+    reload: load,
+  } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar el catálogo de productos");
 
   async function addProductRequest(e: React.FormEvent) {
     e.preventDefault();

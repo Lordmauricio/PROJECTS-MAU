@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, useCallback } from "react";
 import Link from "next/link";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
@@ -58,8 +59,6 @@ export default function PurchasesPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [warehouseId, setWarehouseId] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
 
   const [supplierId, setSupplierId] = useState("");
@@ -67,32 +66,29 @@ export default function PurchasesPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const query = status ? `?status=${status}` : "";
-      const [p, s, prod, branches] = await Promise.all([
-        api<Purchase[]>(`/purchases${query}`),
-        api<Supplier[]>("/suppliers"),
-        api<Product[]>("/products"),
-        api<Branch[]>("/branches"),
-      ]);
-      setPurchases(p);
-      setSuppliers(s);
-      setProducts(prod);
-      setWarehouseId(branches[0]?.warehouses[0]?.id ?? "");
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar las compras");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchData = useCallback(() => {
+    const query = status ? `?status=${status}` : "";
+    return Promise.all([
+      api<Purchase[]>(`/purchases${query}`),
+      api<Supplier[]>("/suppliers"),
+      api<Product[]>("/products"),
+      api<Branch[]>("/branches"),
+    ]);
   }, [status]);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    const [p, s, prod, branches] = result;
+    setPurchases(p);
+    setSuppliers(s);
+    setProducts(prod);
+    setWarehouseId(branches[0]?.warehouses[0]?.id ?? "");
+  }, []);
+
+  const {
+    loading,
+    error: loadError,
+    reload: load,
+  } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar las compras");
 
   const total = useMemo(
     () => lines.reduce((acc, l) => acc + l.quantity * l.unitCost - l.discount, 0),

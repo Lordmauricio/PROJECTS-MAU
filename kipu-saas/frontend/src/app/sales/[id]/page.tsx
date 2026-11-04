@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
 import { useParams } from "next/navigation";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api, apiBlobUrl, apiDownload } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
@@ -71,49 +72,36 @@ function newIdempotencyKey() {
 export default function SaleDetailPage() {
   const params = useParams<{ id: string }>();
   const [sale, setSale] = useState<Sale | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("CASH");
 
   const [receipt, setReceipt] = useState<CommercialReceipt | null>(null);
-  const [receiptLoading, setReceiptLoading] = useState(true);
   const [receiptError, setReceiptError] = useState<string | null>(null);
   const [issuingReceipt, setIssuingReceipt] = useState(false);
   const [pdfBusy, setPdfBusy] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      setSale(await api<Sale>(`/sales/${params.id}`));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar la venta");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function loadReceipt() {
-    setReceiptLoading(true);
-    try {
-      setReceipt(await api<CommercialReceipt | null>(`/receipts/by-sale/${params.id}`));
-    } catch (err) {
-      setReceiptError(err instanceof ApiError ? err.message : "No se pudo consultar el recibo");
-    } finally {
-      setReceiptLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (params.id) {
-      load();
-      loadReceipt();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchData = useCallback(() => {
+    return api<Sale>(`/sales/${params.id}`);
   }, [params.id]);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    setSale(result);
+  }, []);
+
+  const { loading, error: loadError } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar la venta");
+
+  const fetchReceipt = useCallback(
+    () => api<CommercialReceipt | null>(`/receipts/by-sale/${params.id}`),
+    [params.id],
+  );
+  const receiveReceipt = useCallback((result: CommercialReceipt | null) => setReceipt(result), []);
+  const { loading: receiptLoading, error: receiptLoadError } = useRemoteLoad(
+    fetchReceipt,
+    receiveReceipt,
+    "No se pudo consultar el recibo",
+  );
 
   async function issueReceipt() {
     if (issuingReceipt || receipt) return; // nunca emitir dos veces desde la UI
@@ -335,7 +323,7 @@ export default function SaleDetailPage() {
           <p className="text-xs text-zinc-500">
             Documento comercial NO fiscal. No sustituye la factura exigida por el SIN.
           </p>
-          {receiptError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{receiptError}</p>}
+          {(receiptError || receiptLoadError) && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{receiptError || receiptLoadError}</p>}
 
           {receiptLoading ? (
             <p className="text-sm text-zinc-400">Consultando...</p>
@@ -377,7 +365,7 @@ export default function SaleDetailPage() {
                 </button>
               </div>
               <p className="text-xs text-zinc-400">
-                Para imprimir, abrí el PDF ("Ver") y usá la opción de imprimir del visor del navegador.
+                Para imprimir, abrí el PDF (&quot;Ver&quot;) y usá la opción de imprimir del visor del navegador.
               </p>
             </div>
           ) : canIssueReceipt ? (

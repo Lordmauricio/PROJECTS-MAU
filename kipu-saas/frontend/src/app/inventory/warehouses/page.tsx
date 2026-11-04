@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
@@ -21,29 +22,25 @@ interface Warehouse {
 export default function WarehousesPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", branchId: "" });
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const [w, b] = await Promise.all([api<Warehouse[]>("/warehouses"), api<Branch[]>("/branches")]);
-      setWarehouses(w);
-      setBranches(b);
-      if (b.length > 0) setForm((f) => ({ ...f, branchId: f.branchId || b[0].id }));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar los almacenes");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
+  const fetchData = useCallback(() => {
+    return Promise.all([api<Warehouse[]>("/warehouses"), api<Branch[]>("/branches")]);
   }, []);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    const [w, b] = result;
+    setWarehouses(w);
+    setBranches(b);
+    if (b.length > 0) setForm((f) => ({ ...f, branchId: f.branchId || b[0].id }));
+  }, []);
+
+  const { error: loadError, reload: load } = useRemoteLoad(
+    fetchData,
+    receiveData,
+    "No se pudo cargar los almacenes",
+  );
 
   async function addWarehouseRequest(e: React.FormEvent) {
     e.preventDefault();

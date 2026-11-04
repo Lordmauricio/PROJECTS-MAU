@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
@@ -14,26 +15,22 @@ interface Category {
 
 export default function CategoriesPage() {
   const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      setCategories(await api<Category[]>("/product-categories"));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar las categorías");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
+  const fetchData = useCallback(() => {
+    return api<Category[]>("/product-categories");
   }, []);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    setCategories(result);
+  }, []);
+
+  const { error: loadError, reload: load } = useRemoteLoad(
+    fetchData,
+    receiveData,
+    "No se pudo cargar las categorías",
+  );
 
   async function addCategoryRequest(e: React.FormEvent) {
     e.preventDefault();

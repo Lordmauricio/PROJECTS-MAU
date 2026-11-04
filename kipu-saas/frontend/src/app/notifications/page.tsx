@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
@@ -32,27 +33,22 @@ export default function NotificationsPage() {
   const [data, setData] = useState<NotificationsPage | null>(null);
   const [page, setPage] = useState(1);
   const [unreadOnly, setUnreadOnly] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const query = `?page=${page}&pageSize=${PAGE_SIZE}${unreadOnly ? "&unreadOnly=true" : ""}`;
-      setData(await api<NotificationsPage>(`/notifications${query}`));
-    } catch (err) {
-      setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar las notificaciones");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchData = useCallback(() => {
+    const query = `?page=${page}&pageSize=${PAGE_SIZE}${unreadOnly ? "&unreadOnly=true" : ""}`;
+    return api<NotificationsPage>(`/notifications${query}`);
   }, [page, unreadOnly]);
+
+  const receiveData = useCallback((result: Awaited<ReturnType<typeof fetchData>>) => {
+    setData(result);
+  }, []);
+
+  const {
+    loading,
+    error: loadError,
+    reload: load,
+  } = useRemoteLoad(fetchData, receiveData, "No se pudo cargar las notificaciones");
 
   async function markRead(id: string) {
     setActionError(null);
