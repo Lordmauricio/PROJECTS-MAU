@@ -89,9 +89,43 @@ export class CreateOrderDto extends QuoteOrderDto {
 }
 
 export class TransitionOrderDto {
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(60) station?: string;
   @IsIn(['PREPARING', 'READY', 'DELIVERED']) status!:
     'PREPARING' | 'READY' | 'DELIVERED';
   @IsInt() @Min(0) version!: number;
+}
+
+export class PrintOrderDto {
+  @IsOptional() @IsString() @MinLength(1) @MaxLength(60) station?: string;
+}
+
+export class CreateBatchDto {
+  @IsString() @MinLength(1) warehouseId!: string;
+  @IsString() @MinLength(1) @MaxLength(100) name!: string;
+  @IsString() @MinLength(1) @MaxLength(60) station!: string;
+  @IsString() @MinLength(1) sourceProductId!: string;
+  @IsString() @MinLength(1) outputProductId!: string;
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  @Max(10000)
+  sourceQuantity!: number;
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  @Max(10000)
+  plannedQuantity!: number;
+  @IsString() @MinLength(8) @MaxLength(100) requestKey!: string;
+}
+
+export class BatchActionDto {
+  @IsInt() @Min(0) version!: number;
+  @IsIn(['PREPARING', 'READY', 'CANCELLED']) status!:
+    'PREPARING' | 'READY' | 'CANCELLED';
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  @Max(10000)
+  producedQuantity?: number;
+  @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }
 
 export class CancelOrderDto {

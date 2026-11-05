@@ -21,13 +21,45 @@ import {
   ListOrdersDto,
   SaveMenuEntryDto,
   TransitionOrderDto,
+  PrintOrderDto,
+  CreateBatchDto,
+  BatchActionDto,
 } from './restaurant.dto';
 import { RestaurantService } from './restaurant.service';
+import { ProductionService } from './production.service';
 
 @Controller('restaurant')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class RestaurantController {
-  constructor(private readonly restaurant: RestaurantService) {}
+  constructor(
+    private readonly restaurant: RestaurantService,
+    private readonly production: ProductionService,
+  ) {}
+  @Get('batches')
+  @RequirePermissions('inventory.read')
+  batches(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.production.list(auth.organizationId, branchId);
+  }
+  @Post('batches')
+  @RequirePermissions('inventory.manage')
+  createBatch(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Body() dto: CreateBatchDto,
+  ) {
+    return this.production.create(auth.organizationId, auth.sub, dto);
+  }
+  @Post('batches/:id/status')
+  @RequirePermissions('inventory.manage')
+  batchAction(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Param('id') id: string,
+    @Body() dto: BatchActionDto,
+  ) {
+    return this.production.action(auth.organizationId, auth.sub, id, dto);
+  }
   @Get('menu')
   @RequirePermissions('products.read')
   menu(
@@ -107,7 +139,16 @@ export class RestaurantController {
   }
   @Post('orders/:id/print')
   @RequirePermissions('sales.read')
-  print(@CurrentAuth() auth: AccessTokenPayload, @Param('id') id: string) {
-    return this.restaurant.print(auth.organizationId, auth.sub, id);
+  print(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Param('id') id: string,
+    @Body() dto: PrintOrderDto,
+  ) {
+    return this.restaurant.print(
+      auth.organizationId,
+      auth.sub,
+      id,
+      dto.station,
+    );
   }
 }

@@ -386,7 +386,7 @@ export default function SaleDetailPage() {
           )}
         </div>
 
-        {canReturn && sale.restaurantOrder && <p className="rounded bg-amber-50 p-3 text-sm text-amber-900">La devolución cancelará el pedido gastronómico. Si la preparación ya empezó, se reembolsará el pago sin reponer los ingredientes al stock.</p>}
+        {canReturn && sale.restaurantOrder && <p className="rounded bg-amber-50 p-3 text-sm text-amber-900">La devolución cancelará el pedido gastronómico. Se repondrán únicamente los componentes de estaciones que todavía no iniciaron preparación.</p>}
         <div className="flex gap-2">
           {canCancel && (
             <button onClick={cancelSale} disabled={busy} className="rounded border border-red-300 text-red-700 px-3 py-1.5 text-sm disabled:opacity-50">

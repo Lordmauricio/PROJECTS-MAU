@@ -674,9 +674,57 @@ model RestaurantOrder {
   deliveredAt DateTime?
   printCount Int @default(0)
   events RestaurantOrderEvent[]
+  tasks KitchenTask[]
+  @@unique([id, organizationId])
   @@unique([organizationId, requestKey])
   @@index([organizationId, branchId, status])
   @@map("restaurant_orders")
+}
+
+model KitchenTask {
+  id String @id @default(cuid())
+  organizationId String
+  orderId String
+  order RestaurantOrder @relation(fields: [orderId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  station String
+  status PreparationStatus @default(QUEUED)
+  version Int @default(0)
+  printCount Int @default(0)
+  createdAt DateTime @default(now())
+  startedAt DateTime?
+  readyAt DateTime?
+  @@unique([orderId, station])
+  @@index([organizationId, station, status])
+  @@map("kitchen_tasks")
+}
+
+model ProductionBatch {
+  id String @id @default(cuid())
+  organizationId String
+  branchId String
+  warehouseId String
+  name String
+  station String
+  sourceProductId String
+  sourceName String
+  outputProductId String
+  outputName String
+  sourceQuantity Decimal @db.Decimal(12, 2)
+  plannedQuantity Decimal @db.Decimal(12, 2)
+  producedQuantity Decimal? @db.Decimal(12, 2)
+  status PreparationStatus @default(DRAFT)
+  requestKey String
+  requestHash String
+  version Int @default(0)
+  createdById String
+  createdAt DateTime @default(now())
+  startedAt DateTime?
+  readyAt DateTime?
+  cancelledAt DateTime?
+  cancelReason String?
+  @@unique([organizationId, requestKey])
+  @@index([organizationId, branchId, status])
+  @@map("production_batches")
 }
 
 model RestaurantOrderEvent {

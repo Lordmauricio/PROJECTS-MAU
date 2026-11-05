@@ -623,3 +623,190 @@ test("el encargado cambia el menú y precio de temporada sin alterar pedidos ant
   expect(Number(paid.sale.total)).toBe(25);
   expect(paid.snapshot[0].name).toBe("Plato original · Cuarto");
 });
+
+test("tanda real alimenta porciones y cada estación prepara su comanda antes de entregar", async ({
+  page,
+}) => {
+  const { call, branch } = await register(page);
+  const warehouseId = branch.warehouses[0].id;
+  const raw = await call<{ id: string }>("/products", "POST", {
+    name: "Pollo crudo",
+    price: 60,
+  });
+  const cooked = await call<{ id: string }>("/products", "POST", {
+    name: "Pollo preparado",
+    price: 80,
+  });
+  const drink = await call<{ id: string }>("/products", "POST", {
+    name: "Refresco de cocina",
+    price: 5,
+  });
+  for (const productId of [raw.id, drink.id])
+    await call("/inventory/movements", "POST", {
+      warehouseId,
+      productId,
+      type: "IN",
+      quantity: 10,
+      idempotencyKey: randomUUID(),
+    });
+  const menu = await call<{ id: string }>("/restaurant/menu", "POST", {
+    productId: cooked.id,
+    name: "Pollo preparado",
+    presentation: "Cuarto",
+    category: "Pollos",
+    station: "Parrilla",
+    price: 25,
+    active: true,
+    components: [{ productId: cooked.id, quantity: 0.25 }],
+    options: [],
+  });
+  await call("/restaurant/menu", "POST", {
+    productId: drink.id,
+    name: "Refresco de cocina",
+    category: "Bebidas",
+    station: "Bebidas",
+    price: 5,
+    active: true,
+    components: [{ productId: drink.id, quantity: 1 }],
+    options: [],
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/restaurant/production");
+  await page
+    .getByLabel("Nombre de la tanda", { exact: true })
+    .fill("Horneada del turno");
+  await page
+    .getByRole("combobox", { name: "Producto crudo", exact: true })
+    .selectOption(raw.id);
+  await page
+    .getByRole("combobox", { name: "Producto preparado", exact: true })
+    .selectOption(cooked.id);
+  await page.getByLabel("Cantidad cruda a consumir").fill("4");
+  await page.getByLabel("Producción prevista", { exact: true }).fill("4");
+  await page
+    .getByRole("button", { name: "Planificar tanda", exact: true })
+    .click();
+  const batch = page.getByRole("article", {
+    name: "Tanda Horneada del turno",
+    exact: true,
+  });
+  await batch
+    .getByRole("button", { name: "Iniciar tanda", exact: true })
+    .click();
+  await batch
+    .getByLabel("Cantidad preparada real", { exact: true })
+    .fill("3.5");
+  await batch
+    .getByRole("button", { name: "Registrar producción", exact: true })
+    .click();
+  await expect(
+    batch.getByText("Producción registrada: 3.5 × Pollo preparado", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "/tmp/kipu-stage4-production-mobile.png",
+    fullPage: true,
+  });
+  const available = await call<{ id: string; available: number }[]>(
+    `/restaurant/menu?warehouseId=${warehouseId}`,
+  );
+  expect(available.find((entry) => entry.id === menu.id)?.available).toBe(14);
+  const cash = await call<{ id: string }>("/cash-registers", "POST", {
+    posTerminalId: branch.posTerminals[0].id,
+    openingAmount: 100,
+    idempotencyKey: randomUUID(),
+  });
+  await page.goto("/restaurant/pos");
+  await page
+    .getByRole("button", {
+      name: "Agregar Pollo preparado · Cuarto",
+      exact: true,
+    })
+    .click();
+  await page
+    .getByRole("button", { name: "Agregar Refresco de cocina", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Guardar pedido", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Cobrar y enviar a cocina", exact: true })
+    .click();
+  await expect(
+    page.getByText("Pedido cobrado y enviado a cocina", { exact: true }),
+  ).toBeVisible();
+  const [order] =
+    await call<{ id: string; status: string }[]>("/restaurant/orders");
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await page.goto("/restaurant/kitchen");
+  const card = page.getByRole("article", {
+    name: `Pedido ${order.id.slice(-6)}`,
+  });
+  await card
+    .getByRole("button", { name: "Iniciar Parrilla", exact: true })
+    .click();
+  await card
+    .getByRole("button", { name: "Listo Parrilla", exact: true })
+    .click();
+  await expect(
+    card.getByRole("button", { name: "Entregar pedido", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByLabel("Filtrar por estación", { exact: true })
+    .selectOption("Bebidas");
+  await expect(
+    page
+      .getByRole("region", { name: "En espera", exact: true })
+      .getByRole("article", { name: `Pedido ${order.id.slice(-6)}` }),
+  ).toBeVisible();
+  await card
+    .getByRole("button", { name: "Iniciar preparación", exact: true })
+    .click();
+  await page.evaluate(() => {
+    window.print = () => {};
+  });
+  await card.getByRole("button", { name: "Imprimir", exact: true }).click();
+  await expect(page.locator(".order-ticket")).toContainText(
+    "Estación: Bebidas",
+  );
+  await expect(page.locator(".order-ticket")).toContainText(
+    "Refresco de cocina",
+  );
+  await expect(page.locator(".order-ticket")).not.toContainText(
+    "Pollo preparado",
+  );
+  await card.getByRole("button", { name: "Marcar listo", exact: true }).click();
+  await expect(
+    card.getByRole("button", { name: "Entregar pedido", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: "/tmp/kipu-stage4-kitchen-tablet.png",
+    fullPage: true,
+  });
+  await card
+    .getByRole("button", { name: "Entregar pedido", exact: true })
+    .click();
+  await expect(card).toHaveCount(0);
+  const stocks = await call<{ productId: string; quantity: string }[]>(
+    `/inventory?warehouseId=${warehouseId}`,
+  );
+  expect(Number(stocks.find((s) => s.productId === raw.id)?.quantity)).toBe(6);
+  expect(Number(stocks.find((s) => s.productId === cooked.id)?.quantity)).toBe(
+    3.25,
+  );
+  await page.goto(`/cash/${cash.id}`);
+  await page.getByPlaceholder("Efectivo contado").fill("130");
+  const close = page.waitForResponse((response) =>
+    response.url().endsWith(`/cash-registers/${cash.id}/close`),
+  );
+  await page.getByRole("button", { name: "Cerrar caja", exact: true }).click();
+  expect(
+    Number(((await (await close).json()) as { difference: string }).difference),
+  ).toBe(0);
+});

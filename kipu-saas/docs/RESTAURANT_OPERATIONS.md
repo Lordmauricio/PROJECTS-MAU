@@ -70,8 +70,8 @@ cambiar un pedido sin cobrar, cancelarlo y crear otro.
 - Las transiciones usan versión y bloqueo: dos operadores no pueden avanzar un
   estado obsoleto. Un reintento de la misma transición no duplica su evento.
 - Cancelar un borrador no consume stock. Para devolver un pedido pagado, usar la
-  devolución de venta. Antes de preparación, repone sus componentes; después de
-  iniciarla, devuelve dinero sin reponer comida preparada. La decisión queda
+  devolución de venta. Se reponen los componentes de estaciones que no iniciaron
+  preparación; lo ya iniciado no se repone automáticamente. La decisión queda
   registrada en el evento del pedido y el movimiento financiero conserva su
   auditoría. No equivale todavía a un módulo completo de mermas o producción.
 - Las solicitudes de impresión quedan numeradas. Las copias posteriores llevan
@@ -82,15 +82,46 @@ cambiar un pedido sin cobrar, cancelarlo y crear otro.
 Se reutilizan los permisos existentes: `products.read/create/update` para menú;
 `sales.read/create/update/delete` para consulta, cobro, cocina y cancelación.
 El cajero puede consultar y cobrar; el encargado administra menú y cocina.
-Las tres tablas nuevas tienen RLS forzado por empresa. Sus eventos se escriben
+Producción usa `inventory.read` para consultar y `inventory.manage` para operar.
+Las tablas de restaurante y producción tienen RLS forzado por empresa. Sus eventos se escriben
 en la misma transacción que el cambio de estado.
 
-La preparación se controla por pedido completo. El filtro de estación muestra
-sus líneas, pero el operador debe coordinar todas las estaciones antes de cambiar
-el estado global. La consulta muestra hasta 100 pedidos. No hay todavía estados
-independientes por estación, producción por tandas, mesas/cuentas abiertas,
+Cada estación tiene una comanda y versión propias. El filtro muestra las líneas
+y el estado de esa estación; sin filtro se ve el estado agregado del pedido.
+El pedido solo queda listo cuando todas las estaciones están listas y solo
+entonces puede entregarse. Se registran los horarios de inicio/listo por estación
+y el tiempo desde ingreso a cocina, actualizado cada 15 segundos. La acción sin
+estación conserva el avance conjunto; no permite saltar estaciones sin iniciar.
+La impresión filtrada conserva un contador de copias por estación independiente
+del contador de impresión del pedido completo. Las copias filtradas incluyen
+solo sus líneas, el estado y el nombre de estación.
+
+La consulta muestra hasta 100 pedidos. No hay todavía mesas/cuentas abiertas,
 delivery, lotes/vencimientos ni facturación SIN. Los reportes agrupan los combos
 por su producto de venta; no presentan todavía un desglose de costo por receta.
+
+## Producción por tandas
+
+En **Restaurante → Producción por tandas**, planificar nombre, estación, almacén,
+producto crudo/cantidad y producto preparado/cantidad prevista. Usar productos
+distintos y cantidades en las unidades configuradas de cada producto. Configurar
+el menú para consumir el preparado: un cuarto puede consumir 0.25 de pollo listo.
+
+Planificar no mueve existencias. **Iniciar tanda** consume el crudo una sola vez,
+o rechaza el inicio si no alcanza. **Registrar producción** agrega al almacén la
+cantidad preparada real; puede diferir de la prevista. Los reintentos y las
+acciones concurrentes no duplican consumo ni producción. Una tanda completada
+ya no admite otra cantidad por el mismo intento.
+
+Cancelar requiere motivo. Una tanda iniciada conserva el consumo crudo y no
+produce stock preparado; cancelar no devuelve automáticamente materia prima.
+Una tanda completada requiere ajustes de inventario para corregir existencias,
+con su motivo y permisos. Se registran acciones y cantidades en auditoría.
+
+El saldo disponible por porciones proviene del inventario agregado del producto
+preparado, no de una supuesta cantidad restante por tanda. Esta entrega no
+asigna ventas a lotes, convierte unidades ni recalcula costos o mermas detalladas;
+esas ampliaciones corresponden a la etapa 6.
 
 ## API aditiva
 
@@ -109,8 +140,15 @@ por su producto de venta; no presentan todavía un desglose de costo por receta.
   entregados y cancelados.
 - `POST /restaurant/orders/:id/checkout`: usa los mismos pagos que ventas.
 - `POST /restaurant/orders/:id/status`: recibe estado siguiente y versión actual.
+  Con `station` usa la versión de la comanda de esa estación. Sin estación usa
+  la versión del pedido; `DELIVERED` requiere todas las estaciones listas.
 - `POST /restaurant/orders/:id/cancel`: requiere motivo; solo antes del cobro.
 - `POST /restaurant/orders/:id/print`: registra una solicitud y devuelve la copia.
+  Admite `station`; devuelve `printStation` y `printCopy`. No confirma salida física.
+- `GET/POST /restaurant/batches`: consulta por sucursal y planifica tandas con
+  `requestKey`. Repetir la clave con otros datos devuelve 409.
+- `POST /restaurant/batches/:id/status`: recibe versión y PREPARING, READY o
+  CANCELLED; READY admite cantidad real y CANCELLED requiere motivo.
 
 La migración es aditiva: agrega menú, pedidos/eventos y dos columnas opcionales
 en líneas de venta. Las ventas existentes conservan el consumo directo de su
@@ -121,6 +159,13 @@ La ampliación de etapa 3 agrega una migración aditiva:
 Desplegar primero el backend compatible y aplicar sus migraciones, después el
 frontend que consulta `/restaurant/quote`. Respaldar la base antes de migrar un
 entorno con datos. Las entradas anteriores siguen funcionando sin presentación.
+
+La etapa 4 agrega `20261105030000_kitchen_stations_and_batches`. Crea comandas y
+tandas con RLS forzado y una FK de comanda/pedido que incluye empresa. Genera las
+comandas de pedidos previos conservando su estado global; no vuelve a cobrar ni
+mueve stock durante esa adaptación. Desplegar backend/migración antes del frontend
+con estaciones y producción. La aplicación local se probó sobre el contenedor
+de desarrollo, sin aplicar migraciones en producción.
 
 ## Validación local
 

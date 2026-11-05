@@ -27,9 +27,10 @@
  * `NODE_OPTIONS=--experimental-vm-modules`, el `fetch` nativo (undici) se
  * cuelga indefinidamente al hacer un request real dentro del entorno de
  * Jest — problema conocido de esa combinación, no de esta app. `supertest`
- * habla directo con el handler HTTP de Express sin abrir un socket real, y
- * es el approach estándar de NestJS para tests de integración/e2e (ya
- * estaba en `devDependencies`, pensado exactamente para esto).
+ * usa el servidor HTTP de Express. Se mantiene un puerto loopback efímero
+ * abierto durante toda la suite: si supertest abre/cierra el servidor por
+ * request, una respuesta puede cerrarlo mientras otras solicitudes concurrentes
+ * siguen en vuelo (ECONNRESET). app.close() lo cierra en el afterAll de la suite.
  */
 import 'dotenv/config';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
@@ -49,7 +50,7 @@ export async function bootTestApp(): Promise<INestApplication> {
       transform: true,
     }),
   );
-  await app.init();
+  await app.listen(0, '127.0.0.1');
   return app;
 }
 

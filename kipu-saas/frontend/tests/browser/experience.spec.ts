@@ -166,6 +166,7 @@ test("el enlace de salto permite llegar al contenido con teclado", async ({
   page,
 }) => {
   await page.goto("/customers");
+  await expect(page.getByRole("heading", { name: "Clientes", exact: true })).toBeVisible();
   await page.keyboard.press("Tab");
   await expect(
     page.getByRole("link", { name: "Ir al contenido" }),

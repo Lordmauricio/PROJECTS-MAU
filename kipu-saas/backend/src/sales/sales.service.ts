@@ -509,10 +509,39 @@ export class SalesService {
       const items = await tx.saleItem.findMany({
         where: { saleId, organizationId },
       });
-      for (const item of (restoreStock
+      const tasks = order
+        ? await tx.kitchenTask.findMany({
+            where: { organizationId, orderId: order.id },
+          })
+        : [];
+      const unstarted = new Set(
+        tasks
+          .filter((task) => task.status === 'QUEUED' && !task.startedAt)
+          .map((task) => task.station),
+      );
+      const restoredItems = restoreStock
         ? items.flatMap(stockComponents)
-        : []
-      ).sort((a, b) => a.productId.localeCompare(b.productId))) {
+        : order && unstarted.size
+          ? (
+              order.snapshot as unknown as Array<{
+                productId: string;
+                quantity: number;
+                station: string;
+                components: Array<{ productId: string; quantity: string }>;
+              }>
+            )
+              .filter((line) => unstarted.has(line.station))
+              .flatMap((line) =>
+                stockComponents({
+                  productId: line.productId,
+                  quantity: money(line.quantity),
+                  stockComponents: line.components,
+                }),
+              )
+          : [];
+      for (const item of restoredItems.sort((a, b) =>
+        a.productId.localeCompare(b.productId),
+      )) {
         await this.inventory.applyMovement(tx, {
           organizationId,
           warehouseId: locked.warehouseId,
@@ -568,6 +597,10 @@ export class SalesService {
       });
       await this.cancelReceivableIfAny(tx, saleId);
       if (order) {
+        await tx.kitchenTask.updateMany({
+          where: { organizationId, orderId: order.id },
+          data: { status: 'CANCELLED', version: { increment: 1 } },
+        });
         await tx.restaurantOrder.update({
           where: { id: order.id },
           data: { status: 'CANCELLED', version: { increment: 1 } },
@@ -580,7 +613,9 @@ export class SalesService {
             action: 'REFUNDED',
             detail: restoreStock
               ? 'Stock repuesto; preparación no iniciada'
-              : 'Sin reposición: preparación iniciada',
+              : restoredItems.length
+                ? `Reposición solo de estaciones sin iniciar: ${[...unstarted].join(', ')}`
+                : 'Sin reposición: preparación iniciada',
           },
         });
       }

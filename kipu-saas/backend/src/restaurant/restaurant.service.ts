@@ -22,6 +22,7 @@ import {
 } from './restaurant.dto';
 
 const orderInclude = {
+  tasks: { orderBy: { station: 'asc' as const } },
   sale: { include: { payments: true } },
   events: { orderBy: { createdAt: 'asc' as const } },
 };
@@ -529,10 +530,24 @@ export class RestaurantService {
           version: { increment: 1 },
         },
       });
-      if (changed.count)
+      if (changed.count) {
+        const snapshot = order.snapshot as unknown as Array<{
+          station: string;
+        }>;
+        const stations = [
+          ...new Set(snapshot.map((line) => line.station || 'Cocina')),
+        ];
+        await tx.kitchenTask.createMany({
+          data: stations.map((station) => ({
+            organizationId,
+            orderId: id,
+            station,
+          })),
+        });
         await tx.restaurantOrderEvent.create({
           data: { organizationId, orderId: id, action: 'QUEUED', actorUserId },
         });
+      }
       return tx.restaurantOrder.findFirstOrThrow({
         where: { id, organizationId },
         include: orderInclude,
@@ -548,45 +563,132 @@ export class RestaurantService {
   ) {
     return this.tenant.run(organizationId, async (tx) => {
       const order = await this.lock(tx, organizationId, id);
-      if (order.status === dto.status && order.version === dto.version + 1)
-        return tx.restaurantOrder.findFirstOrThrow({
-          where: { id, organizationId },
-          include: orderInclude,
-        });
-      const previous = {
-        PREPARING: 'QUEUED',
-        READY: 'PREPARING',
-        DELIVERED: 'READY',
-      };
-      if (
-        order.version !== dto.version ||
-        order.status !== previous[dto.status]
-      )
+      if (order.status === 'CANCELLED' || order.status === 'DRAFT')
         throw new ConflictException(
-          'El pedido cambió. Actualiza el tablero antes de continuar',
+          'El pedido no está disponible para preparación',
         );
       const sale = await tx.sale.findFirstOrThrow({
         where: { id: order.saleId, organizationId },
       });
       if (sale.status !== 'PAID')
         throw new ConflictException(
-          'La venta ya no está pagada; revisa su devolución o cancelación',
+          'La venta ya no está pagada; revisa su devolución',
         );
+      const tasks = await tx.kitchenTask.findMany({
+        where: { orderId: id, organizationId },
+      });
+      if (!tasks.length)
+        throw new ConflictException('El pedido no tiene comandas de estación');
       const now = new Date();
+      if (dto.station) {
+        if (dto.status === 'DELIVERED')
+          throw new BadRequestException(
+            'La entrega corresponde al pedido completo',
+          );
+        const task = tasks.find((task) => task.station === dto.station);
+        if (!task)
+          throw new NotFoundException('Estación no encontrada en este pedido');
+        if (task.status === dto.status && task.version === dto.version + 1)
+          return tx.restaurantOrder.findFirstOrThrow({
+            where: { id, organizationId },
+            include: orderInclude,
+          });
+        const previous = dto.status === 'PREPARING' ? 'QUEUED' : 'PREPARING';
+        if (
+          order.status === 'DELIVERED' ||
+          task.version !== dto.version ||
+          task.status !== previous
+        )
+          throw new ConflictException(
+            'La estación cambió. Actualiza el tablero',
+          );
+        await tx.kitchenTask.update({
+          where: { id: task.id },
+          data: {
+            status: dto.status,
+            version: { increment: 1 },
+            ...(dto.status === 'PREPARING'
+              ? { startedAt: now }
+              : { readyAt: now }),
+          },
+        });
+      } else {
+        if (order.status === dto.status && order.version === dto.version + 1)
+          return tx.restaurantOrder.findFirstOrThrow({
+            where: { id, organizationId },
+            include: orderInclude,
+          });
+        const previous = {
+          PREPARING: 'QUEUED',
+          READY: 'PREPARING',
+          DELIVERED: 'READY',
+        };
+        if (
+          order.version !== dto.version ||
+          order.status !== previous[dto.status]
+        )
+          throw new ConflictException('El pedido cambió. Actualiza el tablero');
+        if (
+          dto.status === 'DELIVERED' &&
+          tasks.some((task) => task.status !== 'READY')
+        )
+          throw new ConflictException(
+            'Todas las estaciones deben estar listas antes de entregar',
+          );
+        if (
+          dto.status === 'READY' &&
+          tasks.some((task) => task.status === 'QUEUED')
+        )
+          throw new ConflictException(
+            'Inicia las estaciones pendientes antes de marcar todo listo',
+          );
+        if (dto.status !== 'DELIVERED')
+          await tx.kitchenTask.updateMany({
+            where: { orderId: id, organizationId, status: { not: 'READY' } },
+            data: {
+              status: dto.status,
+              version: { increment: 1 },
+              ...(dto.status === 'PREPARING'
+                ? { startedAt: now }
+                : { readyAt: now }),
+            },
+          });
+      }
+      const updatedTasks = await tx.kitchenTask.findMany({
+        where: { orderId: id, organizationId },
+      });
+      const current = await tx.restaurantOrder.findFirstOrThrow({
+        where: { id, organizationId },
+      });
+      const aggregate =
+        dto.status === 'DELIVERED'
+          ? 'DELIVERED'
+          : updatedTasks.every((task) => task.status === 'READY')
+            ? 'READY'
+            : updatedTasks.some((task) => task.status !== 'QUEUED')
+              ? 'PREPARING'
+              : 'QUEUED';
       await tx.restaurantOrder.update({
         where: { id },
         data: {
-          status: dto.status,
+          status: aggregate,
           version: { increment: 1 },
-          ...(dto.status === 'PREPARING'
-            ? { preparingAt: now }
-            : dto.status === 'READY'
-              ? { readyAt: now }
-              : { deliveredAt: now }),
+          preparingAt:
+            current.preparingAt ?? (aggregate !== 'QUEUED' ? now : null),
+          readyAt:
+            current.readyAt ??
+            (['READY', 'DELIVERED'].includes(aggregate) ? now : null),
+          ...(aggregate === 'DELIVERED' ? { deliveredAt: now } : {}),
         },
       });
       await tx.restaurantOrderEvent.create({
-        data: { organizationId, orderId: id, action: dto.status, actorUserId },
+        data: {
+          organizationId,
+          orderId: id,
+          action: dto.station ? `STATION_${dto.status}` : dto.status,
+          actorUserId,
+          detail: dto.station ?? 'Todas las estaciones',
+        },
       });
       return tx.restaurantOrder.findFirstOrThrow({
         where: { id, organizationId },
@@ -631,24 +733,47 @@ export class RestaurantService {
     });
   }
 
-  print(organizationId: string, actorUserId: string, id: string) {
+  print(
+    organizationId: string,
+    actorUserId: string,
+    id: string,
+    station?: string,
+  ) {
     return this.tenant.run(organizationId, async (tx) => {
       await this.lock(tx, organizationId, id);
-      const order = await tx.restaurantOrder.update({
-        where: { id },
-        data: { printCount: { increment: 1 } },
-        include: orderInclude,
-      });
+      let copy: number;
+      if (station) {
+        const task = await tx.kitchenTask.findUnique({
+          where: { orderId_station: { orderId: id, station } },
+        });
+        if (!task) throw new NotFoundException('Estación no encontrada');
+        copy = (
+          await tx.kitchenTask.update({
+            where: { id: task.id },
+            data: { printCount: { increment: 1 } },
+          })
+        ).printCount;
+      } else
+        copy = (
+          await tx.restaurantOrder.update({
+            where: { id },
+            data: { printCount: { increment: 1 } },
+          })
+        ).printCount;
       await tx.restaurantOrderEvent.create({
         data: {
           organizationId,
           orderId: id,
-          action: order.printCount === 1 ? 'PRINT' : 'REPRINT',
+          action: copy === 1 ? 'PRINT' : 'REPRINT',
           actorUserId,
-          detail: `Copia ${order.printCount}`,
+          detail: `${station ?? 'Todas las estaciones'} · Copia ${copy}`,
         },
       });
-      return order;
+      const order = await tx.restaurantOrder.findFirstOrThrow({
+        where: { id, organizationId },
+        include: orderInclude,
+      });
+      return { ...order, printCopy: copy, printStation: station ?? null };
     });
   }
 

@@ -74,15 +74,21 @@ inicialmente, identificado como tal; confirmación automática requiere proveedo
 Cierre: vender un combo de pollo, cobrar una sola vez y conservar el detalle y
 precio histórico de todos sus componentes.
 
-## 4. Cocina y despacho — primer flujo implementado
+## 4. Cocina y despacho — entrega técnica validada, piloto físico pendiente
 
 - [x] Tablero por estado con filtros de sucursal y estación.
 - [x] Preparación → listo → entrega, con control de versión y eventos auditados.
 - [x] Solicitudes de impresión/reimpresión identificadas.
 - [x] Stock de componentes y devoluciones según inicio de preparación.
 - [x] Recorrido completo con servicios reales y pagos mixtos en Chromium.
-- [ ] Producción por tandas y estados independientes por estación.
-- [ ] Prueba en pollería con operadores e impresoras físicas.
+- [x] Producción por tandas con consumo de crudo y registro de producción real.
+- [x] Estados y versiones independientes por estación; entrega solo con todas listas.
+- [x] Comandas filtradas con copias por estación y tiempos de preparación.
+- [x] Devoluciones reponen únicamente componentes de estaciones sin iniciar.
+- [x] Concurrencia, reintentos, permisos y recorrido de tanda a cierre con servicios reales.
+- [ ] Prueba en pollería con operadores e impresoras físicas (aplazada).
+
+Informe: `INFORME_ETAPA_4.md`. La entrega técnica no equivale al piloto presencial.
 
 
 Comandas por estación, estados de preparación, tiempos, cambios y cancelaciones
@@ -251,3 +257,20 @@ Validación: 329 pruebas backend (34 suites), cinco recorridos de navegador con
 servicios reales, 11 unitarias frontend y 14 regresiones de interfaz. Se verifican
 compilaciones, análisis estático y aislamiento. Catálogo real del piloto y prueba
 presencial aplazados; no se marca la etapa completa ni se despliega a producción.
+
+
+## Entrega técnica de etapa 4 — 4 de noviembre de 2026
+
+Estaciones independientes, impresión filtrada con copias por ámbito, tiempos y
+producción por tandas. Las tandas consumen crudo al iniciar y registran preparado
+real al completar; el menú consume el preparado por porciones. Cancelar una tanda
+iniciada no restaura materia prima. Una devolución de pedido repone solo estaciones
+sin iniciar. No se implementaron aún lotes, vencimientos ni costeo avanzado.
+
+Validación: 339 pruebas backend en 35 suites; seis recorridos con servicios reales;
+11 unitarias frontend y 14 regresiones de navegador; compilación, Prisma, ESLint
+verificados y aislamiento de tenant aprobado. Migración aditiva con backfill de
+comandas para pedidos existentes, aplicada únicamente a la base local de pruebas.
+El servidor HTTP de integración se mantiene abierto por suite para evitar cierres
+concurrentes al emitir recibos. Prueba presencial e impresoras pendientes; sin
+producción desplegada. El siguiente bloque técnico es salón y mesas (etapa 5).

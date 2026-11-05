@@ -34,7 +34,12 @@ export interface OrderLine {
   unitPrice: string;
   subtotal: string;
   options: { id: string; name: string; price: string }[];
-  components: { productId: string; name: string; quantity: string; referenceUnitPrice?: string }[];
+  components: {
+    productId: string;
+    name: string;
+    quantity: string;
+    referenceUnitPrice?: string;
+  }[];
 }
 
 export interface OrderQuote {
@@ -69,7 +74,11 @@ export interface RestaurantOrder {
   snapshot: OrderLine[];
   createdAt: string;
   queuedAt: string | null;
+  deliveredAt?: string | null;
   printCount: number;
+  printCopy?: number;
+  printStation?: string | null;
+  tasks: KitchenTask[];
   sale: { status: string; total: string; discount: string };
   events: {
     id: string;
@@ -77,6 +86,36 @@ export interface RestaurantOrder {
     detail: string | null;
     createdAt: string;
   }[];
+}
+
+export interface KitchenTask {
+  id: string;
+  station: string;
+  status: string;
+  version: number;
+  printCount: number;
+  startedAt: string | null;
+  readyAt: string | null;
+}
+export interface ProductionBatch {
+  id: string;
+  branchId: string;
+  warehouseId: string;
+  name: string;
+  station: string;
+  sourceProductId: string;
+  sourceName: string;
+  outputProductId: string;
+  outputName: string;
+  sourceQuantity: string;
+  plannedQuantity: string;
+  producedQuantity: string | null;
+  status: string;
+  version: number;
+  createdAt: string;
+  startedAt: string | null;
+  readyAt: string | null;
+  cancelReason: string | null;
 }
 export const orderLabels: Record<string, string> = {
   DRAFT: "Pendiente de cobro",
