@@ -12,6 +12,12 @@ con código/pruebas/migraciones/documentación y hacer git push a la rama de tra
 Comprobar que el SHA remoto coincide con el commit local antes de informar que
 está publicado. Los avances parciales conservan esa identificación.
 
+Después de cada cierre, enviar un informe al usuario en el chat con la etapa y
+su estado, lo implementado y corregido, pruebas/resultados, pendientes o bloqueos,
+estado general y siguiente paso. Incluir los commits publicados con sus enlaces,
+confirmación del push y si hubo despliegue. El informe debe coincidir con la
+evidencia del roadmap, sin presentar un avance parcial como etapa terminada.
+
 Para desplegar una entrega, seleccionar el SHA publicado, preparar las variables
 del entorno y seguir los pasos de esta guía. Revisar las migraciones y preparar
 un respaldo antes de aplicarlas sobre datos existentes. El push respalda la
