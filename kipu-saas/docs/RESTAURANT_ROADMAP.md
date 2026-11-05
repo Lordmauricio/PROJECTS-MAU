@@ -9,21 +9,28 @@ Se continúa sobre KIPU SaaS y se conserva el aislamiento entre empresas, RBAC,
 auditoría y precisión monetaria del backend. PROJECT_PLAN.md documenta el sistema
 comercial previo; sus marcas de completitud no sustituyen la validación actual.
 
-## 1. Estabilizar la base — en curso
+## 1. Estabilizar la base — validada localmente
 
 - [x] Eliminar la descarga de fuentes externas durante la compilación del frontend.
 - [x] Restaurar sesiones sin errores por JSON dañado o almacenamiento inaccesible.
 - [x] Sincronizar sesión y cierre entre pestañas mediante suscripción al navegador.
 - [x] Compilar frontend y verificar por HTTP formularios de acceso y registro.
 - [x] Corregir los errores y advertencias de ESLint del frontend sin desactivar reglas.
-- [ ] Completar Prisma, migraciones, roles y seed con verificación de integridad.
-- [ ] Ejecutar suite backend y verificación de aislamiento con PostgreSQL y Redis.
-- [ ] Recorrer registro, login, venta, devolución, compras y cierre por API y UI.
+- [x] Completar Prisma, migraciones, roles y seed con verificación de integridad.
+- [x] Ejecutar suite backend y verificación de aislamiento con PostgreSQL y Redis.
+- [x] Recorrer registro, login, venta, devolución, compras y cierre por API y UI.
 
 Cierre de etapa: compilación y análisis estático limpios, pruebas ejecutadas y
 flujos comerciales verificados; los fallos conocidos deberán quedar descritos.
 
-## 2. Experiencia visual
+## 2. Experiencia visual — primera implementación
+
+- [x] Menú por categorías, búsqueda, tarjetas táctiles y estados de disponibilidad.
+- [x] Carrito lateral en tablet/computadora y acceso fijo al pedido en móvil.
+- [x] Navegación adaptable, etiquetas, foco visible y errores recuperables.
+- [x] Decisión de contingencia: `OFFLINE_ARCHITECTURE.md`.
+- [ ] Validación de campo con operadores y revisión del resto de administración.
+
 
 Diseñar flujo táctil de caja, menú por categorías, carrito siempre visible y
 estados de carga, error y agotado. Definir colores, tipografía y componentes con
@@ -34,7 +41,15 @@ Decidir arquitectura de contingencia antes de cerrar el diseño técnico: caja,
 cocina e impresión local durante cortes de internet y posterior sincronización.
 No se ha implementado ni prometido funcionamiento offline en la base existente.
 
-## 3. Menú y POS de mostrador
+## 3. Menú y POS de mostrador — núcleo implementado
+
+- [x] Menú configurable, combos, componentes por porción, extras y sustituciones.
+- [x] Precios del servidor y descuentos restringidos a encargados.
+- [x] Pedidos separados del cobro, salón/para llevar, pagos mixtos y cambio.
+- [x] QR manual identificado y vínculo al recibo comercial no fiscal existente.
+- [x] Snapshots históricos y reintentos de pedido/cobro sin duplicación.
+- [ ] Validación comercial de todas las presentaciones del menú del piloto.
+
 
 Categorías, presentaciones, combos, extras y sustituciones con precios validados
 por servidor. Separar pedido, preparación y pago. Soportar salón/para llevar,
@@ -44,7 +59,16 @@ inicialmente, identificado como tal; confirmación automática requiere proveedo
 Cierre: vender un combo de pollo, cobrar una sola vez y conservar el detalle y
 precio histórico de todos sus componentes.
 
-## 4. Cocina y despacho — primer piloto
+## 4. Cocina y despacho — primer flujo implementado
+
+- [x] Tablero por estado con filtros de sucursal y estación.
+- [x] Preparación → listo → entrega, con control de versión y eventos auditados.
+- [x] Solicitudes de impresión/reimpresión identificadas.
+- [x] Stock de componentes y devoluciones según inicio de preparación.
+- [x] Recorrido completo con servicios reales y pagos mixtos en Chromium.
+- [ ] Producción por tandas y estados independientes por estación.
+- [ ] Prueba en pollería con operadores e impresoras físicas.
+
 
 Comandas por estación, estados de preparación, tiempos, cambios y cancelaciones
 auditadas; impresiones y reimpresiones identificadas. Producción por tandas y
@@ -91,7 +115,9 @@ Alta guiada, planes y límites, suscripciones con proveedor elegido, soporte
 auditado y capacitación. Separar cobros de la suscripción de KIPU de los pagos que
 recibe cada restaurante. No habilitar cobros reales sin requisitos y validación.
 
-## Evidencia de estabilización — 4 de noviembre de 2026
+## Evidencia previa de estabilización — 4 de noviembre de 2026
+
+El bloqueo de Prisma descrito aquí se resolvió en la validación posterior.
 
 - Frontend: `npm run lint` pasa sin errores ni advertencias. Se conservan las
   reglas de React; las cargas utilizan un hook compartido que descarta respuestas
@@ -135,3 +161,53 @@ secretos ni sobrescribir una base de datos de producción. Volver a ejecutar el
 análisis estático del backend con el cliente generado y diagnosticar los errores
 que persistan. Finalmente iniciar la API, comprobar /health y /health/ready y
 recorrer los flujos comerciales desde navegador con servicios reales.
+
+
+## Validación del backend retomada — 4 de noviembre de 2026
+
+- La política activa permite `binaries.prisma.sh`; `npm ci` genera Prisma Client
+  7.9.1 correctamente, manteniendo TLS y checksums.
+- Se prepararon PostgreSQL 16 y Redis 7 locales, con puertos ligados a loopback,
+  volumen de PostgreSQL y secretos nuevos en `.env` ignorado. No se restauraron
+  datos de la instancia anterior ni se modificó una base de producción.
+- Las 12 migraciones se aplicaron; `db:provision-roles` habilitó `app_user` y
+  mantuvo `app_superadmin` sin login. Seed: 39 permisos y cuatro planes.
+- `npm run build`: aprobado. ESLint del backend: cero errores y advertencias,
+  tras corregir formato, tipos de autenticación y transformación, duplicación de
+  productos y el tipo del Buffer de la prueba Excel, sin desactivar reglas.
+- `npm test -- --runInBand`: 33 suites y 307 pruebas aprobadas con PostgreSQL y
+  Redis reales. Incluyen ventas, devoluciones, compras, caja, concurrencia y
+  permisos. Comprobación posterior focalizada de ventas y dinero: 21 aprobadas.
+- `npm run verify:tenant-isolation`: aprobado por API y SQL sin WHERE, con
+  `app_user`, auditoría asíncrona y denegación por defecto de permisos.
+- API local: `/health` devuelve `ok`; `/health/ready` confirma base y caché `ok`.
+- `test:e2e` no tiene archivos de prueba en `test/`; no constituye validación
+  adicional. Las suites de integración anteriores viven en `src/`.
+- Queda pendiente recorrer los flujos desde el navegador con la API real. Las
+  pruebas anteriores de Chromium usan API simulada. La etapa 1 sigue abierta.
+- No se desplegó a producción. Los cambios quedan en el checkout para revisión.
+
+
+## Evidencia de implementación gastronómica — 4 de noviembre de 2026
+
+- Migración aditiva `20261105010000_restaurant_pilot`: menú, pedidos y eventos
+  con RLS forzado; snapshots opcionales en líneas de venta, sin borrar datos.
+- Backend: 34 suites, 322 pruebas aprobadas. Las 15 pruebas nuevas cubren combos,
+  sustituciones, precios históricos, reintentos concurrentes, pagos mixtos,
+  descuentos autorizados, stock insuficiente, devoluciones y aislamiento.
+- Verificación independiente de tenant aprobada después de ampliar el esquema.
+- Frontend: 11 pruebas unitarias y 8 pruebas de regresión de navegador aprobadas.
+- Dos recorridos nuevos con PostgreSQL/Redis/API reales: registro/login,
+  compra/recepción, venta/devolución y arqueo; combo con extra, pérdida de respuestas,
+  recuperación, cobro mixto, cocina/despacho y cierre con diferencia cero.
+- Compilaciones de backend/frontend y análisis estático aprobados en la validación
+  de esta entrega. Capturas revisadas en tablet; la suite comprueba desbordes.
+- Operación y APIs: `RESTAURANT_OPERATIONS.md`. Contingencia futura:
+  `OFFLINE_ARCHITECTURE.md`; no se implementó operación offline.
+- Las etapas 5–10 siguen pendientes; esta entrega no completa todo el roadmap.
+  No se conectaron proveedores de pagos, SIN ni suscripciones, ni se desplegó.
+
+- Arranque local final comprobado: API en 4200 con `/health/ready` sano y frontend
+  compilado en 3000. Se corrigió `start:prod` para usar `dist/src/main.js`.
+- Smoke de Chromium en móvil sobre el frontend compilado: formulario de acceso
+  visible, sin errores de JavaScript ni desborde horizontal.

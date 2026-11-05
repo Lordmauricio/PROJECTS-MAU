@@ -31,6 +31,7 @@ import { ReceiptsModule } from './receipts/receipts.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { validateEnv } from './config/env.validation';
+import { RestaurantModule } from './restaurant/restaurant.module';
 
 @Module({
   imports: [
@@ -80,6 +81,7 @@ import { validateEnv } from './config/env.validation';
     ReceivablesModule,
     ReportsModule,
     ReceiptsModule,
+    RestaurantModule,
   ],
   controllers: [AppController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

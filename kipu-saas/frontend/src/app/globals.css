@@ -24,3 +24,15 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
 }
+
+:focus-visible {
+  outline: 3px solid #047857;
+  outline-offset: 3px;
+}
+
+@media print {
+  body { background: white; color: black; }
+  aside, nav, button, .kitchen-screen { display: none !important; }
+  .order-ticket { display: block !important; max-width: 72mm; margin: 0; font: 12pt monospace; }
+  .order-ticket div { margin: 12px 0; border-top: 1px dashed black; padding-top: 8px; }
+}

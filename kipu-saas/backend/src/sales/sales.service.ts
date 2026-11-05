@@ -22,6 +22,7 @@ import {
 } from './dto/payment.dto';
 import { ListSalesQueryDto } from './dto/list-sales-query.dto';
 import { ReturnSaleDto } from './dto/return-sale.dto';
+import { stockComponents } from '../restaurant/stock-components';
 
 type Tx = Prisma.TransactionClient;
 
@@ -130,6 +131,7 @@ export class SalesService {
         return {
           organizationId,
           productId: item.productId,
+          productName: product.name,
           quantity,
           unitPrice,
           discount: itemDiscount,
@@ -230,7 +232,9 @@ export class SalesService {
         const items = await tx.saleItem.findMany({
           where: { saleId, organizationId },
         });
-        for (const item of items) {
+        for (const item of items
+          .flatMap(stockComponents)
+          .sort((a, b) => a.productId.localeCompare(b.productId))) {
           // Si el stock no alcanza para CUALQUIER ítem, applyMovement lanza y
           // toda la transacción se revierte: no queda descontado solo parte
           // del carrito.
@@ -498,10 +502,17 @@ export class SalesService {
       if (!locked.warehouseId)
         throw new BadRequestException('La venta no tiene almacén asignado');
 
+      await tx.$queryRaw`SELECT id FROM restaurant_orders WHERE "saleId" = ${saleId} AND "organizationId" = ${organizationId} FOR UPDATE`;
+      const order = await tx.restaurantOrder.findUnique({ where: { saleId } });
+      // Once preparation starts, a financial refund must not restore cooked food.
+      const restoreStock = !order || ['DRAFT', 'QUEUED'].includes(order.status);
       const items = await tx.saleItem.findMany({
         where: { saleId, organizationId },
       });
-      for (const item of items) {
+      for (const item of (restoreStock
+        ? items.flatMap(stockComponents)
+        : []
+      ).sort((a, b) => a.productId.localeCompare(b.productId))) {
         await this.inventory.applyMovement(tx, {
           organizationId,
           warehouseId: locked.warehouseId,
@@ -556,6 +567,23 @@ export class SalesService {
         data: { status: 'REFUNDED', refundedAt: new Date() },
       });
       await this.cancelReceivableIfAny(tx, saleId);
+      if (order) {
+        await tx.restaurantOrder.update({
+          where: { id: order.id },
+          data: { status: 'CANCELLED', version: { increment: 1 } },
+        });
+        await tx.restaurantOrderEvent.create({
+          data: {
+            organizationId,
+            orderId: order.id,
+            actorUserId,
+            action: 'REFUNDED',
+            detail: restoreStock
+              ? 'Stock repuesto; preparación no iniciada'
+              : 'Sin reposición: preparación iniciada',
+          },
+        });
+      }
 
       return { sale: await this.loadFull(tx, organizationId, saleId), refund };
     });
@@ -607,6 +635,7 @@ export class SalesService {
         },
         payments: { orderBy: { createdAt: 'asc' } },
         refunds: { orderBy: { createdAt: 'asc' } },
+        restaurantOrder: { select: { id: true, status: true } },
         customer: { select: { id: true, name: true } },
       },
     });

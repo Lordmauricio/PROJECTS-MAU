@@ -9,6 +9,7 @@ import { ApiError } from "@/lib/auth-context";
 
 interface SaleItem {
   id: string;
+  productName?: string | null;
   quantity: string;
   unitPrice: string;
   discount: string;
@@ -52,6 +53,7 @@ interface Sale {
   items: SaleItem[];
   payments: Payment[];
   refunds?: Refund[];
+  restaurantOrder?: { id: string; status: string } | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -244,7 +246,7 @@ export default function SaleDetailPage() {
             <tbody>
               {sale.items.map((it) => (
                 <tr key={it.id} className="border-t border-zinc-100">
-                  <td className="py-1">{it.product?.name ?? it.id}</td>
+                  <td className="py-1">{it.productName ?? it.product?.name ?? it.id}</td>
                   <td className="py-1">{Number(it.quantity)}</td>
                   <td className="py-1">Bs. {Number(it.unitPrice).toFixed(2)}</td>
                   <td className="py-1">Bs. {Number(it.discount).toFixed(2)}</td>
@@ -383,6 +385,7 @@ export default function SaleDetailPage() {
           )}
         </div>
 
+        {canReturn && sale.restaurantOrder && <p className="rounded bg-amber-50 p-3 text-sm text-amber-900">La devolución cancelará el pedido gastronómico. Si la preparación ya empezó, se reembolsará el pago sin reponer los ingredientes al stock.</p>}
         <div className="flex gap-2">
           {canCancel && (
             <button onClick={cancelSale} disabled={busy} className="rounded border border-red-300 text-red-700 px-3 py-1.5 text-sm disabled:opacity-50">

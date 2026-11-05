@@ -1,9 +1,13 @@
 # KIPU SAAS
 
-Plataforma SaaS multiempresa de gestión (ventas, inventario, compras, caja,
-facturación, clientes, proveedores) para negocios en Bolivia, empezando por
-Cochabamba. Este repo cubre **Fase 0 (investigación/arquitectura) y Fase 1
-(Foundation)** — ver `docs/PROJECT_PLAN.md` para el detalle y qué sigue.
+Plataforma SaaS multiempresa de ventas, inventario, compras y caja para negocios
+bolivianos, con un primer flujo gastronómico para pollerías y restaurantes de
+Cochabamba: menú/combos, cobro y cocina/despacho.
+
+- `docs/RESTAURANT_ROADMAP.md`: plan gastronómico y evidencia actual.
+- `docs/RESTAURANT_OPERATIONS.md`: uso del menú, caja y cocina, APIs y pruebas.
+- `docs/OFFLINE_ARCHITECTURE.md`: decisión de contingencia; offline no implementado.
+- `docs/PROJECT_PLAN.md`: desarrollo comercial previo.
 
 No es un prototipo: multi-tenancy real con aislamiento verificado a nivel
 de base de datos (Row Level Security), autenticación completa, RBAC

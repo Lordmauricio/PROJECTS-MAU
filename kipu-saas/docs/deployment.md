@@ -4,6 +4,19 @@ Guía para poner KIPU en producción. Cubre lo que el sistema **exige** para
 arrancar, cómo se comprueba que está sano, cómo se respalda y cómo se
 recupera.
 
+## Entregas por etapa
+
+Cada etapa se entrega después de ejecutar sus pruebas y corregir los fallos:
+actualizar la evidencia y pendientes en `RESTAURANT_ROADMAP.md`, crear un commit
+con código/pruebas/migraciones/documentación y hacer git push a la rama de trabajo.
+Comprobar que el SHA remoto coincide con el commit local antes de informar que
+está publicado. Los avances parciales conservan esa identificación.
+
+Para desplegar una entrega, seleccionar el SHA publicado, preparar las variables
+del entorno y seguir los pasos de esta guía. Revisar las migraciones y preparar
+un respaldo antes de aplicarlas sobre datos existentes. El push respalda la
+entrega; no ejecuta por sí solo un despliegue de producción en este repositorio.
+
 > Alcance: SaaS comercial. La facturación electrónica (SIN, CUF/CUIS/CUFD,
 > XML, firma digital) **no está implementada** y queda fuera de este
 > documento.

@@ -123,7 +123,7 @@ export function buildReceiptSnapshot(params: {
         }
       : null,
     items: sale.items.map((item) => ({
-      productName: item.product.name,
+      productName: item.productName ?? item.product.name,
       sku: item.product.sku,
       quantity: money(item.quantity).toFixed(2),
       unitPrice: money(item.unitPrice).toFixed(2),
