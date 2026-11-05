@@ -220,6 +220,20 @@ export class SalesService {
               `No se puede confirmar una venta en estado ${locked.status}`,
             );
           }
+          for (const payment of dto.payments ?? []) {
+            const existing = await tx.payment.findUnique({
+              where: { idempotencyKey: payment.idempotencyKey },
+            });
+            if (
+              existing &&
+              (existing.saleId !== saleId ||
+                existing.method !== payment.method ||
+                !money(existing.amount).eq(money(payment.amount)))
+            )
+              throw new ConflictException(
+                'La clave de pago ya fue usada con otros datos',
+              );
+          }
           // Ya estaba confirmada por un intento anterior (retry/doble click):
           // no se repite ningún efecto, se devuelve el estado actual.
           return this.loadFull(tx, organizationId, saleId);
@@ -368,6 +382,13 @@ export class SalesService {
               'Esta idempotencyKey ya fue usada en otra venta',
             );
           }
+          if (
+            existingPayment.method !== dto.method ||
+            !money(existingPayment.amount).eq(money(dto.amount))
+          )
+            throw new ConflictException(
+              'La clave de pago ya fue usada con otro método o importe',
+            );
           // Replay idempotente: mismo intento de cobro repetido, no se cobra dos veces.
           return this.loadFull(tx, organizationId, saleId);
         }
@@ -580,14 +601,21 @@ export class SalesService {
           payments.filter((p) => p.method === 'CASH').map((p) => p.amount),
         );
         if (cashPortion.gt(ZERO_MONEY)) {
-          await this.cash.registerSaleRefundMovement(tx, {
-            organizationId,
-            posTerminalId: dto.posTerminalId ?? locked.posTerminalId,
-            saleId,
-            refundId: refund.id,
-            amount: cashPortion,
-            actorUserId,
-          });
+          const refundMovement = await this.cash.registerSaleRefundMovement(
+            tx,
+            {
+              organizationId,
+              posTerminalId: dto.posTerminalId ?? locked.posTerminalId,
+              saleId,
+              refundId: refund.id,
+              amount: cashPortion,
+              actorUserId,
+            },
+          );
+          if (order?.accountId && !refundMovement)
+            throw new ConflictException(
+              'El reembolso de salón en efectivo requiere caja abierta con saldo suficiente',
+            );
         }
       }
 
@@ -765,6 +793,13 @@ export class SalesService {
           'Esta idempotencyKey ya fue usada en otra venta',
         );
       }
+      if (
+        existing.method !== dto.method ||
+        !money(existing.amount).eq(money(dto.amount))
+      )
+        throw new ConflictException(
+          'La clave de pago ya fue usada con otro método o importe',
+        );
       return ZERO_MONEY;
     }
 
@@ -792,8 +827,8 @@ export class SalesService {
     // Si el método es CASH y hay una caja OPEN para el punto de venta de
     // esta venta, registra el ingreso correspondiente — atómico con el
     // Payment de arriba (misma `tx`). Si no hay caja abierta, el pago se
-    // aplica igual (ver `CashService.registerSalePaymentMovement`).
-    await this.cash.registerSalePaymentMovement(tx, {
+    // aplica igual para ventas comerciales; salón exige el movimiento de caja abajo.
+    const cashMovement = await this.cash.registerSalePaymentMovement(tx, {
       organizationId,
       posTerminalId,
       saleId,
@@ -802,6 +837,15 @@ export class SalesService {
       actorUserId,
       idempotencyKey: dto.idempotencyKey,
     });
+    if (dto.method === 'CASH' && !cashMovement) {
+      const dining = await tx.restaurantOrder.findFirst({
+        where: { saleId, organizationId, accountId: { not: null } },
+      });
+      if (dining)
+        throw new ConflictException(
+          'Abre la caja antes de cobrar una cuenta de salón en efectivo',
+        );
+    }
 
     return amount;
   }

@@ -94,6 +94,17 @@ export const PERMISSIONS_CATALOG: PermissionDef[] = [
     description: 'Ver proveedores',
   },
 
+  {
+    key: 'dining.read',
+    module: 'restaurant',
+    description: 'Ver mesas y cuentas de salón',
+  },
+  {
+    key: 'dining.serve',
+    module: 'restaurant',
+    description: 'Atender mesas y enviar comandas sin cobrar',
+  },
+
   // Ventas / POS
   {
     key: 'sales.create',
@@ -227,6 +238,7 @@ export const DEFAULT_ROLE_KEYS = [
   'INVENTORY',
   'SALES',
   'AUDITOR',
+  'WAITER',
 ] as const;
 
 export type DefaultRoleKey = (typeof DEFAULT_ROLE_KEYS)[number];
@@ -240,7 +252,15 @@ const READ_ONLY_PERMISSION_KEYS = PERMISSIONS_CATALOG.filter((p) =>
 export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
   OWNER: ALL_PERMISSION_KEYS,
   ADMIN: ALL_PERMISSION_KEYS,
+  WAITER: [
+    'dining.read',
+    'dining.serve',
+    'products.read',
+    'organization.branches.read',
+  ],
   MANAGER: [
+    'dining.read',
+    'dining.serve',
     'organization.branches.read',
     'products.create',
     'products.update',
@@ -285,6 +305,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
     'audit.read',
   ],
   CASHIER: [
+    'dining.read',
+    'dining.serve',
     'organization.branches.read',
     'sales.create',
     'sales.read',
@@ -309,6 +331,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<DefaultRoleKey, string[]> = {
     'purchases.read',
   ],
   SALES: [
+    'dining.read',
+    'dining.serve',
     'sales.create',
     'sales.read',
     'receipts.manage',
@@ -333,4 +357,5 @@ export const DEFAULT_ROLE_NAMES: Record<DefaultRoleKey, string> = {
   INVENTORY: 'Inventario',
   SALES: 'Ventas',
   AUDITOR: 'Auditor',
+  WAITER: 'Mesero',
 };

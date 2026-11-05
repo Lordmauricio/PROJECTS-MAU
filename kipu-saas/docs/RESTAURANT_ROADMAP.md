@@ -99,10 +99,24 @@ Cierre: pedido → cobro → cocina → entrega → cierre de caja en una poller
 sucursal. Verificar reintentos, pedidos simultáneos, errores de red y permisos.
 El cierre de caja existente debe seguir funcionando durante todas las etapas.
 
-## 5. Salón y mesas
+## 5. Salón y mesas — implementación técnica, campo pendiente
 
-Mapa de mesas, meseros, cuentas abiertas, pedidos adicionales, traslado de mesa,
-división y unión de cuentas, propinas. Verificar atención simultánea y permisos.
+- [x] Mapa por zona y sucursal, capacidad, mesas libres/ocupadas y configuración.
+- [x] Cuentas abiertas y mesero asignado; rol Mesero separado del cobro.
+- [x] Comandas adicionales con snapshots y envío a cocina antes del cobro.
+- [x] Consumo al enviar, sin repetición al cobrar; falta de stock revierte el envío.
+- [x] Traslado de mesa, división por comandas completas y unión de cuentas.
+- [x] Pagos parciales/mixtos y propinas separadas del consumo y de ingresos de venta.
+- [x] Cierre exige deuda cero y entrega; efectivo y reembolsos ligados a caja abierta.
+- [x] Versiones, reintentos, concurrencia y auditoría de permisos/dependencias.
+- [ ] Validación presencial con meseros, cajero y encargado (aplazada).
+
+Informes: `INFORME_ETAPA_5.md` y `AUDITORIA_ETAPA_5.md`. La división conserva
+comandas completas y sus ventas; no fracciona una línea histórica pagada.
+Pendiente de mantenimiento: avisos bajos/moderados en herramientas de desarrollo;
+dependencias de producción sin avisos en la comprobación de esta entrega.
+Las pruebas de campo de etapas anteriores continúan pendientes.
+
 
 ## 6. Recetas, producción y stock
 
@@ -274,3 +288,20 @@ comandas para pedidos existentes, aplicada únicamente a la base local de prueba
 El servidor HTTP de integración se mantiene abierto por suite para evitar cierres
 concurrentes al emitir recibos. Prueba presencial e impresoras pendientes; sin
 producción desplegada. El siguiente bloque técnico es salón y mesas (etapa 5).
+
+## Entrega técnica de etapa 5 y auditoría — 5 de noviembre de 2026
+
+Salón con cuentas abiertas, mesero separado de caja, comandas adicionales y
+cocina antes del cobro. El envío consume stock una vez; cobro y movimientos de
+cuentas conservan los saldos y snapshots. División por comandas completas,
+traslado/unión con versiones, propina separada y cierre con deuda cero/entrega.
+La migración incluye permisos y rol Mesero para empresas existentes, con RLS
+forzado y relaciones por empresa. Solo se aplicó en la base local de pruebas.
+
+Validación: 356 pruebas backend en 36 suites (17 nuevas), siete recorridos con
+servicios reales, 11 unitarias y 14 regresiones frontend; compilación, ESLint,
+Prisma e aislamiento. Auditoría de producción sin avisos tras actualizar
+Next.js/Prisma/Nest/Nodemailer y dependencias transitivas; quedan 27 entradas
+bajas/moderadas de herramientas backend. Detalle en `AUDITORIA_ETAPA_5.md`.
+La aceptación presencial sigue aplazada. No se desplegó a producción. El próximo
+bloque técnico es etapa 6: recetas, rendimientos y stock avanzado.

@@ -189,3 +189,68 @@ Ejecutar las suites de navegador una después de otra: ambas usan el puerto 3100
 `test:live` inicia backend en 4300 y frontend en 3100, crea empresas sintéticas y
 usa la base local configurada. No ejecutarlo contra producción. Sin Chromium del
 sistema, instalar el navegador de Playwright y omitir la variable de ruta.
+
+## Salón y mesas (etapa 5)
+
+`/restaurant/dining` muestra mesas por zona y sucursal, capacidad, ocupación,
+cuentas abiertas y mesero asignado. Una mesa puede tener varias cuentas; solo
+queda libre cuando todas están cerradas o unidas a otra cuenta. El encargado
+crea y edita las mesas. El mesero abre cuentas, registra comandas adicionales y
+las envía a cocina. El cajero registra pagos y cierra; el mesero no puede cobrar.
+
+El envío confirma la venta sin pago y consume sus componentes, junto con las
+comandas de estación, en una sola transacción. Si falta stock no cambia nada.
+La cocina acepta ventas CONFIRMED/PARTIALLY_PAID solo si el pedido pertenece a
+una cuenta de salón. Mostrador mantiene el pago previo. Un reintento de envío o
+el cobro posterior no descuentan stock de nuevo. No hay reserva de stock antes
+del envío. Los adicionales usan el precio vigente al guardarlos y conservan su
+snapshot; los anteriores no se recalculan al editar el menú.
+
+Dividir selecciona comandas completas y conserva cada venta, pago y estado de
+cocina. Para separar platos individualmente, registrarlos como comandas distintas.
+No se fracciona una línea histórica pagada ni se redistribuyen importes cobrados.
+Unir mueve comandas a la cuenta de destino y marca la otra MERGED; requiere el
+mismo punto de venta y almacén. Trasladar cambia la mesa dentro de la sucursal.
+La unión bloquea cuentas en orden estable para evitar deadlocks. Cambios de mesa,
+unión y asignación usan versiones; un operador obsoleto debe actualizar y revisar.
+
+El cierre exige todas las ventas pagadas o anuladas y todas las comandas
+entregadas o canceladas. Una devolución impaga no crea reembolso y solo repone
+estaciones sin iniciar. El encargado la realiza desde la venta; no se borra la
+historia. Las propinas son voluntarias y separadas de ventas: las de efectivo
+registran CASH_IN en la caja abierta de la terminal, atómicamente con el cierre.
+No se distribuyen a meseros ni se consideran ingreso por venta. La corrección o
+entrega de propinas al personal corresponde a gestión de caja de etapa 7.
+Los cobros de salón en efectivo también exigen caja abierta y se revierten si se
+cierra simultáneamente; otros métodos se registran manualmente, sin proveedor.
+
+Roles: `WAITER` (Mesero) recibe `dining.read`, `dining.serve`, `products.read` y
+`organization.branches.read`; no recibe `sales.create`, `sales.update` ni
+`sales.delete`. Cajero cobra con `sales.create`; encargado configura mesas y
+reasigna con `sales.update`. El envío y la creación desde salón requieren
+`dining.serve`. La apertura con otro mesero también exige autorización de encargado.
+Los operadores con servicio pueden colaborar sobre las cuentas de su empresa;
+la asignación de mesero es responsabilidad operativa, no aislamiento entre empleados.
+La lista de operadores expone solo identificador y nombre de miembros activos.
+
+API bajo `/restaurant/dining`: GET `tables`, `waiters`, `accounts`,
+`accounts/:id`; POST `tables`, `accounts`; PATCH `tables/:id`;
+POST `accounts/:id/orders`, `accounts/:id/orders/:orderId/dispatch`,
+`accounts/:id/orders/:orderId/payments`, y `accounts/:id/{move,waiter,split,merge,close}`.
+Apertura, comanda, división y pago llevan claves de reintento. La interfaz
+conserva la solicitud ante respuesta incierta y ofrece reintentar sin cambiar
+sus datos; mantener la pestaña abierta hasta resolverla. Actualizar salón recupera
+los estados de otros operadores. El historial de cuenta cerrada se conserva y
+es consultable por identificador; el tablero lista las cuentas abiertas.
+
+Migración aditiva `20261105040000_dining_accounts`: tablas con RLS forzado,
+relaciones compuestas por empresa y campos opcionales para pedidos anteriores.
+Incluye permisos nuevos y rol Mesero para empresas existentes; conserva roles
+personalizados. Desplegar migración con rol administrativo, luego backend y
+frontend. No usar credenciales administrativas en el servidor de aplicación.
+
+Los reembolsos de salón con efectivo exigen caja abierta con saldo suficiente;
+si no puede registrarse el egreso, toda la devolución se revierte. Esto evita
+marcar el dinero como devuelto sin reflejarlo en el arqueo. Abrir/fondear la caja
+y reintentar conserva la devolución única. Las ventas comerciales anteriores
+conservan su política existente, documentada en `architecture.md`.

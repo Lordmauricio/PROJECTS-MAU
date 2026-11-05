@@ -278,6 +278,7 @@ export default function KitchenPage() {
                             : "Salón"}
                         </span>
                       </header>
+                      {order.account && <p className="font-semibold">{order.account.table.name} · {order.account.label}<span className="block text-xs font-normal">{order.account.waiterName} · {order.sale.status === "PAID" ? "Cobrado" : "Cuenta abierta"}</span></p>}
                       {order.customerName && (
                         <p className="text-sm font-medium">
                           {order.customerName}

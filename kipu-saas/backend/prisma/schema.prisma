@@ -675,6 +675,8 @@ model RestaurantOrder {
   printCount Int @default(0)
   events RestaurantOrderEvent[]
   tasks KitchenTask[]
+  accountId String?
+  account DiningAccount? @relation(fields: [accountId, organizationId], references: [id, organizationId], onDelete: Restrict)
   @@unique([id, organizationId])
   @@unique([organizationId, requestKey])
   @@index([organizationId, branchId, status])
@@ -1452,4 +1454,46 @@ model AuditLog {
   @@index([organizationId])
   @@index([action])
   @@map("audit_logs")
+}
+
+model DiningTable {
+  id String @id @default(cuid())
+  organizationId String
+  branchId String
+  name String
+  area String @default("Salón")
+  seats Int @default(4)
+  active Boolean @default(true)
+  accounts DiningAccount[]
+  @@unique([id, organizationId])
+  @@unique([organizationId, branchId, name])
+  @@map("dining_tables")
+}
+
+model DiningAccount {
+  id String @id @default(cuid())
+  organizationId String
+  tableId String
+  table DiningTable @relation(fields: [tableId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  branchId String
+  posTerminalId String
+  warehouseId String
+  waiterId String
+  waiterName String
+  label String
+  status String @default("OPEN")
+  version Int @default(0)
+  requestKey String
+  requestHash String
+  mergedIntoId String?
+  createdAt DateTime @default(now())
+  closedAt DateTime?
+  orders RestaurantOrder[]
+  tipAmount Decimal @default(0) @db.Decimal(12, 2)
+  tipMethod String?
+  closeHash String?
+  @@unique([id, organizationId])
+  @@unique([organizationId, requestKey])
+  @@index([organizationId, branchId, status])
+  @@map("dining_accounts")
 }

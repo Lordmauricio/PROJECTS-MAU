@@ -63,6 +63,7 @@ export function menuTitle(entry: Pick<MenuEntry, "name" | "presentation">) {
     : entry.name;
 }
 export interface RestaurantOrder {
+  account?: { label: string; waiterName: string; table: { name: string } } | null;
   id: string;
   branchId: string;
   saleId: string;

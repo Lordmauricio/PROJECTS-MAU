@@ -23,6 +23,7 @@ const NAV: NavGroup[] = [
   {
     label: "Restaurante",
     children: [
+      { label: "Salón y mesas", href: "/restaurant/dining" },
       { label: "Caja gastronómica", href: "/restaurant/pos" },
       { label: "Cocina y despacho", href: "/restaurant/kitchen" },
       { label: "Producción por tandas", href: "/restaurant/production" },

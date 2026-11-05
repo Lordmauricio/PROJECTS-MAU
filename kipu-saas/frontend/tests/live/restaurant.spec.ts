@@ -810,3 +810,252 @@ test("tanda real alimenta porciones y cada estación prepara su comanda antes de
     Number(((await (await close).json()) as { difference: string }).difference),
   ).toBe(0);
 });
+
+test("salón: adicionales, división, traslado, unión, cobro mixto y propina con arqueo real", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const { call, branch } = await register(page);
+  const warehouseId = branch.warehouses[0].id;
+  const product = await call<{ id: string }>("/products", "POST", {
+    name: "Plato de salón",
+    price: 25,
+    cost: 10,
+  });
+  await call("/inventory/movements", "POST", {
+    warehouseId,
+    productId: product.id,
+    type: "IN",
+    quantity: 10,
+    reason: "Piloto salón",
+    idempotencyKey: randomUUID(),
+  });
+  await call("/restaurant/menu", "POST", {
+    productId: product.id,
+    name: "Plato de salón",
+    category: "Platos",
+    station: "Cocina",
+    price: 25,
+    active: true,
+    components: [{ productId: product.id, quantity: 1 }],
+    options: [],
+  });
+  const cash = await call<{ id: string }>("/cash-registers", "POST", {
+    posTerminalId: branch.posTerminals[0].id,
+    openingAmount: 100,
+    idempotencyKey: randomUUID(),
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/restaurant/dining");
+  await page.getByText("Configurar mesas (encargado)", { exact: true }).click();
+  for (const name of ["Mesa 1", "Mesa 2"]) {
+    await page.getByLabel("Nombre de mesa", { exact: true }).fill(name);
+    const response = page.waitForResponse(
+      (r) =>
+        r.url().endsWith("/restaurant/dining/tables") &&
+        r.request().method() === "POST",
+    );
+    await page
+      .getByRole("button", { name: "Guardar mesa", exact: true })
+      .click();
+    expect((await response).ok()).toBeTruthy();
+    await expect(
+      page.getByRole("heading", { name, exact: true }),
+    ).toBeVisible();
+  }
+  const tables = await call<{ id: string; name: string }[]>(
+    "/restaurant/dining/tables",
+  );
+  const t1 = tables.find((t) => t.name === "Mesa 1")!,
+    t2 = tables.find((t) => t.name === "Mesa 2")!;
+  await page
+    .getByRole("combobox", { name: "Mesa", exact: true })
+    .selectOption(t1.id);
+  const openedResponse = page.waitForResponse(
+    (r) =>
+      r.url().endsWith("/restaurant/dining/accounts") &&
+      r.request().method() === "POST",
+  );
+  await page
+    .getByRole("button", { name: "Abrir cuenta de mesa", exact: true })
+    .click();
+  const account = (await (await openedResponse).json()) as { id: string };
+  await expect(
+    page.getByRole("heading", {
+      name: "Mesa 1 · Cuenta principal",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "Plato", exact: true })
+    .selectOption({ label: "Plato de salón · Bs 25.00" });
+  for (let i = 1; i <= 2; i++) {
+    const response = page.waitForResponse(
+      (r) =>
+        r.url().endsWith(`/accounts/${account.id}/orders`) &&
+        r.request().method() === "POST",
+    );
+    await page
+      .getByRole("button", { name: "Guardar comanda", exact: true })
+      .click();
+    expect((await response).ok()).toBeTruthy();
+    await expect(
+      page.getByRole("article", { name: `Comanda ${i}`, exact: true }),
+    ).toBeVisible();
+    const card = page.getByRole("article", {
+      name: `Comanda ${i}`,
+      exact: true,
+    });
+    await card
+      .getByRole("button", { name: "Enviar a cocina", exact: true })
+      .click();
+    await expect(card.getByText(/En espera/)).toBeVisible();
+  }
+  let accounts = await call<
+    {
+      id: string;
+      version: number;
+      orders: { id: string; saleId: string; sale: { status: string } }[];
+    }[]
+  >("/restaurant/dining/accounts");
+  expect(accounts[0].orders.every((o) => o.sale.status === "CONFIRMED")).toBe(
+    true,
+  );
+  await page
+    .getByRole("article", { name: "Comanda 2", exact: true })
+    .getByRole("checkbox")
+    .check();
+  await page
+    .getByRole("button", { name: "Dividir cuenta", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Mesa 1 · Cuenta separada",
+      exact: true,
+    }),
+  ).toBeVisible();
+  const selected = await page
+    .getByRole("combobox", { name: "Cuenta seleccionada", exact: true })
+    .inputValue();
+  await page
+    .getByRole("combobox", { name: "Trasladar a mesa", exact: true })
+    .selectOption(t2.id);
+  await page
+    .getByRole("button", { name: "Trasladar cuenta", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Mesa 2 · Cuenta separada",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "Cuenta seleccionada", exact: true })
+    .selectOption(account.id);
+  await page
+    .getByRole("combobox", { name: "Unir otra cuenta a esta", exact: true })
+    .selectOption(selected);
+  await page.getByRole("button", { name: "Unir cuentas", exact: true }).click();
+  await expect(
+    page.getByRole("article", { name: "Comanda 2", exact: true }),
+  ).toBeVisible();
+  // Kitchen really receives unpaid table orders and allows service before collection.
+  await page.goto("/restaurant/kitchen");
+  const cards = page
+    .getByRole("article")
+    .filter({ hasText: "Mesa 1 · Cuenta principal" });
+  await expect(cards).toHaveCount(2);
+  for (let i = 0; i < 2; i++) {
+    const cardLabel = await cards.first().getAttribute("aria-label");
+    const card = page.getByRole("article", {name: cardLabel!, exact: true});
+    await expect(card.getByText(/Cuenta abierta/)).toBeVisible();
+    await card
+      .getByRole("button", { name: "Iniciar preparación", exact: true })
+      .click();
+    await card
+      .getByRole("button", { name: "Marcar listo", exact: true })
+      .click();
+    await card
+      .getByRole("button", { name: "Entregar pedido", exact: true })
+      .click();
+    await expect(cards).toHaveCount(1 - i);
+  }
+  await page.goto("/restaurant/dining");
+  await page
+    .getByRole("combobox", { name: "Cuenta seleccionada", exact: true })
+    .selectOption(account.id);
+  accounts = await call("/restaurant/dining/accounts");
+  const orders = accounts.find((a) => a.id === account.id)!.orders;
+  for (const [i, o] of orders.entries()) {
+    await page
+      .getByRole("combobox", { name: "Comanda a cobrar", exact: true })
+      .selectOption(o.id);
+    if (i === 0) {
+      await page.getByLabel("Importe del pago", { exact: true }).fill("10");
+      await page
+        .getByRole("combobox", { name: "Método de pago", exact: true })
+        .selectOption("QR");
+      await page
+        .getByRole("button", { name: "Registrar pago", exact: true })
+        .click();
+      await expect(
+        page.getByText("Saldo pendiente: Bs 40.00", { exact: true }),
+      ).toBeVisible();
+      await page.getByLabel("Importe del pago", { exact: true }).fill("15");
+    }
+    await page
+      .getByRole("combobox", { name: "Método de pago", exact: true })
+      .selectOption("CASH");
+    await page
+      .getByRole("button", { name: "Registrar pago", exact: true })
+      .click();
+    await expect(
+      page.getByText(`Saldo pendiente: Bs ${i === 0 ? "25.00" : "0.00"}`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+  }
+  await page.getByLabel("Propina voluntaria (Bs)", { exact: true }).fill("5");
+  await page.screenshot({
+    path: "/tmp/kipu-stage5-dining-mobile.png",
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  const closeResponse = page.waitForResponse((r) =>
+    r.url().endsWith(`/accounts/${account.id}/close`),
+  );
+  await page
+    .getByRole("button", { name: "Cerrar cuenta", exact: true })
+    .click();
+  expect((await closeResponse).ok()).toBeTruthy();
+  await expect(
+    page.getByRole("heading", {
+      name: "Mesa 1 · Cuenta principal",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  const stocks = await call<{ productId: string; quantity: string }[]>(
+    `/inventory?warehouseId=${warehouseId}`,
+  );
+  expect(Number(stocks.find((s) => s.productId === product.id)!.quantity)).toBe(
+    8,
+  );
+  await page.goto(`/cash/${cash.id}`);
+  await page.getByPlaceholder("Efectivo contado").fill("145");
+  const cashResponse = page.waitForResponse((r) =>
+    r.url().endsWith(`/cash-registers/${cash.id}/close`),
+  );
+  await page.getByRole("button", { name: "Cerrar caja", exact: true }).click();
+  expect(
+    Number(
+      ((await (await cashResponse).json()) as { difference: string })
+        .difference,
+    ),
+  ).toBe(0);
+  expect(errors).toEqual([]);
+});

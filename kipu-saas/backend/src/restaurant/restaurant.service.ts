@@ -22,6 +22,7 @@ import {
 } from './restaurant.dto';
 
 const orderInclude = {
+  account: { include: { table: true } },
   tasks: { orderBy: { station: 'asc' as const } },
   sale: { include: { payments: true } },
   events: { orderBy: { createdAt: 'asc' as const } },
@@ -396,10 +397,16 @@ export class RestaurantService {
     });
   }
 
-  create(organizationId: string, actorUserId: string, dto: CreateOrderDto) {
+  create(
+    organizationId: string,
+    actorUserId: string,
+    dto: CreateOrderDto,
+    accountId?: string,
+  ) {
     const requestHash = createHash('sha256')
       .update(
         JSON.stringify([
+          ...(accountId ? [accountId] : []),
           dto.posTerminalId,
           dto.warehouseId,
           dto.service,
@@ -431,6 +438,27 @@ export class RestaurantService {
             'La clave de reintento ya pertenece a otro pedido',
           );
         return existing;
+      }
+      if (accountId) {
+        await tx.$queryRaw`SELECT id FROM dining_accounts WHERE id=${accountId} AND "organizationId"=${organizationId} FOR UPDATE`;
+        const account = await tx.diningAccount.findFirst({
+          where: { id: accountId, organizationId },
+        });
+        if (!account) throw new NotFoundException('Cuenta no encontrada');
+        if (account.status !== 'OPEN')
+          throw new ConflictException('Cuenta cerrada');
+        if (
+          dto.service !== 'DINE_IN' ||
+          dto.posTerminalId !== account.posTerminalId ||
+          dto.warehouseId !== account.warehouseId
+        )
+          throw new BadRequestException(
+            'La comanda debe usar la terminal y almacén de la cuenta',
+          );
+        await tx.diningAccount.update({
+          where: { id: accountId },
+          data: { version: { increment: 1 } },
+        });
       }
       const { terminal, warehouse, snapshots, subtotal, discount, total } =
         await this.resolveOrder(tx, organizationId, actorUserId, dto);
@@ -466,6 +494,7 @@ export class RestaurantService {
           organizationId,
           branchId: terminal.branchId,
           saleId: sale.id,
+          accountId,
           requestKey: dto.requestKey,
           requestHash,
           service: dto.service,
@@ -570,9 +599,15 @@ export class RestaurantService {
       const sale = await tx.sale.findFirstOrThrow({
         where: { id: order.saleId, organizationId },
       });
-      if (sale.status !== 'PAID')
+      if (
+        sale.status !== 'PAID' &&
+        !(
+          order.accountId &&
+          ['CONFIRMED', 'PARTIALLY_PAID'].includes(sale.status)
+        )
+      )
         throw new ConflictException(
-          'La venta ya no está pagada; revisa su devolución',
+          'La venta no está habilitada para cocina; revisa su cobro o devolución',
         );
       const tasks = await tx.kitchenTask.findMany({
         where: { orderId: id, organizationId },
@@ -783,8 +818,14 @@ export class RestaurantService {
     id: string,
   ) {
     const rows = await tx.$queryRaw<
-      Array<{ id: string; saleId: string; status: string; version: number }>
-    >`SELECT id, "saleId", status, version FROM restaurant_orders WHERE id = ${id} AND "organizationId" = ${organizationId} FOR UPDATE`;
+      Array<{
+        id: string;
+        saleId: string;
+        status: string;
+        version: number;
+        accountId: string | null;
+      }>
+    >`SELECT id, "saleId", status, version, "accountId" FROM restaurant_orders WHERE id = ${id} AND "organizationId" = ${organizationId} FOR UPDATE`;
     if (!rows[0]) throw new NotFoundException('Pedido no encontrado');
     return rows[0];
   }

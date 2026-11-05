@@ -14,6 +14,7 @@ export default function OrderTicket({ order }: { order: RestaurantOrder }) {
         {businessTime(order.createdAt)} ·{" "}
         {order.service === "DINE_IN" ? "Salón" : "Para llevar"}
       </p>
+      {order.account && <p>{order.account.table.name} · {order.account.label} · {order.account.waiterName}</p>}
       {order.customerName && <p>{order.customerName}</p>}
       {order.snapshot
         .filter(
