@@ -468,7 +468,9 @@ test("revisión previa bloquea faltantes y admite una sustitución disponible", 
       exact: true,
     }),
   ).toBeVisible();
-  await expect(page.locator("main").getByRole("alert")).toContainText("No alcanza el stock");
+  await expect(page.locator("main").getByRole("alert")).toContainText(
+    "No alcanza el stock",
+  );
   expect(await call<unknown[]>("/restaurant/orders?status=DRAFT")).toHaveLength(
     0,
   );
@@ -521,4 +523,103 @@ test("revisión previa bloquea faltantes y admite una sustitución disponible", 
   await expect(
     page.getByText("Elige un plato para comenzar.", { exact: true }),
   ).toBeVisible();
+});
+
+test("el encargado cambia el menú y precio de temporada sin alterar pedidos anteriores", async ({
+  page,
+}) => {
+  const { call, branch } = await register(page);
+  const product = await call<{ id: string }>("/products", "POST", {
+    name: "Pollo de prueba",
+    price: 25,
+  });
+  await call("/inventory/movements", "POST", {
+    productId: product.id,
+    warehouseId: branch.warehouses[0].id,
+    type: "IN",
+    quantity: 10,
+    idempotencyKey: randomUUID(),
+  });
+  await call("/cash-registers", "POST", {
+    posTerminalId: branch.posTerminals[0].id,
+    openingAmount: 100,
+    idempotencyKey: randomUUID(),
+  });
+  const entry = await call<{ id: string }>("/restaurant/menu", "POST", {
+    productId: product.id,
+    name: "Plato original",
+    presentation: "Cuarto",
+    category: "Platos",
+    station: "Cocina",
+    price: 25,
+    active: true,
+    components: [{ productId: product.id, quantity: 1 }],
+    options: [],
+  });
+  const request = {
+    posTerminalId: branch.posTerminals[0].id,
+    warehouseId: branch.warehouses[0].id,
+    service: "TAKEAWAY",
+    items: [{ menuEntryId: entry.id, quantity: 1, optionIds: [] }],
+  };
+  const oldOrder = await call<{ id: string; sale: { total: string } }>(
+    "/restaurant/orders",
+    "POST",
+    { ...request, requestKey: randomUUID() },
+  );
+  expect(Number(oldOrder.sale.total)).toBe(25);
+  await page.goto("/restaurant/menu");
+  await page
+    .getByRole("button", {
+      name: "Editar Plato original · Cuarto",
+      exact: true,
+    })
+    .click();
+  await page.getByLabel("Nombre del plato").fill("Plato de temporada");
+  await page.getByLabel("Presentación (opcional)").fill("Medio");
+  await page.getByLabel("Precio en Bs", { exact: true }).fill("30");
+  await page
+    .getByRole("button", { name: "Guardar plato", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "Plato actualizado. Los pedidos existentes conservan su composición y precio.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  const fresh = await call<{
+    snapshot: { name: string }[];
+    sale: { total: string };
+  }>("/restaurant/orders", "POST", { ...request, requestKey: randomUUID() });
+  expect(Number(fresh.sale.total)).toBe(30);
+  expect(fresh.snapshot[0].name).toBe("Plato de temporada · Medio");
+  await page
+    .getByRole("button", {
+      name: "Editar Plato de temporada · Medio",
+      exact: true,
+    })
+    .click();
+  await page.getByLabel("Visible en caja", { exact: true }).uncheck();
+  await page
+    .getByRole("button", { name: "Guardar plato", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "Plato actualizado. Los pedidos existentes conservan su composición y precio.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await page.goto("/restaurant/pos");
+  await expect(
+    page.getByText("El menú aún está vacío", { exact: true }),
+  ).toBeVisible();
+  const paid = await call<{
+    snapshot: { name: string }[];
+    sale: { total: string; status: string };
+  }>(`/restaurant/orders/${oldOrder.id}/checkout`, "POST", {
+    payments: [{ method: "CASH", amount: 25, idempotencyKey: randomUUID() }],
+  });
+  expect(paid.sale.status).toBe("PAID");
+  expect(Number(paid.sale.total)).toBe(25);
+  expect(paid.snapshot[0].name).toBe("Plato original · Cuarto");
 });

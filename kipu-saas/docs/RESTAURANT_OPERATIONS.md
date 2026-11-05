@@ -23,6 +23,20 @@
    actualiza cada 15 segundos y admite filtros por sucursal y estación.
 7. Emitir el recibo comercial desde la venta y cerrar caja con efectivo contado.
 
+## Cambios de menú y precios de temporada
+
+El encargado puede agregar platos y editar nombre, presentación, categoría,
+estación, composición, opciones y precio desde **Restaurante → Menú y combos**.
+Cada presentación y cada extra puede tener su propio precio. Para retirar un
+plato temporalmente, desmarcar «Visible en caja»; se conserva su historial.
+
+Los precios del menú se pueden cambiar cuando el negocio lo necesite, incluidos
+los cambios de temporada. El nuevo valor se aplica al revisar y guardar nuevos
+pedidos. Los pedidos ya guardados, cobrados y sus recibos conservan el nombre,
+composición y precio aceptados al crearse. Para rehacer un pedido sin cobrar
+con otro precio, cancelarlo y crear uno nuevo. No se requiere modificar código
+para agregar platos o actualizar precios desde estas pantallas.
+
 Los pedidos se guardan antes del pago. Un fallo de red se recupera reintentando
 el mismo pedido, sin crear otra venta. La pestaña conserva el intento en
 sessionStorage cuando está disponible; los borradores guardados también aparecen

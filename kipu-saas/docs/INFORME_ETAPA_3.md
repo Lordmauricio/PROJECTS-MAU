@@ -33,8 +33,9 @@ no se marca como cerrada por esta entrega.
 - Backend completo: 34 suites y 329 pruebas aprobadas, siete nuevas para esta
   entrega. Incluyen presentaciones históricas, revisión sin efectos, componentes
   compartidos, sustituciones, decimales, permisos/tenant y última porción concurrente.
-- Cuatro recorridos con servicios reales: comercial; combo con presentación,
-  extra y pago mixto; administración móvil; faltantes y sustitución desde el POS.
+- Cinco recorridos con servicios reales: comercial; combo con presentación,
+  extra y pago mixto; administración móvil; faltantes y sustitución desde el POS;
+  edición de nombre, presentación, precio de temporada y pausa de un plato.
 - Frontend: 11 pruebas unitarias y 14 regresiones de navegador.
 - Compilación, TypeScript, análisis estático y verificación independiente de
   aislamiento forman parte de las comprobaciones de esta entrega.
@@ -61,3 +62,14 @@ con estos pendientes visibles antes del piloto real. La etapa 4 debe completar
 estaciones independientes y producción por tandas; las pruebas presenciales e
 impresión física siguen pendientes. Esta entrega no habilita operación offline,
 QR automático ni facturación SIN.
+
+
+## Requisito confirmado: menú y precios editables
+
+El usuario requiere agregar platos y modificar precios según temporada. La
+pantalla existente permite estas operaciones al encargado. Se añadió una prueba
+real que cambia un plato de Bs 25 a Bs 30, comprueba el nuevo precio en pedidos
+posteriores, pausa su visibilidad y confirma que el pedido anterior mantiene el
+nombre y los Bs 25 originales al cobrar. Los cinco recorridos reales, ESLint y
+TypeScript aprobaron. No se requiere cambiar código ni migrar la base cada vez
+que el negocio edite el menú o sus precios desde la aplicación.

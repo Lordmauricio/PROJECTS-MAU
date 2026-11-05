@@ -56,6 +56,8 @@ No se ha implementado ni prometido funcionamiento offline en la base existente.
 - [x] QR manual identificado y vínculo al recibo comercial no fiscal existente.
 - [x] Snapshots históricos y reintentos de pedido/cobro sin duplicación.
 - [x] Presentaciones identificadas y precio de referencia histórico por componente.
+- [x] Menú y precios editables por el encargado, incluidos cambios de temporada,
+  altas de platos y pausa de disponibilidad, conservando los pedidos anteriores.
 - [x] Revisión previa de precios y faltantes de todo el carrito en servidor.
 - [x] Sustitución de guarniciones agotadas y disponibilidad decimal por porción.
 - [x] Concurrencia de la última porción sin doble cobro ni consumo.
@@ -245,7 +247,7 @@ Presentaciones, historial de precios por componente y revisión previa del pedid
 sin reservas ni efectos comerciales. Se conserva el cálculo de precios del
 servidor y la confirmación atómica de stock/pago. Migración aditiva de presentación.
 
-Validación: 329 pruebas backend (34 suites), cuatro recorridos de navegador con
+Validación: 329 pruebas backend (34 suites), cinco recorridos de navegador con
 servicios reales, 11 unitarias frontend y 14 regresiones de interfaz. Se verifican
 compilaciones, análisis estático y aislamiento. Catálogo real del piloto y prueba
 presencial aplazados; no se marca la etapa completa ni se despliega a producción.
