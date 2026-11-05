@@ -1,4 +1,8 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { CanActivate, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { TenantPrismaService } from '../../prisma/tenant-prisma.service';
@@ -25,10 +29,10 @@ export class PermissionsGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const required = this.reflector.getAllAndOverride<string[]>(PERMISSIONS_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    const required = this.reflector.getAllAndOverride<string[]>(
+      PERMISSIONS_KEY,
+      [context.getHandler(), context.getClass()],
+    );
     const noPermissionRequired = this.reflector.getAllAndOverride<boolean>(
       NO_PERMISSION_REQUIRED_KEY,
       [context.getHandler(), context.getClass()],
@@ -42,7 +46,9 @@ export class PermissionsGuard implements CanActivate {
       );
     }
 
-    const request = context.switchToHttp().getRequest();
+    const request = context
+      .switchToHttp()
+      .getRequest<{ user?: AccessTokenPayload }>();
     const auth: AccessTokenPayload | undefined = request.user;
     if (!auth) throw new UnauthorizedException();
 

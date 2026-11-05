@@ -22,7 +22,9 @@ export class RolesService {
   }
 
   listPermissionCatalog() {
-    return this.prisma.permission.findMany({ orderBy: [{ module: 'asc' }, { key: 'asc' }] });
+    return this.prisma.permission.findMany({
+      orderBy: [{ module: 'asc' }, { key: 'asc' }],
+    });
   }
 
   async setRolePermissions(
@@ -32,7 +34,9 @@ export class RolesService {
     actorUserId: string,
   ) {
     const updated = await this.tenantPrisma.run(organizationId, async (tx) => {
-      const role = await tx.role.findFirst({ where: { id: roleId, organizationId } });
+      const role = await tx.role.findFirst({
+        where: { id: roleId, organizationId },
+      });
       if (!role) throw new NotFoundException('Rol no encontrado');
 
       const permissions = await this.prisma.permission.findMany({
@@ -42,7 +46,11 @@ export class RolesService {
       await tx.rolePermission.deleteMany({ where: { roleId, organizationId } });
       if (permissions.length > 0) {
         await tx.rolePermission.createMany({
-          data: permissions.map((p) => ({ organizationId, roleId, permissionId: p.id })),
+          data: permissions.map((p) => ({
+            organizationId,
+            roleId,
+            permissionId: p.id,
+          })),
         });
       }
 

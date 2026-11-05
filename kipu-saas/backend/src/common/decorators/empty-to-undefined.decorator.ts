@@ -13,4 +13,6 @@ import { Transform } from 'class-transformer';
  * Uso: @EmptyToUndefined() antes de @IsOptional().
  */
 export const EmptyToUndefined = () =>
-  Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value));
+  Transform(({ value }: { value: unknown }): unknown =>
+    typeof value === 'string' && value.trim() === '' ? undefined : value,
+  );

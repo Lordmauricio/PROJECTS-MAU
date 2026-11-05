@@ -13,7 +13,16 @@ export class AuditProcessor extends WorkerHost {
   }
 
   async process(job: Job<AuditJobPayload>): Promise<void> {
-    const { organizationId, userId, action, entityType, entityId, metadata, ip, userAgent } = job.data;
+    const {
+      organizationId,
+      userId,
+      action,
+      entityType,
+      entityId,
+      metadata,
+      ip,
+      userAgent,
+    } = job.data;
     await this.tenantPrisma.run(organizationId, (tx) =>
       tx.auditLog.create({
         data: {
@@ -28,7 +37,9 @@ export class AuditProcessor extends WorkerHost {
         },
       }),
     );
-    this.logger.debug(`Auditoría registrada: ${action} (org=${organizationId})`);
+    this.logger.debug(
+      `Auditoría registrada: ${action} (org=${organizationId})`,
+    );
   }
 
   @OnWorkerEvent('failed')

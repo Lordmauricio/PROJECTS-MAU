@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
@@ -26,13 +35,20 @@ export class SuppliersController {
 
   @Post()
   @RequirePermissions('suppliers.manage')
-  create(@CurrentAuth() auth: AccessTokenPayload, @Body() dto: CreateSupplierDto) {
+  create(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Body() dto: CreateSupplierDto,
+  ) {
     return this.suppliers.create(auth.organizationId, dto, auth.sub);
   }
 
   @Patch(':id')
   @RequirePermissions('suppliers.manage')
-  update(@CurrentAuth() auth: AccessTokenPayload, @Param('id') id: string, @Body() dto: UpdateSupplierDto) {
+  update(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Param('id') id: string,
+    @Body() dto: UpdateSupplierDto,
+  ) {
     return this.suppliers.update(auth.organizationId, id, dto, auth.sub);
   }
 }

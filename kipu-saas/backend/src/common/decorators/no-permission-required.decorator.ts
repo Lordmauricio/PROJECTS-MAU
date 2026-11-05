@@ -10,4 +10,5 @@ export const NO_PERMISSION_REQUIRED_KEY = 'noPermissionRequired';
  *
  * Uso: @NoPermissionRequired()
  */
-export const NoPermissionRequired = () => SetMetadata(NO_PERMISSION_REQUIRED_KEY, true);
+export const NoPermissionRequired = () =>
+  SetMetadata(NO_PERMISSION_REQUIRED_KEY, true);

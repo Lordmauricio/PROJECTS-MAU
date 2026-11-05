@@ -1,7 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
-import { CreateProductUnitDto, UpdateProductUnitDto } from './dto/product-unit.dto';
+import {
+  CreateProductUnitDto,
+  UpdateProductUnitDto,
+} from './dto/product-unit.dto';
 
 @Injectable()
 export class ProductUnitsService {
@@ -12,11 +15,18 @@ export class ProductUnitsService {
 
   list(organizationId: string) {
     return this.tenantPrisma.run(organizationId, (tx) =>
-      tx.productUnit.findMany({ where: { organizationId, active: true }, orderBy: { name: 'asc' } }),
+      tx.productUnit.findMany({
+        where: { organizationId, active: true },
+        orderBy: { name: 'asc' },
+      }),
     );
   }
 
-  async create(organizationId: string, dto: CreateProductUnitDto, actorUserId: string) {
+  async create(
+    organizationId: string,
+    dto: CreateProductUnitDto,
+    actorUserId: string,
+  ) {
     const unit = await this.tenantPrisma.run(organizationId, (tx) =>
       tx.productUnit.create({ data: { organizationId, ...dto } }),
     );
@@ -30,9 +40,16 @@ export class ProductUnitsService {
     return unit;
   }
 
-  async update(organizationId: string, id: string, dto: UpdateProductUnitDto, actorUserId: string) {
+  async update(
+    organizationId: string,
+    id: string,
+    dto: UpdateProductUnitDto,
+    actorUserId: string,
+  ) {
     const updated = await this.tenantPrisma.run(organizationId, async (tx) => {
-      const existing = await tx.productUnit.findFirst({ where: { id, organizationId } });
+      const existing = await tx.productUnit.findFirst({
+        where: { id, organizationId },
+      });
       if (!existing) throw new NotFoundException('Unidad no encontrada');
       return tx.productUnit.update({ where: { id }, data: dto });
     });

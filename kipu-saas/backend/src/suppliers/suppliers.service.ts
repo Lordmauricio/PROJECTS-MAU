@@ -15,7 +15,9 @@ export class SuppliersService {
       tx.supplier.findMany({
         where: {
           organizationId,
-          ...(search ? { name: { contains: search, mode: 'insensitive' } } : {}),
+          ...(search
+            ? { name: { contains: search, mode: 'insensitive' } }
+            : {}),
         },
         orderBy: { createdAt: 'desc' },
         take: 100,
@@ -37,7 +39,11 @@ export class SuppliersService {
     });
   }
 
-  async create(organizationId: string, dto: CreateSupplierDto, actorUserId: string) {
+  async create(
+    organizationId: string,
+    dto: CreateSupplierDto,
+    actorUserId: string,
+  ) {
     const supplier = await this.tenantPrisma.run(organizationId, (tx) =>
       tx.supplier.create({ data: { organizationId, ...dto } }),
     );
@@ -51,9 +57,16 @@ export class SuppliersService {
     return supplier;
   }
 
-  async update(organizationId: string, supplierId: string, dto: UpdateSupplierDto, actorUserId: string) {
+  async update(
+    organizationId: string,
+    supplierId: string,
+    dto: UpdateSupplierDto,
+    actorUserId: string,
+  ) {
     const updated = await this.tenantPrisma.run(organizationId, async (tx) => {
-      const existing = await tx.supplier.findFirst({ where: { id: supplierId, organizationId } });
+      const existing = await tx.supplier.findFirst({
+        where: { id: supplierId, organizationId },
+      });
       if (!existing) throw new NotFoundException('Proveedor no encontrado');
       return tx.supplier.update({ where: { id: supplierId }, data: dto });
     });

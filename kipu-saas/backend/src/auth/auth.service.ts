@@ -387,7 +387,7 @@ export class AuthService {
   }
 
   private computeRefreshExpiry(): Date {
-    const raw = this.config.get('JWT_REFRESH_EXPIRES_IN', '30d');
+    const raw = this.config.get<string>('JWT_REFRESH_EXPIRES_IN', '30d');
     const match = /^(\d+)([smhd])$/.exec(raw);
     const amount = match ? Number(match[1]) : 30;
     const unit = match ? match[2] : 'd';

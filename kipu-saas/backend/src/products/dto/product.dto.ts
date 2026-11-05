@@ -1,4 +1,11 @@
-import { IsBoolean, IsNumber, IsOptional, IsString, Min, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
 import { EmptyToUndefined } from '../../common/decorators/empty-to-undefined.decorator';
 
 export class CreateProductDto {

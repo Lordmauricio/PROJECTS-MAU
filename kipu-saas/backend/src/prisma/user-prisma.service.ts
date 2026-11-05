@@ -23,7 +23,10 @@ import { PrismaService } from './prisma.service';
 export class UserPrismaService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async run<T>(userId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  async run<T>(
+    userId: string,
+    fn: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
     if (!userId) {
       throw new Error('UserPrismaService.run requiere un userId');
     }

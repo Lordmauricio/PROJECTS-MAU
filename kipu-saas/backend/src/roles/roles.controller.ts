@@ -32,6 +32,11 @@ export class RolesController {
     @Param('id') id: string,
     @Body() dto: SetRolePermissionsDto,
   ) {
-    return this.roles.setRolePermissions(auth.organizationId, id, dto.permissionKeys, auth.sub);
+    return this.roles.setRolePermissions(
+      auth.organizationId,
+      id,
+      dto.permissionKeys,
+      auth.sub,
+    );
   }
 }

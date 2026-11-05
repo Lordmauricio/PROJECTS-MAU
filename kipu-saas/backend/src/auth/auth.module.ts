@@ -9,7 +9,13 @@ import { MailModule } from '../mail/mail.module';
 import { AuditModule } from '../audit/audit.module';
 
 @Module({
-  imports: [PassportModule, JwtModule.register({}), OrganizationsModule, MailModule, AuditModule],
+  imports: [
+    PassportModule,
+    JwtModule.register({}),
+    OrganizationsModule,
+    MailModule,
+    AuditModule,
+  ],
   providers: [AuthService, JwtStrategy],
   controllers: [AuthController],
   exports: [AuthService],

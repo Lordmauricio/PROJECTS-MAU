@@ -16,7 +16,9 @@ import { AUDIT_JOB, AUDIT_QUEUE, AuditJobPayload } from './audit.types';
 export class AuditService {
   private readonly logger = new Logger(AuditService.name);
 
-  constructor(@InjectQueue(AUDIT_QUEUE) private readonly queue: Queue<AuditJobPayload>) {}
+  constructor(
+    @InjectQueue(AUDIT_QUEUE) private readonly queue: Queue<AuditJobPayload>,
+  ) {}
 
   async log(payload: AuditJobPayload): Promise<void> {
     try {
@@ -29,7 +31,10 @@ export class AuditService {
     } catch (err) {
       // La auditoría nunca debe tumbar la operación de negocio que la
       // origina: si Redis está caído, se loguea y se sigue.
-      this.logger.error(`No se pudo encolar el evento de auditoría "${payload.action}"`, err as Error);
+      this.logger.error(
+        `No se pudo encolar el evento de auditoría "${payload.action}"`,
+        err as Error,
+      );
     }
   }
 }

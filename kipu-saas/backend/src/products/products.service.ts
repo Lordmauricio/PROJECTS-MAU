@@ -135,15 +135,12 @@ export class ProductsService {
           organizationId,
           'products',
         );
-        const {
-          id: _id,
-          createdAt: _createdAt,
-          updatedAt: _updatedAt,
-          ...rest
-        } = existing;
         return tx.product.create({
           data: {
-            ...rest,
+            ...existing,
+            id: undefined,
+            createdAt: undefined,
+            updatedAt: undefined,
             name: `${existing.name} (copia)`,
             sku: null,
             barcode: null,

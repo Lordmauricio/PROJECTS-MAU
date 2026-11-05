@@ -763,7 +763,9 @@ describe('Reportes — integración (datos reales, DB real)', () => {
     // trae `exceljs`) — el valor en runtime es un Buffer real, el cast es
     // solo para conformar al tipo.
 
-    await workbook.xlsx.load(buffer as any);
+    await workbook.xlsx.load(
+      buffer as unknown as Parameters<typeof workbook.xlsx.load>[0],
+    );
     const sheet = workbook.worksheets[0];
     // 1 fila de encabezado + 3 filas de venta.
     expect(sheet.rowCount).toBe(4);

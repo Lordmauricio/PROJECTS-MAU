@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuth, ApiError } from "@/lib/auth-context";
@@ -97,10 +97,12 @@ function Field({
   onChange: (v: string) => void;
   type?: string;
 }) {
+  const id = useId();
   return (
     <div>
-      <label className="block text-sm font-medium mb-1">{label}</label>
+      <label htmlFor={id} className="block text-sm font-medium mb-1">{label}</label>
       <input
+        id={id}
         type={type}
         required
         value={value}

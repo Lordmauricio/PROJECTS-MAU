@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
@@ -26,7 +36,10 @@ export class ProductsController {
 
   @Post()
   @RequirePermissions('products.create')
-  create(@CurrentAuth() auth: AccessTokenPayload, @Body() dto: CreateProductDto) {
+  create(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Body() dto: CreateProductDto,
+  ) {
     return this.products.create(auth.organizationId, dto, auth.sub);
   }
 
@@ -38,13 +51,20 @@ export class ProductsController {
 
   @Patch(':id')
   @RequirePermissions('products.update')
-  update(@CurrentAuth() auth: AccessTokenPayload, @Param('id') id: string, @Body() dto: UpdateProductDto) {
+  update(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Param('id') id: string,
+    @Body() dto: UpdateProductDto,
+  ) {
     return this.products.update(auth.organizationId, id, dto, auth.sub);
   }
 
   @Delete(':id')
   @RequirePermissions('products.update')
-  async remove(@CurrentAuth() auth: AccessTokenPayload, @Param('id') id: string) {
+  async remove(
+    @CurrentAuth() auth: AccessTokenPayload,
+    @Param('id') id: string,
+  ) {
     await this.products.remove(auth.organizationId, id, auth.sub);
     return { ok: true };
   }

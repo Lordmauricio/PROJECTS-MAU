@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../../generated/prisma/client';
@@ -10,7 +15,10 @@ import { PrismaClient } from '../../generated/prisma/client';
 // superusuario o con BYPASSRLS — Postgres ignora las policies para esos
 // roles y el aislamiento de tenant deja de existir en la práctica.
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class PrismaService
+  extends PrismaClient
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(PrismaService.name);
 
   constructor(config: ConfigService) {
@@ -46,7 +54,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   private async currentUser(): Promise<string> {
-    const rows = await this.$queryRaw<Array<{ current_user: string }>>`SELECT current_user`;
+    const rows = await this.$queryRaw<
+      Array<{ current_user: string }>
+    >`SELECT current_user`;
     return rows[0]?.current_user ?? 'desconocido';
   }
 

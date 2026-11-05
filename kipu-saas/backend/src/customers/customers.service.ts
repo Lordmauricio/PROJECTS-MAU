@@ -16,7 +16,12 @@ export class CustomersService {
         where: {
           organizationId,
           ...(search
-            ? { OR: [{ name: { contains: search, mode: 'insensitive' } }, { documentNumber: { contains: search } }] }
+            ? {
+                OR: [
+                  { name: { contains: search, mode: 'insensitive' } },
+                  { documentNumber: { contains: search } },
+                ],
+              }
             : {}),
         },
         orderBy: { createdAt: 'desc' },
@@ -44,7 +49,11 @@ export class CustomersService {
     });
   }
 
-  async create(organizationId: string, dto: CreateCustomerDto, actorUserId: string) {
+  async create(
+    organizationId: string,
+    dto: CreateCustomerDto,
+    actorUserId: string,
+  ) {
     const customer = await this.tenantPrisma.run(organizationId, (tx) =>
       tx.customer.create({ data: { organizationId, ...dto } }),
     );
@@ -58,9 +67,16 @@ export class CustomersService {
     return customer;
   }
 
-  async update(organizationId: string, customerId: string, dto: UpdateCustomerDto, actorUserId: string) {
+  async update(
+    organizationId: string,
+    customerId: string,
+    dto: UpdateCustomerDto,
+    actorUserId: string,
+  ) {
     const updated = await this.tenantPrisma.run(organizationId, async (tx) => {
-      const existing = await tx.customer.findFirst({ where: { id: customerId, organizationId } });
+      const existing = await tx.customer.findFirst({
+        where: { id: customerId, organizationId },
+      });
       if (!existing) throw new NotFoundException('Cliente no encontrado');
       return tx.customer.update({ where: { id: customerId }, data: dto });
     });
