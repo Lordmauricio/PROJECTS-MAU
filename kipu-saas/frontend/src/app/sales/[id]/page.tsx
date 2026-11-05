@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import ResponsiveTable from "@/components/ResponsiveTable";
 import { api, apiBlobUrl, apiDownload } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
 
@@ -233,7 +234,7 @@ export default function SaleDetailPage() {
             <span className="text-zinc-500">Cliente: </span>
             {sale.customer?.name ?? "Ocasional"}
           </p>
-          <table className="w-full text-sm mt-2">
+          <ResponsiveTable label="Detalle de venta" className="w-full text-sm mt-2">
             <thead className="text-zinc-500 text-left">
               <tr>
                 <th className="py-1">Producto</th>
@@ -254,7 +255,7 @@ export default function SaleDetailPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </ResponsiveTable>
           <div className="border-t border-zinc-200 pt-2 space-y-1 text-right">
             <p>Subtotal: Bs. {Number(sale.subtotal).toFixed(2)}</p>
             <p>Descuento: Bs. {Number(sale.discount).toFixed(2)}</p>

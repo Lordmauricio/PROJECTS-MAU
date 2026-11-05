@@ -4,6 +4,8 @@ import { useState, useCallback } from "react";
 import Link from "next/link";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import FieldInput from "@/components/FieldInput";
+import ResponsiveTable from "@/components/ResponsiveTable";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
 
@@ -128,7 +130,7 @@ export default function CashPage() {
           {terminalsWithoutOpenRegister.length === 0 && terminals.length > 0 && (
             <p className="text-sm text-zinc-500">Todos los puntos de venta ya tienen una caja abierta.</p>
           )}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <select
               value={form.posTerminalId}
               onChange={(e) => setForm((f) => ({ ...f, posTerminalId: e.target.value }))}
@@ -142,8 +144,7 @@ export default function CashPage() {
                 </option>
               ))}
             </select>
-            <input
-              placeholder="Saldo inicial"
+            <FieldInput label="Saldo inicial" placeholder="Saldo inicial"
               type="number"
               min={0}
               step="0.01"
@@ -162,7 +163,7 @@ export default function CashPage() {
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">
           <h2 className="px-4 py-2 font-medium text-sm border-b border-zinc-100">Historial de cajas cerradas</h2>
-          <table className="w-full text-sm">
+          <ResponsiveTable label="Caja" className="w-full text-sm">
             <thead className="bg-zinc-50 text-zinc-500 text-left">
               <tr>
                 <th className="px-4 py-2">Punto de venta</th>
@@ -198,7 +199,7 @@ export default function CashPage() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </ResponsiveTable>
         </div>
       </div>
     </AppShell>

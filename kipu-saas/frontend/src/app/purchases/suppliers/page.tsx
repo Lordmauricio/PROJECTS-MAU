@@ -3,6 +3,8 @@
 import { useState, useCallback } from "react";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import FieldInput from "@/components/FieldInput";
+import ResponsiveTable from "@/components/ResponsiveTable";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
@@ -60,28 +62,24 @@ export default function SuppliersPage() {
         <form onSubmit={addSupplier} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
           <h2 className="font-medium text-sm">Nuevo proveedor</h2>
           {error && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>}
-          <div className="grid grid-cols-2 gap-3">
-            <input
-              placeholder="Nombre"
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <FieldInput label="Nombre" placeholder="Nombre"
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
               required
             />
-            <input
-              placeholder="NIT"
+            <FieldInput label="NIT" placeholder="NIT"
               value={form.nit}
               onChange={(e) => setForm((f) => ({ ...f, nit: e.target.value }))}
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
             />
-            <input
-              placeholder="Teléfono"
+            <FieldInput label="Teléfono" placeholder="Teléfono"
               value={form.phone}
               onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
             />
-            <input
-              placeholder="Email"
+            <FieldInput label="Email" placeholder="Email"
               type="email"
               value={form.email}
               onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
@@ -92,7 +90,7 @@ export default function SuppliersPage() {
         </form>
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">
-          <table className="w-full text-sm">
+          <ResponsiveTable label="Proveedores" className="w-full text-sm">
             <thead className="bg-zinc-50 text-zinc-500 text-left">
               <tr>
                 <th className="px-4 py-2">Nombre</th>
@@ -118,7 +116,7 @@ export default function SuppliersPage() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </ResponsiveTable>
         </div>
       </div>
     </AppShell>

@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import ResponsiveTable from "@/components/ResponsiveTable";
 import { api, apiDownload } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
 import {
@@ -200,8 +201,13 @@ function ReportsContent({ reportKey, onReportChange }: { reportKey: string; onRe
           </p>
         </div>
 
-        <div className="flex gap-6">
-          <aside className="w-56 shrink-0">
+        <div className="flex flex-col gap-6 lg:flex-row">
+          <label className="block text-sm font-medium lg:hidden">Reporte
+            <select className="mt-1 block w-full rounded-xl border border-zinc-300 bg-white px-3 py-2" value={reportKey} onChange={(event) => onReportChange(event.target.value)}>
+              {[...groups.entries()].map(([group, items]) => <optgroup key={group} label={group}>{items.map((report) => <option key={report.key} value={report.key}>{report.label}</option>)}</optgroup>)}
+            </select>
+          </label>
+          <aside className="hidden w-56 shrink-0 lg:block">
             {[...groups.entries()].map(([group, items]) => (
               <div key={group} className="mb-4">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 mb-1">
@@ -242,7 +248,7 @@ function ReportsContent({ reportKey, onReportChange }: { reportKey: string; onRe
                   />
                 ))}
                 {definition.hasLimit && (
-                  <div className="flex flex-col gap-1">
+                  <div className="flex min-w-0 w-full flex-col gap-1 sm:w-auto">
                     <label className="text-xs text-zinc-500">Límite</label>
                     <input
                       type="number"
@@ -282,7 +288,7 @@ function ReportsContent({ reportKey, onReportChange }: { reportKey: string; onRe
 
             {/* Resumen */}
             {!loading && !error && !loadError && summaryEntries.length > 0 && (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                 {summaryEntries.map(([key, value]) => (
                   <div key={key} className="bg-white border border-zinc-200 rounded-lg p-3">
                     <p className="text-xs text-zinc-500">{humanizeKey(key)}</p>
@@ -317,7 +323,7 @@ function ReportsContent({ reportKey, onReportChange }: { reportKey: string; onRe
 
             {/* Tabla */}
             <div className="bg-white rounded-lg border border-zinc-200 overflow-x-auto">
-              <table className="w-full text-sm">
+              <ResponsiveTable label="Reportes" className="w-full text-sm">
                 <thead className="bg-zinc-50 text-zinc-500 text-left">
                   <tr>
                     {definition.columns.map((c) => (
@@ -364,7 +370,7 @@ function ReportsContent({ reportKey, onReportChange }: { reportKey: string; onRe
                     </tr>
                   )}
                 </tbody>
-              </table>
+              </ResponsiveTable>
             </div>
 
             {/* Paginación */}
@@ -421,14 +427,15 @@ function FilterField({
   categories: Option[];
   users: Option[];
 }) {
+  const id = useId();
   const label = FILTER_LABELS[filterKey];
   const base = "rounded border border-zinc-300 px-2 py-1.5 text-sm";
 
   if (filterKey === "dateFrom" || filterKey === "dateTo") {
     return (
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-zinc-500">{label}</label>
-        <input type="date" value={value} onChange={(e) => onChange(e.target.value)} className={base} />
+      <div className="flex min-w-0 w-full flex-col gap-1 sm:w-auto">
+        <label htmlFor={id} className="text-xs text-zinc-500">{label}</label>
+        <input id={id} type="date" value={value} onChange={(e) => onChange(e.target.value)} className={base} />
       </div>
     );
   }
@@ -444,9 +451,9 @@ function FilterField({
 
   if (filterKey === "paymentMethod") {
     return (
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-zinc-500">{label}</label>
-        <select value={value} onChange={(e) => onChange(e.target.value)} className={base}>
+      <div className="flex min-w-0 w-full flex-col gap-1 sm:w-auto">
+        <label htmlFor={id} className="text-xs text-zinc-500">{label}</label>
+        <select id={id} value={value} onChange={(e) => onChange(e.target.value)} className={base}>
           <option value="">Todos</option>
           {PAYMENT_METHOD_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
@@ -460,9 +467,9 @@ function FilterField({
 
   if (filterKey === "status") {
     return (
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-zinc-500">{label}</label>
-        <select value={value} onChange={(e) => onChange(e.target.value)} className={base}>
+      <div className="flex min-w-0 w-full flex-col gap-1 sm:w-auto">
+        <label htmlFor={id} className="text-xs text-zinc-500">{label}</label>
+        <select id={id} value={value} onChange={(e) => onChange(e.target.value)} className={base}>
           <option value="">Todos</option>
           {(definition.statusOptions ?? []).map((o) => (
             <option key={o.value} value={o.value}>
@@ -476,9 +483,9 @@ function FilterField({
 
   const options = selectOptions[filterKey] ?? [];
   return (
-    <div className="flex flex-col gap-1">
-      <label className="text-xs text-zinc-500">{label}</label>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className={base}>
+    <div className="flex min-w-0 w-full flex-col gap-1 sm:w-auto">
+      <label htmlFor={id} className="text-xs text-zinc-500">{label}</label>
+      <select id={id} value={value} onChange={(e) => onChange(e.target.value)} className={base}>
         <option value="">Todos</option>
         {options.map((o) => (
           <option key={o.id} value={o.id}>

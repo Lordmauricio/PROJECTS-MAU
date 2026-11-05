@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import Link from "next/link";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import ResponsiveTable from "@/components/ResponsiveTable";
 import { api } from "@/lib/api";
 
 interface Receivable {
@@ -68,7 +69,7 @@ export default function ReceivablesPage() {
         </select>
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">
-          <table className="w-full text-sm">
+          <ResponsiveTable label="Cuentas por cobrar" className="w-full text-sm">
             <thead className="bg-zinc-50 text-zinc-500 text-left">
               <tr>
                 <th className="px-4 py-2">Cliente</th>
@@ -110,7 +111,7 @@ export default function ReceivablesPage() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </ResponsiveTable>
         </div>
       </div>
     </AppShell>

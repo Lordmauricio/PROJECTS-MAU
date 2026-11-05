@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import ResponsiveTable from "@/components/ResponsiveTable";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
@@ -189,7 +190,7 @@ export default function CashRegisterDetailPage() {
           </span>
         </div>
 
-        <div className="bg-white rounded-lg border border-zinc-200 p-5 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+        <div className="bg-white rounded-lg border border-zinc-200 p-5 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-sm">
           <div>
             <div className="text-zinc-400 text-xs">Saldo inicial</div>
             <div className="font-medium">{Number(register.openingAmount)}</div>
@@ -222,7 +223,7 @@ export default function CashRegisterDetailPage() {
             <form onSubmit={registerMovement} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
               <h2 className="font-medium text-sm">Registrar ingreso o egreso</h2>
               {movError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{movError}</p>}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <select
                   value={movForm.type}
                   onChange={(e) => setMovForm((f) => ({ ...f, type: e.target.value }))}
@@ -254,7 +255,7 @@ export default function CashRegisterDetailPage() {
             <form onSubmit={registerExpense} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
               <h2 className="font-medium text-sm">Registrar gasto</h2>
               {expenseError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{expenseError}</p>}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <input
                   placeholder="Monto"
                   type="number"
@@ -293,7 +294,7 @@ export default function CashRegisterDetailPage() {
           <form onSubmit={closeRegister} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
             <h2 className="font-medium text-sm">Cerrar caja (arqueo)</h2>
             {closeError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{closeError}</p>}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <input
                 placeholder="Efectivo contado"
                 type="number"
@@ -317,7 +318,7 @@ export default function CashRegisterDetailPage() {
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">
           <h2 className="px-4 py-2 font-medium text-sm border-b border-zinc-100">Movimientos</h2>
-          <table className="w-full text-sm">
+          <ResponsiveTable label="Movimientos de caja" className="w-full text-sm">
             <thead className="bg-zinc-50 text-zinc-500 text-left">
               <tr>
                 <th className="px-4 py-2">Fecha</th>
@@ -346,12 +347,12 @@ export default function CashRegisterDetailPage() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </ResponsiveTable>
         </div>
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">
           <h2 className="px-4 py-2 font-medium text-sm border-b border-zinc-100">Gastos</h2>
-          <table className="w-full text-sm">
+          <ResponsiveTable label="Gastos de caja" className="w-full text-sm">
             <thead className="bg-zinc-50 text-zinc-500 text-left">
               <tr>
                 <th className="px-4 py-2">Fecha</th>
@@ -377,7 +378,7 @@ export default function CashRegisterDetailPage() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </ResponsiveTable>
         </div>
       </div>
     </AppShell>

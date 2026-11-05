@@ -23,13 +23,19 @@ comercial previo; sus marcas de completitud no sustituyen la validación actual.
 Cierre de etapa: compilación y análisis estático limpios, pruebas ejecutadas y
 flujos comerciales verificados; los fallos conocidos deberán quedar descritos.
 
-## 2. Experiencia visual — primera implementación
+## 2. Experiencia visual — entrega técnica validada, campo pendiente
 
 - [x] Menú por categorías, búsqueda, tarjetas táctiles y estados de disponibilidad.
 - [x] Carrito lateral en tablet/computadora y acceso fijo al pedido en móvil.
 - [x] Navegación adaptable, etiquetas, foco visible y errores recuperables.
 - [x] Decisión de contingencia: `OFFLINE_ARCHITECTURE.md`.
-- [ ] Validación de campo con operadores y revisión del resto de administración.
+- [x] Revisión móvil de tablas y formularios administrativos; navegación por teclado.
+- [x] Inicio con accesos operativos y recuperación de errores; Reportes adaptable.
+- [x] Pruebas de interfaz y recorrido de administración con servicios reales.
+- [ ] Validación presencial con cajero y encargado del negocio piloto.
+
+Informe: `INFORME_ETAPA_2.md`. Criterios y protocolo de campo:
+`EXPERIENCIA_VISUAL.md`. La validación técnica no cierra la prueba presencial.
 
 
 Diseñar flujo táctil de caja, menú por categorías, carrito siempre visible y
@@ -211,3 +217,16 @@ recorrer los flujos comerciales desde navegador con servicios reales.
   compilado en 3000. Se corrigió `start:prod` para usar `dist/src/main.js`.
 - Smoke de Chromium en móvil sobre el frontend compilado: formulario de acceso
   visible, sin errores de JavaScript ni desborde horizontal.
+
+
+## Entrega técnica de etapa 2 — 4 de noviembre de 2026
+
+Administración adaptada a móvil, tablas desplazables, etiquetas persistentes,
+controles táctiles, navegación con foco/Escape y estados recuperables en Inicio.
+Reportes utiliza un selector compacto en móvil y filtros etiquetados. Se conserva
+la arquitectura de contingencia documentada, sin operación offline.
+
+Validación: compilación/TypeScript y ESLint; 11 unitarias; 14 pruebas de navegador
+(seis nuevas y ocho regresiones); tres recorridos con servicios reales, incluyendo
+administración móvil de Inicio, clientes, productos, caja, compras, reportes,
+configuración y usuarios. El protocolo de campo sigue pendiente.

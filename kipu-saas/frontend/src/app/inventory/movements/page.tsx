@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import ResponsiveTable from "@/components/ResponsiveTable";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
@@ -235,7 +236,7 @@ export default function InventoryMovementsPage() {
 
         <div className="bg-white rounded-lg border border-zinc-200 p-4 space-y-3">
           <h2 className="font-medium text-sm">Filtros</h2>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
             <select
               value={filters.productId}
               onChange={(e) => setFilters((f) => ({ ...f, productId: e.target.value }))}
@@ -308,7 +309,7 @@ export default function InventoryMovementsPage() {
                 Cerrar
               </button>
             </div>
-            <table className="w-full text-sm">
+            <ResponsiveTable label="Movimientos de inventario" className="w-full text-sm">
               <thead className="bg-zinc-50 text-zinc-500 text-left">
                 <tr>
                   <th className="px-4 py-2">Fecha</th>
@@ -338,7 +339,7 @@ export default function InventoryMovementsPage() {
                   </tr>
                 )}
               </tbody>
-            </table>
+            </ResponsiveTable>
           </div>
         )}
 
@@ -347,7 +348,7 @@ export default function InventoryMovementsPage() {
             <h2 className="font-medium text-sm">Registrar entrada, salida o ajuste</h2>
             {moveError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{moveError}</p>}
             {moveOk && <p className="text-sm text-green-700 bg-green-50 rounded p-2">{moveOk}</p>}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <select
                 value={moveForm.productId}
                 onChange={(e) => setMoveForm((f) => ({ ...f, productId: e.target.value }))}
@@ -417,7 +418,7 @@ export default function InventoryMovementsPage() {
             <h2 className="font-medium text-sm">Transferir entre almacenes</h2>
             {transferError && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{transferError}</p>}
             {transferOk && <p className="text-sm text-green-700 bg-green-50 rounded p-2">{transferOk}</p>}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <select
                 value={transferForm.productId}
                 onChange={(e) => setTransferForm((f) => ({ ...f, productId: e.target.value }))}
@@ -480,7 +481,7 @@ export default function InventoryMovementsPage() {
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">
           <h2 className="px-4 py-2 font-medium text-sm border-b border-zinc-100">Stock por almacén</h2>
-          <table className="w-full text-sm">
+          <ResponsiveTable label="Movimientos de inventario" className="w-full text-sm">
             <thead className="bg-zinc-50 text-zinc-500 text-left">
               <tr>
                 <th className="px-4 py-2">Producto</th>
@@ -504,12 +505,12 @@ export default function InventoryMovementsPage() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </ResponsiveTable>
         </div>
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">
           <h2 className="px-4 py-2 font-medium text-sm border-b border-zinc-100">Historial de movimientos</h2>
-          <table className="w-full text-sm">
+          <ResponsiveTable label="Movimientos de inventario" className="w-full text-sm">
             <thead className="bg-zinc-50 text-zinc-500 text-left">
               <tr>
                 <th className="px-4 py-2">Fecha</th>
@@ -541,7 +542,7 @@ export default function InventoryMovementsPage() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </ResponsiveTable>
         </div>
       </div>
     </AppShell>

@@ -4,6 +4,7 @@ import { useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import ResponsiveTable from "@/components/ResponsiveTable";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
 
@@ -222,7 +223,7 @@ export default function PurchasesPage() {
         </select>
 
         <div className="bg-white rounded-lg border border-zinc-200 overflow-hidden">
-          <table className="w-full text-sm">
+          <ResponsiveTable label="Compras" className="w-full text-sm">
             <thead className="bg-zinc-50 text-zinc-500 text-left">
               <tr>
                 <th className="px-4 py-2">Fecha</th>
@@ -260,7 +261,7 @@ export default function PurchasesPage() {
                 </tr>
               )}
             </tbody>
-          </table>
+          </ResponsiveTable>
         </div>
       </div>
     </AppShell>

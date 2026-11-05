@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import FieldInput from "@/components/FieldInput";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
@@ -123,16 +124,14 @@ export default function SettingsPage() {
 
         <form onSubmit={addBranch} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
           <h2 className="font-medium text-sm">Nueva sucursal</h2>
-          <div className="grid grid-cols-2 gap-3">
-            <input
-              placeholder="Nombre"
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <FieldInput label="Nombre" placeholder="Nombre"
               value={newBranch.name}
               onChange={(e) => setNewBranch((f) => ({ ...f, name: e.target.value }))}
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
               required
             />
-            <input
-              placeholder="Dirección"
+            <FieldInput label="Dirección" placeholder="Dirección"
               value={newBranch.address}
               onChange={(e) => setNewBranch((f) => ({ ...f, address: e.target.value }))}
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
@@ -150,7 +149,7 @@ export default function SettingsPage() {
                   {b.name} {b.isMainOffice && <span className="text-xs text-zinc-400">(principal)</span>}
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                 <div>
                   <p className="text-xs text-zinc-500 mb-1">Almacenes</p>
                   <ul className="space-y-1">
@@ -199,19 +198,17 @@ function AddPosTerminalForm({
       }}
       className="flex gap-2"
     >
-      <input
-        placeholder="Nombre"
+      <FieldInput label="Nombre" placeholder="Nombre"
         value={name}
         onChange={(e) => setName(e.target.value)}
         className="rounded border border-zinc-300 px-2 py-1 text-xs flex-1"
       />
-      <input
-        placeholder="Código"
+      <FieldInput label="Código" placeholder="Código"
         value={code}
         onChange={(e) => setCode(e.target.value)}
         className="rounded border border-zinc-300 px-2 py-1 text-xs w-20"
       />
-      <button className="text-xs bg-zinc-900 text-white rounded px-2 py-1">+</button>
+      <button aria-label="Agregar punto de venta" className="text-xs bg-zinc-900 text-white rounded px-2 py-1">+</button>
     </form>
   );
 }

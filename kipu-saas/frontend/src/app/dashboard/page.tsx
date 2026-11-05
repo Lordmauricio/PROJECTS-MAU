@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
+import ResponsiveTable from "@/components/ResponsiveTable";
+import PageState from "@/components/PageState";
+import { useRemoteLoad } from "@/lib/use-remote-load";
 import { api } from "@/lib/api";
-import { ApiError } from "@/lib/auth-context";
 
 interface DashboardSummary {
   salesToday: { count: number; total: string | number };
@@ -30,42 +32,96 @@ interface DashboardSummary {
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  useEffect(() => {
-    api<DashboardSummary>("/organizations/me/dashboard")
-      .then(setSummary)
-      .catch((err) =>
-        setLoadError(err instanceof ApiError ? err.message : "No se pudo cargar el resumen de la empresa"),
-      )
-      .finally(() => setLoading(false));
-  }, []);
+  const fetchSummary = useCallback(
+    () => api<DashboardSummary>("/organizations/me/dashboard"),
+    [],
+  );
+  const receiveSummary = useCallback(
+    (value: DashboardSummary) => setSummary(value),
+    [],
+  );
+  const {
+    loading,
+    error: loadError,
+    reload,
+  } = useRemoteLoad(
+    fetchSummary,
+    receiveSummary,
+    "No se pudo cargar el resumen de la empresa",
+  );
 
   return (
     <AppShell>
       <div className="p-6 space-y-6">
         <div>
-          <h1 className="text-lg font-semibold">Inicio</h1>
+          <h1 className="text-3xl font-semibold">Inicio</h1>
           <p className="text-sm text-zinc-500 mt-1">
-            Resumen de tu empresa. Estos números vienen directo de la base de datos — si están en
-            cero es porque todavía no hay actividad registrada, no porque falten datos de ejemplo. Son
-            indicadores comerciales, no registros fiscales.
+            Ventas, caja e inventario de tu negocio. Los importes se muestran en
+            bolivianos.
           </p>
         </div>
 
+        <nav
+          aria-label="Accesos de operación"
+          className="grid gap-3 sm:grid-cols-3"
+        >
+          {[
+            [
+              "/restaurant/pos",
+              "Abrir caja gastronómica",
+              "Tomar pedidos y cobrar",
+            ],
+            [
+              "/restaurant/kitchen",
+              "Ver cocina y despacho",
+              "Preparar y entregar",
+            ],
+            ["/cash", "Gestionar caja", "Apertura, arqueo y cierre"],
+          ].map(([href, title, description]) => (
+            <Link
+              key={href}
+              href={href}
+              className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-emerald-950 hover:border-emerald-700"
+            >
+              <span className="block font-semibold">{title} →</span>
+              <span className="mt-1 block text-sm">{description}</span>
+            </Link>
+          ))}
+        </nav>
         {loadError ? (
-          <p className="text-sm text-red-600 bg-red-50 rounded p-2">{loadError}</p>
+          <PageState
+            kind="error"
+            title={loadError}
+            onRetry={() => void reload()}
+          />
         ) : loading || !summary ? (
-          <p className="text-sm text-zinc-500">Cargando...</p>
+          <PageState kind="loading" title="Cargando resumen del negocio…" />
         ) : (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard label="Ventas hoy" value={`Bs. ${Number(summary.salesToday.total).toFixed(2)}`} sub={`${summary.salesToday.count} ventas`} />
-              <StatCard label="Ventas del mes" value={`Bs. ${Number(summary.salesMonth.total).toFixed(2)}`} sub={`${summary.salesMonth.count} ventas`} />
-              <StatCard label="Compras del mes" value={`Bs. ${Number(summary.purchasesMonth.total).toFixed(2)}`} sub={`${summary.purchasesMonth.count} compras`} />
-              <StatCard label="Ingresos del mes (caja)" value={`Bs. ${Number(summary.incomeMonth).toFixed(2)}`} />
-              <StatCard label="Egresos del mes (caja)" value={`Bs. ${Number(summary.expensesMonth).toFixed(2)}`} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+              <StatCard
+                label="Ventas hoy"
+                value={`Bs. ${Number(summary.salesToday.total).toFixed(2)}`}
+                sub={`${summary.salesToday.count} ventas`}
+              />
+              <StatCard
+                label="Ventas del mes"
+                value={`Bs. ${Number(summary.salesMonth.total).toFixed(2)}`}
+                sub={`${summary.salesMonth.count} ventas`}
+              />
+              <StatCard
+                label="Compras del mes"
+                value={`Bs. ${Number(summary.purchasesMonth.total).toFixed(2)}`}
+                sub={`${summary.purchasesMonth.count} compras`}
+              />
+              <StatCard
+                label="Ingresos del mes (caja)"
+                value={`Bs. ${Number(summary.incomeMonth).toFixed(2)}`}
+              />
+              <StatCard
+                label="Egresos del mes (caja)"
+                value={`Bs. ${Number(summary.expensesMonth).toFixed(2)}`}
+              />
               <StatCard
                 label="Utilidad comercial"
                 value="No disponible"
@@ -81,24 +137,51 @@ export default function DashboardPage() {
                 value={`Bs. ${Number(summary.pendingPayables.total).toFixed(2)}`}
                 sub={`${summary.pendingPayables.count} pendientes`}
               />
-              <StatCard label="Valor de inventario (al costo actual)" value={`Bs. ${Number(summary.stockValue).toFixed(2)}`} />
-              <StatCard label="Facturas emitidas" value={String(summary.invoicesIssued)} />
-              <StatCard label="Clientes atendidos" value={String(summary.customersServed)} />
-              <StatCard label="Productos activos" value={String(summary.productsActive)} />
-              <StatCard label="Stock bajo" value={String(summary.lowStockProducts)} highlight={summary.lowStockProducts > 0} />
+              <StatCard
+                label="Valor de inventario (al costo actual)"
+                value={`Bs. ${Number(summary.stockValue).toFixed(2)}`}
+              />
+              <StatCard
+                label="Facturas emitidas"
+                value={String(summary.invoicesIssued)}
+              />
+              <StatCard
+                label="Clientes atendidos"
+                value={String(summary.customersServed)}
+              />
+              <StatCard
+                label="Productos activos"
+                value={String(summary.productsActive)}
+              />
+              <StatCard
+                label="Stock bajo"
+                value={String(summary.lowStockProducts)}
+                highlight={summary.lowStockProducts > 0}
+              />
             </div>
 
             <div className="bg-white border border-zinc-200 rounded-lg p-5">
               <div className="flex items-center justify-between mb-3">
-                <p className="text-sm font-semibold">Productos más vendidos del mes</p>
-                <Link href="/reports" className="text-xs text-zinc-600 underline">
+                <p className="text-sm font-semibold">
+                  Productos más vendidos del mes
+                </p>
+                <Link
+                  href="/reports"
+                  className="text-xs text-zinc-600 underline"
+                >
                   Ver todos los reportes
                 </Link>
               </div>
               {summary.topProducts.length === 0 ? (
-                <p className="text-sm text-zinc-400">Sin ventas todavía este mes</p>
+                <PageState kind="empty" title="Todavía no hay ventas este mes">
+                  Cuando registres una venta, verás aquí los productos más
+                  vendidos.
+                </PageState>
               ) : (
-                <table className="w-full text-sm">
+                <ResponsiveTable
+                  label="Productos más vendidos"
+                  className="w-full text-sm"
+                >
                   <thead className="text-zinc-500 text-left">
                     <tr>
                       <th className="py-1">Producto</th>
@@ -108,14 +191,21 @@ export default function DashboardPage() {
                   </thead>
                   <tbody>
                     {summary.topProducts.map((p) => (
-                      <tr key={p.productId} className="border-t border-zinc-100">
-                        <td className="py-1.5">{p.product?.name ?? p.productId}</td>
+                      <tr
+                        key={p.productId}
+                        className="border-t border-zinc-100"
+                      >
+                        <td className="py-1.5">
+                          {p.product?.name ?? p.productId}
+                        </td>
                         <td className="py-1.5">{Number(p.quantity)}</td>
-                        <td className="py-1.5">Bs. {Number(p.total).toFixed(2)}</td>
+                        <td className="py-1.5">
+                          Bs. {Number(p.total).toFixed(2)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </ResponsiveTable>
               )}
             </div>
           </>
@@ -125,11 +215,23 @@ export default function DashboardPage() {
   );
 }
 
-function StatCard({ label, value, sub, highlight }: { label: string; value: string; sub?: string; highlight?: boolean }) {
+function StatCard({
+  label,
+  value,
+  sub,
+  highlight,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  highlight?: boolean;
+}) {
   return (
-    <div className={`bg-white border rounded-lg p-4 ${highlight ? "border-amber-400" : "border-zinc-200"}`}>
+    <div
+      className={`bg-white border rounded-lg p-4 ${highlight ? "border-amber-400" : "border-zinc-200"}`}
+    >
       <p className="text-xs text-zinc-500">{label}</p>
-      <p className="text-2xl font-semibold mt-1">{value}</p>
+      <p className="break-words text-2xl font-semibold mt-1">{value}</p>
       {sub && <p className="text-xs text-zinc-400 mt-1">{sub}</p>}
     </div>
   );

@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import FieldInput from "@/components/FieldInput";
 import { api } from "@/lib/api";
 import { useSubmitGuard } from "@/lib/use-submit-guard";
 import { ApiError } from "@/lib/auth-context";
@@ -95,15 +96,13 @@ export default function UsersPage() {
         <form onSubmit={invite} className="bg-white rounded-lg border border-zinc-200 p-5 space-y-3">
           <h2 className="font-medium text-sm">Invitar usuario</h2>
           {error && <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>}
-          <div className="grid grid-cols-3 gap-3">
-            <input
-              placeholder="Nombre"
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+            <FieldInput label="Nombre" placeholder="Nombre"
               value={form.name}
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
             />
-            <input
-              placeholder="Email"
+            <FieldInput label="Email" placeholder="Email"
               type="email"
               value={form.email}
               onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
@@ -111,6 +110,7 @@ export default function UsersPage() {
               required
             />
             <select
+              aria-label="Rol de la invitación"
               value={form.roleId}
               onChange={(e) => setForm((f) => ({ ...f, roleId: e.target.value }))}
               className="rounded border border-zinc-300 px-3 py-1.5 text-sm"
@@ -127,13 +127,14 @@ export default function UsersPage() {
 
         <div className="bg-white rounded-lg border border-zinc-200 divide-y divide-zinc-100">
           {members.map((m) => (
-            <div key={m.id} className="flex items-center justify-between px-4 py-3 text-sm">
-              <div>
+            <div key={m.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+              <div className="min-w-0 break-words">
                 <p className="font-medium">{m.user.name}</p>
                 <p className="text-zinc-500 text-xs">{m.user.email}</p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <select
+                  aria-label={`Rol de ${m.user.name}`}
                   value={m.role.id}
                   onChange={(e) => changeRole(m.id, e.target.value)}
                   className="text-xs border border-zinc-300 rounded px-2 py-1"

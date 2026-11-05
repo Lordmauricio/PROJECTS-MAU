@@ -34,14 +34,13 @@ async function register(page: Page) {
     ).toBeTruthy();
     return response.json() as Promise<T>;
   };
-  const [branch] =
-    await call<
-      {
-        id: string;
-        warehouses: { id: string }[];
-        posTerminals: { id: string }[];
-      }[]
-    >("/branches");
+  const [branch] = await call<
+    {
+      id: string;
+      warehouses: { id: string }[];
+      posTerminals: { id: string }[];
+    }[]
+  >("/branches");
   return { call, branch, email, password };
 }
 
@@ -78,11 +77,9 @@ test("registro, login, compra, venta, devolución y cierre con servicios reales"
   const opened = (await (await openedResponse).json()) as { id: string };
   await expect(page.getByText("Caja abierta correctamente.")).toBeVisible();
   await page.goto("/purchases");
-  const form = page
-    .locator("form")
-    .filter({
-      has: page.getByRole("heading", { name: "Nueva orden de compra" }),
-    });
+  const form = page.locator("form").filter({
+    has: page.getByRole("heading", { name: "Nueva orden de compra" }),
+  });
   await expect(
     form
       .locator("select")
@@ -104,14 +101,12 @@ test("registro, login, compra, venta, devolución y cierre con servicios reales"
   await page
     .getByRole("button", { name: "Confirmar orden", exact: true })
     .click();
-  const receive = page
-    .locator("form")
-    .filter({
-      has: page.getByRole("heading", {
-        name: "Registrar recepción",
-        exact: true,
-      }),
-    });
+  const receive = page.locator("form").filter({
+    has: page.getByRole("heading", {
+      name: "Registrar recepción",
+      exact: true,
+    }),
+  });
   await receive.locator("input[type=number]").fill("10");
   await receive
     .getByRole("button", { name: "Registrar recepción", exact: true })
@@ -335,5 +330,69 @@ test("combo táctil, pérdida de respuestas, pago mixto, cocina y despacho reale
         .difference,
     ),
   ).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test("administración móvil con datos reales y navegación accesible", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const { call } = await register(page);
+  await call("/products", "POST", {
+    name: "Combo de pollo para revisión móvil",
+    price: 35,
+  });
+  await call("/customers", "POST", {
+    name: "Cliente de revisión móvil",
+    documentNumber: "987654321",
+    email: "cliente-revision-movil@example.test",
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const [path, heading] of [
+    ["/dashboard", "Inicio"],
+    ["/customers", "Clientes"],
+    ["/inventory/products", "Productos"],
+    ["/cash", "Caja y Bancos"],
+    ["/purchases", "Compras"],
+    ["/reports", "Reportes"],
+    ["/settings", "Configuración"],
+    ["/users", "Usuarios y Permisos"],
+  ] as const) {
+    await page.goto(path);
+    await expect(
+      page.getByRole("heading", { name: heading, exact: true }).first(),
+    ).toBeVisible();
+    // Wait for real API reads and their resulting layout, including long row data.
+    if (path === "/customers")
+      await expect(
+        page.getByRole("cell", { name: "Cliente de revisión móvil" }),
+      ).toBeVisible();
+    if (path === "/inventory/products")
+      await expect(
+        page.getByRole("cell", { name: "Combo de pollo para revisión móvil" }),
+      ).toBeVisible();
+    if (path === "/dashboard")
+      await expect(
+        page.getByText("Todavía no hay ventas este mes"),
+      ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      path,
+    ).toBe(true);
+  }
+  await page
+    .getByRole("button", { name: "Abrir navegación", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Navegación principal" });
+  await expect(
+    dialog.getByRole("link", { name: "Inicio", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("button", { name: "Abrir navegación", exact: true }),
+  ).toBeFocused();
   expect(errors).toEqual([]);
 });

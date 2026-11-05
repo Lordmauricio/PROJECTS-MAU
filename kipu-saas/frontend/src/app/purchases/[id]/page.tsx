@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
+import ResponsiveTable from "@/components/ResponsiveTable";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/auth-context";
 
@@ -227,7 +228,7 @@ export default function PurchaseDetailPage() {
         {canEdit && <p className="text-sm text-zinc-500">Esta orden está en borrador — vuelve al listado para editar sus ítems.</p>}
 
         <div className="bg-white rounded-lg border border-zinc-200 p-4 space-y-2 text-sm">
-          <table className="w-full text-sm">
+          <ResponsiveTable label="Detalle de compra" className="w-full text-sm">
             <thead className="text-zinc-500 text-left">
               <tr>
                 <th className="py-1">Producto</th>
@@ -250,7 +251,7 @@ export default function PurchaseDetailPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </ResponsiveTable>
           <div className="border-t border-zinc-200 pt-2 text-right space-y-1">
             <p>Subtotal: Bs. {Number(purchase.subtotal).toFixed(2)}</p>
             <p>Descuento: Bs. {Number(purchase.discount).toFixed(2)}</p>
