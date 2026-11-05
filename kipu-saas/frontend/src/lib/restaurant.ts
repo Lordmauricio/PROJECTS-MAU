@@ -13,11 +13,13 @@ export interface MenuEntry {
   id: string;
   productId: string;
   name: string;
+  presentation?: string | null;
   category: string;
   station: string;
   price: string;
   active: boolean;
   available: number | null;
+  customizable?: boolean;
   components: Component[];
   options: MenuOption[];
 }
@@ -25,13 +27,35 @@ export interface OrderLine {
   menuEntryId: string;
   productId: string;
   name: string;
+  presentation?: string | null;
   category: string;
   station: string;
   quantity: number;
   unitPrice: string;
   subtotal: string;
   options: { id: string; name: string; price: string }[];
-  components: { productId: string; name: string; quantity: string }[];
+  components: { productId: string; name: string; quantity: string; referenceUnitPrice?: string }[];
+}
+
+export interface OrderQuote {
+  items: OrderLine[];
+  subtotal: string;
+  discount: string;
+  total: string;
+  canFulfill: boolean;
+  shortages: {
+    productId: string;
+    name: string;
+    required: string;
+    available: string;
+    missing: string;
+  }[];
+}
+
+export function menuTitle(entry: Pick<MenuEntry, "name" | "presentation">) {
+  return entry.presentation
+    ? `${entry.name} · ${entry.presentation}`
+    : entry.name;
 }
 export interface RestaurantOrder {
   id: string;

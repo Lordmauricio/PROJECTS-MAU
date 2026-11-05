@@ -625,6 +625,7 @@ model MenuEntry {
   organizationId String
   productId String
   name String
+  presentation String?
   category String
   station String @default("Cocina")
   price Decimal @db.Decimal(12, 2)

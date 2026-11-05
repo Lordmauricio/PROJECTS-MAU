@@ -8,6 +8,7 @@ import {
   bolivianos,
   control,
   primary,
+  menuTitle,
   type Component,
   type MenuEntry,
   type MenuOption,
@@ -21,6 +22,7 @@ interface Product {
 const blank = {
   productId: "",
   name: "",
+  presentation: "",
   category: "",
   station: "Cocina",
   price: "0",
@@ -89,6 +91,7 @@ export default function MenuPage() {
     setForm({
       productId: entry.productId,
       name: entry.name,
+      presentation: entry.presentation ?? "",
       category: entry.category,
       station: entry.station,
       price: entry.price,
@@ -146,7 +149,7 @@ export default function MenuPage() {
                   <p className="text-xs text-zinc-500">
                     {entry.category} · {entry.station}
                   </p>
-                  <h2 className="font-semibold">{entry.name}</h2>
+                  <h2 className="font-semibold">{menuTitle(entry)}</h2>
                   <p className="mt-1 text-sm">
                     {bolivianos(entry.price)} · {entry.components.length}{" "}
                     componentes · {entry.active ? "Visible" : "Pausado"}
@@ -155,7 +158,7 @@ export default function MenuPage() {
                 <button
                   className={control}
                   onClick={() => edit(entry)}
-                  aria-label={`Editar ${entry.name}`}
+                  aria-label={`Editar ${menuTitle(entry)}`}
                 >
                   Editar
                 </button>
@@ -218,6 +221,18 @@ export default function MenuPage() {
                   className={`${control} mt-1 w-full`}
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
+                />
+              </label>
+              <label className="block text-sm">
+                Presentación (opcional)
+                <input
+                  maxLength={60}
+                  className={`${control} mt-1 w-full`}
+                  placeholder="Ej. cuarto, medio o entero"
+                  value={form.presentation}
+                  onChange={(e) =>
+                    setForm({ ...form, presentation: e.target.value })
+                  }
                 />
               </label>
               <div className="grid grid-cols-2 gap-3">

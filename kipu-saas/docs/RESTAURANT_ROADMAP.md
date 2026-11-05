@@ -36,6 +36,7 @@ flujos comerciales verificados; los fallos conocidos deberán quedar descritos.
 
 Informe: `INFORME_ETAPA_2.md`. Criterios y protocolo de campo:
 `EXPERIENCIA_VISUAL.md`. La validación técnica no cierra la prueba presencial.
+El usuario autorizó continuar con la etapa 3 y mantener esta prueba aplazada.
 
 
 Diseñar flujo táctil de caja, menú por categorías, carrito siempre visible y
@@ -47,14 +48,20 @@ Decidir arquitectura de contingencia antes de cerrar el diseño técnico: caja,
 cocina e impresión local durante cortes de internet y posterior sincronización.
 No se ha implementado ni prometido funcionamiento offline en la base existente.
 
-## 3. Menú y POS de mostrador — núcleo implementado
+## 3. Menú y POS de mostrador — entrega técnica validada, catálogo real pendiente
 
 - [x] Menú configurable, combos, componentes por porción, extras y sustituciones.
 - [x] Precios del servidor y descuentos restringidos a encargados.
 - [x] Pedidos separados del cobro, salón/para llevar, pagos mixtos y cambio.
 - [x] QR manual identificado y vínculo al recibo comercial no fiscal existente.
 - [x] Snapshots históricos y reintentos de pedido/cobro sin duplicación.
+- [x] Presentaciones identificadas y precio de referencia histórico por componente.
+- [x] Revisión previa de precios y faltantes de todo el carrito en servidor.
+- [x] Sustitución de guarniciones agotadas y disponibilidad decimal por porción.
+- [x] Concurrencia de la última porción sin doble cobro ni consumo.
 - [ ] Validación comercial de todas las presentaciones del menú del piloto.
+
+Informe: `INFORME_ETAPA_3.md`. La etapa 2 conserva su prueba de campo pendiente.
 
 
 Categorías, presentaciones, combos, extras y sustituciones con precios validados
@@ -230,3 +237,15 @@ Validación: compilación/TypeScript y ESLint; 11 unitarias; 14 pruebas de naveg
 (seis nuevas y ocho regresiones); tres recorridos con servicios reales, incluyendo
 administración móvil de Inicio, clientes, productos, caja, compras, reportes,
 configuración y usuarios. El protocolo de campo sigue pendiente.
+
+
+## Entrega técnica de etapa 3 — 4 de noviembre de 2026
+
+Presentaciones, historial de precios por componente y revisión previa del pedido,
+sin reservas ni efectos comerciales. Se conserva el cálculo de precios del
+servidor y la confirmación atómica de stock/pago. Migración aditiva de presentación.
+
+Validación: 329 pruebas backend (34 suites), cuatro recorridos de navegador con
+servicios reales, 11 unitarias frontend y 14 regresiones de interfaz. Se verifican
+compilaciones, análisis estático y aislamiento. Catálogo real del piloto y prueba
+presencial aplazados; no se marca la etapa completa ni se despliega a producción.

@@ -186,7 +186,8 @@ test("combo táctil, pérdida de respuestas, pago mixto, cocina y despacho reale
   });
   await page.goto("/restaurant/menu");
   await page.getByLabel("Producto de venta").selectOption(anchor.id);
-  await page.getByLabel("Nombre del plato").fill("Combo de cuarto");
+  await page.getByLabel("Nombre del plato").fill("Combo de pollo");
+  await page.getByLabel("Presentación (opcional)").fill("Cuarto");
   await page.getByLabel("Categoría", { exact: true }).fill("Combos");
   await page.getByLabel("Estación", { exact: true }).fill("Parrilla");
   await page
@@ -214,13 +215,25 @@ test("combo táctil, pérdida de respuestas, pago mixto, cocina y despacho reale
   await page.setViewportSize({ width: 768, height: 1024 });
   await page.goto("/restaurant/pos");
   await page
-    .getByRole("button", { name: "Agregar Combo de cuarto", exact: true })
+    .getByRole("button", {
+      name: "Agregar Combo de pollo · Cuarto",
+      exact: true,
+    })
     .click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel(/Papas extra/).check();
   await dialog.getByRole("button", { name: "Agregar al pedido" }).click();
   await page.getByLabel("Nombre para entregar").fill("Mesa de prueba");
   await page.getByLabel("Observaciones para cocina").fill("Sin ají");
+  await page
+    .getByRole("button", { name: "Revisar disponibilidad y total" })
+    .click();
+  await expect(
+    page.getByText("Total revisado: Bs 28.00", { exact: true }),
+  ).toBeVisible();
+  expect(await call<unknown[]>("/restaurant/orders?status=DRAFT")).toHaveLength(
+    0,
+  );
   let lostCreate = false;
   await page.route(`${apiURL}/restaurant/orders`, async (route) => {
     if (route.request().method() === "POST" && !lostCreate) {
@@ -232,7 +245,7 @@ test("combo táctil, pérdida de respuestas, pago mixto, cocina y despacho reale
   await page
     .getByRole("button", { name: "Guardar pedido", exact: true })
     .click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.locator("main").getByRole("alert")).toBeVisible();
   await page.getByRole("button", { name: "Recuperar el mismo pedido" }).click();
   await expect(
     page.getByRole("button", { name: "Cobrar y enviar a cocina" }),
@@ -259,7 +272,7 @@ test("combo táctil, pérdida de respuestas, pago mixto, cocina y despacho reale
     },
   );
   await page.getByRole("button", { name: "Cobrar y enviar a cocina" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.locator("main").getByRole("alert")).toBeVisible();
   await page.getByRole("button", { name: "Cobrar y enviar a cocina" }).click();
   await expect(
     page.getByText("Pedido cobrado y enviado a cocina"),
@@ -395,4 +408,117 @@ test("administración móvil con datos reales y navegación accesible", async ({
     page.getByRole("button", { name: "Abrir navegación", exact: true }),
   ).toBeFocused();
   expect(errors).toEqual([]);
+});
+
+test("revisión previa bloquea faltantes y admite una sustitución disponible", async ({
+  page,
+}) => {
+  const { call, branch } = await register(page);
+  const empty = await call<{ id: string }>("/products", "POST", {
+    name: "Papas sin existencias",
+    price: 5,
+  });
+  const rice = await call<{ id: string }>("/products", "POST", {
+    name: "Arroz disponible",
+    price: 5,
+  });
+  const warehouseId = branch.warehouses[0].id;
+  await call("/inventory/movements", "POST", {
+    productId: rice.id,
+    warehouseId,
+    type: "IN",
+    quantity: 2,
+    idempotencyKey: randomUUID(),
+  });
+  await call("/restaurant/menu", "POST", {
+    productId: empty.id,
+    name: "Guarnición",
+    presentation: "Porción",
+    category: "Guarniciones",
+    station: "Cocina",
+    price: 5,
+    active: true,
+    components: [{ productId: empty.id, quantity: 1 }],
+    options: [
+      {
+        id: "rice",
+        name: "Cambiar por arroz",
+        replacesProductId: empty.id,
+        price: 0,
+        components: [{ productId: rice.id, quantity: 1 }],
+      },
+    ],
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/restaurant/pos");
+  const add = page.getByRole("button", {
+    name: "Agregar Guarnición · Porción",
+    exact: true,
+  });
+  await expect(add).toBeEnabled();
+  await add.click();
+  await page
+    .getByRole("button", { name: "Agregar al pedido", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Guardar pedido", exact: true })
+    .click();
+  await expect(
+    page.getByText("Faltan componentes para completar el pedido.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.locator("main").getByRole("alert")).toContainText("No alcanza el stock");
+  expect(await call<unknown[]>("/restaurant/orders?status=DRAFT")).toHaveLength(
+    0,
+  );
+  await page
+    .getByRole("button", { name: "Restar Guarnición · Porción", exact: true })
+    .click();
+  await add.click();
+  await page
+    .getByRole("dialog")
+    .getByLabel(/Cambiar por arroz/)
+    .check();
+  await page
+    .getByRole("button", { name: "Agregar al pedido", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Revisar disponibilidad y total" })
+    .click();
+  await expect(
+    page.getByText("Hay disponibilidad para este pedido.", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Guardar pedido", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Cobrar y enviar a cocina", exact: true }),
+  ).toBeVisible();
+  const orders = await call<
+    {
+      snapshot: {
+        presentation: string;
+        components: { productId: string; referenceUnitPrice: string }[];
+      }[];
+    }[]
+  >("/restaurant/orders?status=DRAFT");
+  expect(orders).toHaveLength(1);
+  expect(orders[0].snapshot[0].presentation).toBe("Porción");
+  expect(orders[0].snapshot[0].components[0]).toMatchObject({
+    productId: rice.id,
+    referenceUnitPrice: "5.00",
+  });
+  const stocks = await call<{ productId: string; quantity: string }[]>(
+    `/inventory?warehouseId=${warehouseId}`,
+  );
+  expect(
+    Number(stocks.find((row) => row.productId === rice.id)?.quantity),
+  ).toBe(2);
+  await page
+    .getByRole("button", { name: "Cancelar pedido sin cobrar", exact: true })
+    .click();
+  await expect(
+    page.getByText("Elige un plato para comenzar.", { exact: true }),
+  ).toBeVisible();
 });

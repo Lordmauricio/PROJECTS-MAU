@@ -8,10 +8,15 @@
    categoría, estación y precio. Definir los componentes consumidos por unidad:
    por ejemplo, un combo puede consumir 0.25 de pollo y una porción de papas.
    El producto de venta no necesita stock propio si consume otros componentes.
+   La presentación opcional identifica, por ejemplo, cuarto, medio o entero.
+   Cada presentación es una entrada independiente, con precio y composición propios.
 3. Agregar extras con su precio y componentes. Una sustitución reemplaza un
    componente base completo; solo se permite una sustitución por componente.
 4. Abrir caja en el punto de venta. En Caja gastronómica, elegir sucursal,
    almacén, platos, opciones, salón/para llevar y observaciones. Guardar pedido.
+   «Revisar disponibilidad y total» consulta los precios y faltantes en servidor.
+   Al guardar un pedido nuevo se realiza también esta revisión. Si no alcanza el
+   stock, el carrito sigue editable y se muestran los componentes que faltan.
 5. Cobrar el total con uno o varios métodos. QR es manual: el operador debe
    comprobar el abono. El cambio se muestra aparte y no infla el cobro ni caja.
 6. En Cocina y despacho, iniciar preparación, marcar listo y entregar. El tablero
@@ -31,10 +36,19 @@ cambiar un pedido sin cobrar, cancelarlo y crear otro.
   por el cajero. Los importes se calculan con Decimal y dos decimales.
 - Cada línea conserva nombre, opciones, precios, estación y componentes. El
   recibo conserva el nombre histórico del plato y sus opciones.
+  Los nuevos pedidos conservan además la presentación y `referenceUnitPrice`
+  de cada componente: precio de catálogo al guardar, no un cargo adicional ni un
+  reparto contable del precio del combo. El importe cobrado es el precio del
+  menú más extras y menos el descuento autorizado. No se inventa este dato para
+  pedidos anteriores.
 - Guardar un pedido no reserva stock. Cobrar confirma la venta y descuenta todos
   sus componentes en una sola transacción. Si falta alguno, se revierte el cobro
   y todo el consumo. La disponibilidad mostrada es orientativa y se recalcula al
   cobrar; dos cajas pueden intentar vender la última porción.
+  La revisión suma componentes compartidos por varias líneas, no solo cada línea
+  por separado. La disponibilidad por porción usa Decimal, evitando perder una
+  porción por errores binarios. Un plato cuya guarnición base esté agotada puede
+  personalizarse si tiene opciones; la revisión valida la sustitución elegida.
 - La clave del pedido es única por empresa; repetirla con contenido distinto
   devuelve 409. La confirmación de venta usa locks y las claves de pago existentes.
   Un pago completado se recupera antes de enviar el pedido a cocina si se perdió
@@ -68,6 +82,13 @@ por su producto de venta; no presentan todavía un desglose de costo por receta.
 
 - `GET/POST /restaurant/menu` y `PATCH /restaurant/menu/:id`.
   GET admite `warehouseId` y devuelve disponibilidad calculada de componentes.
+  Acepta `presentation` opcional. GET incluye `customizable`, que permite abrir
+  opciones aunque la composición base esté agotada; no garantiza disponibilidad.
+- `POST /restaurant/quote`: recibe POS, almacén, servicio, líneas y descuento
+  opcional, sin clave de pedido ni precios del cliente. Devuelve líneas calculadas,
+  subtotal, descuento, total, `canFulfill` y faltantes con cantidades requeridas y
+  disponibles. Usa los mismos permisos y cálculo que guardar el pedido. No crea
+  ventas, pedidos, movimientos ni pagos, y no reserva existencias.
 - `GET/POST /restaurant/orders` y `GET /restaurant/orders/:id`.
   Creación requiere `requestKey`, POS, almacén, servicio y líneas con IDs de menú,
   cantidades enteras y opciones. GET admite sucursal y estado; sin estado excluye
@@ -80,6 +101,12 @@ por su producto de venta; no presentan todavía un desglose de costo por receta.
 La migración es aditiva: agrega menú, pedidos/eventos y dos columnas opcionales
 en líneas de venta. Las ventas existentes conservan el consumo directo de su
 producto. No requiere reemplazar ni borrar datos existentes.
+
+La ampliación de etapa 3 agrega una migración aditiva:
+`20261105020000_menu_presentations`, con `menu_entries.presentation` nullable.
+Desplegar primero el backend compatible y aplicar sus migraciones, después el
+frontend que consulta `/restaurant/quote`. Respaldar la base antes de migrar un
+entorno con datos. Las entradas anteriores siguen funcionando sin presentación.
 
 ## Validación local
 

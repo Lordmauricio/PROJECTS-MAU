@@ -17,6 +17,7 @@ import { ConfirmSaleDto } from '../sales/dto/payment.dto';
 import {
   CancelOrderDto,
   CreateOrderDto,
+  QuoteOrderDto,
   ListOrdersDto,
   SaveMenuEntryDto,
   TransitionOrderDto,
@@ -66,6 +67,11 @@ export class RestaurantController {
   @RequirePermissions('sales.create')
   create(@CurrentAuth() auth: AccessTokenPayload, @Body() dto: CreateOrderDto) {
     return this.restaurant.create(auth.organizationId, auth.sub, dto);
+  }
+  @Post('quote')
+  @RequirePermissions('sales.create')
+  quote(@CurrentAuth() auth: AccessTokenPayload, @Body() dto: QuoteOrderDto) {
+    return this.restaurant.quote(auth.organizationId, auth.sub, dto);
   }
   @Post('orders/:id/checkout')
   @RequirePermissions('sales.create')

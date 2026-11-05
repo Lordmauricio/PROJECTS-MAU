@@ -12,7 +12,11 @@ import {
 } from '../test-support/integration-app';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { PrismaService } from '../prisma/prisma.service';
-import type { CreateOrderDto, SaveMenuEntryDto } from './restaurant.dto';
+import type {
+  CreateOrderDto,
+  QuoteOrderDto,
+  SaveMenuEntryDto,
+} from './restaurant.dto';
 
 interface Order {
   id: string;
@@ -23,8 +27,13 @@ interface Order {
   sale: { status: string; total: string; payments: { amount: string }[] };
   snapshot: {
     name: string;
+    presentation: string | null;
     unitPrice: string;
-    components: { productId: string; quantity: string }[];
+    components: {
+      productId: string;
+      quantity: string;
+      referenceUnitPrice: string;
+    }[];
   }[];
   events: { action: string }[];
 }
@@ -542,5 +551,323 @@ describe('Restaurante — menú, combos, cobro y cocina con DB real', () => {
       unknown[]
     >`SELECT id FROM menu_entries`;
     expect(raw).toEqual([]);
+  });
+  it('conserva presentaciones y sus precios después de editar el menú', async () => {
+    const quarter = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/restaurant/menu',
+      { ...menu, name: 'Pollo a la brasa', presentation: 'Cuarto', price: 25 },
+      tenant.accessToken,
+    );
+    const half = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/restaurant/menu',
+      {
+        ...menu,
+        name: 'Pollo a la brasa',
+        presentation: 'Medio',
+        price: 45,
+        components: [
+          { productId: chicken, quantity: 0.5 },
+          { productId: side, quantity: 2 },
+        ],
+      },
+      tenant.accessToken,
+    );
+    expect(quarter.status).toBe(201);
+    expect(half.status).toBe(201);
+    const draft = body();
+    draft.items = [
+      { menuEntryId: quarter.body.id, quantity: 1, optionIds: [] },
+      { menuEntryId: half.body.id, quantity: 1, optionIds: [] },
+    ];
+    const order = await create(draft);
+    expect(order.sale.total).toBe('70');
+    expect(order.snapshot.map((line) => line.name)).toEqual([
+      'Pollo a la brasa · Cuarto',
+      'Pollo a la brasa · Medio',
+    ]);
+    expect(
+      order.snapshot[0].components.find((c) => c.productId === chicken)
+        ?.referenceUnitPrice,
+    ).toBe('80.00');
+    const edited = await callApi(
+      app,
+      'PATCH',
+      `/restaurant/menu/${quarter.body.id}`,
+      {
+        ...menu,
+        name: 'Pollo a la brasa',
+        presentation: 'Nuevo cuarto',
+        price: 30,
+      },
+      tenant.accessToken,
+    );
+    expect(edited.status).toBe(200);
+    const paid = await checkout(order);
+    expect(paid.status).toBe(201);
+    expect(paid.body.sale.total).toBe('70');
+    expect(paid.body.snapshot[0].presentation).toBe('Cuarto');
+    const receipt = await callApi<{
+      snapshot: { items: { productName: string }[] };
+    }>(app, 'POST', '/receipts', { saleId: order.saleId }, tenant.accessToken);
+    expect(receipt.status).toBe(201);
+    expect(
+      receipt.body.snapshot.items.map((line) => line.productName),
+    ).toContain('Pollo a la brasa · Cuarto');
+  });
+  it('revisa el pedido sin crear ventas, consumir stock ni cobrar', async () => {
+    const before = await stock(chicken);
+    const prisma = app.get(TenantPrismaService);
+    const countBefore = await prisma.run(tenant.organizationId, (tx) =>
+      tx.sale.count(),
+    );
+    const requested = body(['extra']);
+    const dto: QuoteOrderDto = {
+      posTerminalId: requested.posTerminalId,
+      warehouseId: requested.warehouseId,
+      service: requested.service,
+      items: requested.items,
+    };
+    const quote = await callApi<{
+      total: string;
+      canFulfill: boolean;
+      shortages: unknown[];
+    }>(app, 'POST', '/restaurant/quote', dto, tenant.accessToken);
+    expect(quote.status).toBe(201);
+    expect(quote.body.total).toBe('28.00');
+    expect(quote.body.canFulfill).toBe(true);
+    expect(quote.body.shortages).toEqual([]);
+    expect(await stock(chicken)).toBe(before);
+    expect(
+      await prisma.run(tenant.organizationId, (tx) => tx.sale.count()),
+    ).toBe(countBefore);
+  });
+  it('suma los componentes compartidos entre líneas al revisar disponibilidad', async () => {
+    const rare = (
+      await createProductWithStock(app, tenant, {
+        name: 'Guarnición limitada',
+        price: 5,
+        quantity: 1,
+      })
+    ).productId;
+    const entry = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/restaurant/menu',
+      { ...menu, components: [{ productId: rare, quantity: 1 }], options: [] },
+      tenant.accessToken,
+    );
+    expect(entry.status).toBe(201);
+    const quote = await callApi<{
+      canFulfill: boolean;
+      shortages: { productId: string; required: string; available: string }[];
+    }>(
+      app,
+      'POST',
+      '/restaurant/quote',
+      {
+        posTerminalId: tenant.posTerminalId,
+        warehouseId: tenant.warehouseId,
+        service: 'TAKEAWAY',
+        items: [
+          { menuEntryId: entry.body.id, quantity: 1, optionIds: [] },
+          { menuEntryId: entry.body.id, quantity: 1, optionIds: [] },
+        ],
+      },
+      tenant.accessToken,
+    );
+    expect(quote.status).toBe(201);
+    expect(quote.body.canFulfill).toBe(false);
+    expect(quote.body.shortages[0]).toMatchObject({
+      productId: rare,
+      required: '2.00',
+      available: '1.00',
+    });
+  });
+  it('permite sustituir una guarnición agotada por otra disponible', async () => {
+    const empty = (
+      await createTestProduct(app, tenant, { name: 'Papas agotadas', price: 5 })
+    ).productId;
+    const entry = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/restaurant/menu',
+      {
+        ...menu,
+        components: [{ productId: empty, quantity: 1 }],
+        options: [
+          {
+            id: 'swap',
+            name: 'Cambiar por arroz',
+            price: 0,
+            replacesProductId: empty,
+            components: [{ productId: extra, quantity: 1 }],
+          },
+        ],
+      },
+      tenant.accessToken,
+    );
+    expect(entry.status).toBe(201);
+    const list = await callApi<
+      { id: string; available: number; customizable: boolean }[]
+    >(
+      app,
+      'GET',
+      `/restaurant/menu?warehouseId=${tenant.warehouseId}`,
+      undefined,
+      tenant.accessToken,
+    );
+    expect(list.body.find((e) => e.id === entry.body.id)).toMatchObject({
+      available: 0,
+      customizable: true,
+    });
+    const requested: QuoteOrderDto = {
+      posTerminalId: tenant.posTerminalId,
+      warehouseId: tenant.warehouseId,
+      service: 'TAKEAWAY',
+      items: [{ menuEntryId: entry.body.id, quantity: 1, optionIds: [] }],
+    };
+    expect(
+      (
+        await callApi<{ canFulfill: boolean }>(
+          app,
+          'POST',
+          '/restaurant/quote',
+          requested,
+          tenant.accessToken,
+        )
+      ).body.canFulfill,
+    ).toBe(false);
+    requested.items[0].optionIds = ['swap'];
+    expect(
+      (
+        await callApi<{ canFulfill: boolean }>(
+          app,
+          'POST',
+          '/restaurant/quote',
+          requested,
+          tenant.accessToken,
+        )
+      ).body.canFulfill,
+    ).toBe(true);
+    const order = await create({ ...requested, requestKey: uniqueSuffix() });
+    expect((await checkout(order)).status).toBe(201);
+  });
+  it('calcula porciones disponibles sin perder una por redondeo binario', async () => {
+    const productId = (
+      await createProductWithStock(app, tenant, {
+        name: 'Porciones decimales',
+        price: 1,
+        quantity: 0.3,
+      })
+    ).productId;
+    const entry = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/restaurant/menu',
+      { ...menu, components: [{ productId, quantity: 0.1 }], options: [] },
+      tenant.accessToken,
+    );
+    expect(entry.status).toBe(201);
+    const list = await callApi<{ id: string; available: number }[]>(
+      app,
+      'GET',
+      `/restaurant/menu?warehouseId=${tenant.warehouseId}`,
+      undefined,
+      tenant.accessToken,
+    );
+    expect(list.body.find((e) => e.id === entry.body.id)?.available).toBe(3);
+  });
+  it('la revisión respeta tenant, permisos y precios del servidor', async () => {
+    const dto: QuoteOrderDto = {
+      posTerminalId: tenant.posTerminalId,
+      warehouseId: tenant.warehouseId,
+      service: 'TAKEAWAY',
+      items: [{ menuEntryId: menuId, quantity: 1, optionIds: [] }],
+    };
+    expect(
+      (
+        await callApi(
+          app,
+          'POST',
+          '/restaurant/quote',
+          { ...dto, price: 1 },
+          tenant.accessToken,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (await callApi(app, 'POST', '/restaurant/quote', dto, other.accessToken))
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        await callApi(
+          app,
+          'POST',
+          '/restaurant/quote',
+          { ...dto, discount: 5 },
+          lowPrivilege,
+        )
+      ).status,
+    ).toBe(403);
+  });
+  it('dos revisiones no reservan la última porción y solo una caja logra cobrarla', async () => {
+    const productId = (
+      await createProductWithStock(app, tenant, {
+        name: 'Última porción',
+        price: 10,
+        quantity: 1,
+      })
+    ).productId;
+    const entry = await callApi<{ id: string }>(
+      app,
+      'POST',
+      '/restaurant/menu',
+      { ...menu, components: [{ productId, quantity: 1 }], options: [] },
+      tenant.accessToken,
+    );
+    expect(entry.status).toBe(201);
+    const dto: QuoteOrderDto = {
+      posTerminalId: tenant.posTerminalId,
+      warehouseId: tenant.warehouseId,
+      service: 'TAKEAWAY',
+      items: [{ menuEntryId: entry.body.id, quantity: 1, optionIds: [] }],
+    };
+    const review = () =>
+      callApi<{ canFulfill: boolean }>(
+        app,
+        'POST',
+        '/restaurant/quote',
+        dto,
+        tenant.accessToken,
+      );
+    const quotes = await Promise.all([review(), review()]);
+    expect(quotes.every((q) => q.status === 201 && q.body.canFulfill)).toBe(
+      true,
+    );
+    const a = await create({ ...dto, requestKey: uniqueSuffix() });
+    const b = await create({ ...dto, requestKey: uniqueSuffix() });
+    const paid = await Promise.all([checkout(a), checkout(b)]);
+    expect(paid.map((p) => p.status).sort()).toEqual([201, 409]);
+    expect(await stock(productId)).toBe(0);
+    const current = await Promise.all(
+      [a, b].map((order) =>
+        callApi<Order>(
+          app,
+          'GET',
+          `/restaurant/orders/${order.id}`,
+          undefined,
+          tenant.accessToken,
+        ),
+      ),
+    );
+    expect(current.flatMap((o) => o.body.sale.payments)).toHaveLength(1);
+    expect(current.filter((o) => o.body.sale.status === 'DRAFT')).toHaveLength(
+      1,
+    );
   });
 });

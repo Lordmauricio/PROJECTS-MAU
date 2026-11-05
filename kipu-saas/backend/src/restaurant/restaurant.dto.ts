@@ -38,6 +38,7 @@ export class MenuOptionDto {
 export class SaveMenuEntryDto {
   @IsString() @MinLength(1) productId!: string;
   @IsString() @MinLength(1) @MaxLength(100) name!: string;
+  @IsOptional() @IsString() @MaxLength(60) presentation?: string;
   @IsString() @MinLength(1) @MaxLength(60) category!: string;
   @IsString() @MinLength(1) @MaxLength(60) station!: string;
   @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(100000) price!: number;
@@ -65,14 +66,13 @@ export class OrderLineDto {
   optionIds!: string[];
 }
 
-export class CreateOrderDto {
+export class QuoteOrderDto {
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   discount?: number;
   @IsString() @MinLength(1) posTerminalId!: string;
   @IsString() @MinLength(1) warehouseId!: string;
-  @IsString() @MinLength(8) @MaxLength(100) requestKey!: string;
   @IsIn(['DINE_IN', 'TAKEAWAY']) service!: 'DINE_IN' | 'TAKEAWAY';
   @IsOptional() @IsString() @MaxLength(100) customerName?: string;
   @IsOptional() @IsString() @MaxLength(500) notes?: string;
@@ -82,6 +82,10 @@ export class CreateOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderLineDto)
   items!: OrderLineDto[];
+}
+
+export class CreateOrderDto extends QuoteOrderDto {
+  @IsString() @MinLength(8) @MaxLength(100) requestKey!: string;
 }
 
 export class TransitionOrderDto {

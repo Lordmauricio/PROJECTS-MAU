@@ -14,6 +14,7 @@ import { money, ZERO_MONEY } from '../common/money';
 import {
   ComponentDto,
   CreateOrderDto,
+  QuoteOrderDto,
   ListOrdersDto,
   MenuOptionDto,
   SaveMenuEntryDto,
@@ -69,14 +70,22 @@ export class RestaurantService {
                   0,
                   Math.min(
                     ...components.map((c) =>
-                      Math.floor(
-                        Number(quantities.get(c.productId) ?? 0) / c.quantity,
-                      ),
+                      money(quantities.get(c.productId) ?? 0)
+                        .div(c.quantity)
+                        .floor()
+                        .toNumber(),
                     ),
                   ),
                 )
               : null;
-        return { ...entry, available };
+        return {
+          ...entry,
+          available,
+          customizable:
+            active.has(entry.productId) &&
+            entry.options instanceof Array &&
+            entry.options.length > 0,
+        };
       });
     });
   }
@@ -132,6 +141,9 @@ export class RestaurantService {
         );
       const data = {
         ...dto,
+        ...(dto.presentation !== undefined
+          ? { presentation: dto.presentation?.trim() || null }
+          : {}),
         components: dto.components.map((c) => ({
           productId: c.productId,
           quantity: c.quantity,
@@ -196,6 +208,193 @@ export class RestaurantService {
     });
   }
 
+  private async resolveOrder(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    actorUserId: string,
+    dto: QuoteOrderDto,
+  ) {
+    const terminal = await tx.pOSTerminal.findFirst({
+      where: { id: dto.posTerminalId, organizationId, active: true },
+    });
+    const warehouse = await tx.warehouse.findFirst({
+      where: { id: dto.warehouseId, organizationId },
+    });
+    if (!terminal || !warehouse || terminal.branchId !== warehouse.branchId)
+      throw new BadRequestException(
+        'El punto de venta y almacén deben pertenecer a la misma sucursal',
+      );
+    const ids = [...new Set(dto.items.map((i) => i.menuEntryId))].sort();
+    await tx.$queryRaw`SELECT id FROM menu_entries WHERE "organizationId" = ${organizationId} AND id IN (${Prisma.join(ids)}) ORDER BY id FOR SHARE`;
+    const entries = await tx.menuEntry.findMany({
+      where: { id: { in: ids }, organizationId, active: true },
+    });
+    if (entries.length !== ids.length)
+      throw new BadRequestException('Uno o más platos no están disponibles');
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const products = await tx.product.findMany({
+      where: { organizationId, active: true },
+      select: { id: true, name: true, price: true },
+    });
+    const names = new Map(products.map((p) => [p.id, p.name]));
+    const referencePrices = new Map(products.map((p) => [p.id, p.price]));
+    const snapshots = dto.items.map((line) => {
+      const entry = byId.get(line.menuEntryId)!;
+      const options = entry.options as unknown as MenuOptionDto[];
+      const selected = line.optionIds.map((id) => {
+        const found = options.find((option) => option.id === id);
+        if (!found)
+          throw new BadRequestException('Opción no disponible para este plato');
+        return found;
+      });
+      const replacements = selected.flatMap((o) =>
+        o.replacesProductId ? [o.replacesProductId] : [],
+      );
+      if (new Set(replacements).size !== replacements.length)
+        throw new BadRequestException(
+          'Elige una sola sustitución por componente',
+        );
+      const base = (entry.components as unknown as ComponentDto[]).filter(
+        (c) => !replacements.includes(c.productId),
+      );
+      const quantities = new Map<string, Prisma.Decimal>();
+      for (const component of [
+        ...base,
+        ...selected.flatMap((o) => o.components),
+      ])
+        quantities.set(
+          component.productId,
+          (quantities.get(component.productId) ?? ZERO_MONEY).add(
+            money(component.quantity),
+          ),
+        );
+      if (
+        !names.has(entry.productId) ||
+        [...quantities.keys()].some((id) => !names.has(id))
+      )
+        throw new BadRequestException('Un producto del plato está desactivado');
+      const unitPrice = selected.reduce(
+        (sum, o) => sum.add(money(o.price)),
+        money(entry.price),
+      );
+      return {
+        menuEntryId: entry.id,
+        productId: entry.productId,
+        name: entry.presentation
+          ? `${entry.name} · ${entry.presentation}`
+          : entry.name,
+        presentation: entry.presentation,
+        category: entry.category,
+        station: entry.station,
+        quantity: line.quantity,
+        unitPrice: unitPrice.toFixed(2),
+        subtotal: unitPrice.mul(line.quantity).toFixed(2),
+        options: selected.map((o) => ({
+          id: o.id,
+          name: o.name,
+          price: money(o.price).toFixed(2),
+        })),
+        components: [...quantities].map(([productId, quantity]) => ({
+          productId,
+          name: names.get(productId)!,
+          referenceUnitPrice: money(referencePrices.get(productId)!).toFixed(2),
+          quantity: quantity.toFixed(2),
+        })),
+      };
+    });
+    const subtotal = snapshots.reduce(
+      (sum, line) => sum.add(money(line.subtotal)),
+      ZERO_MONEY,
+    );
+    const discount = money(dto.discount ?? 0);
+    if (discount.gt(subtotal))
+      throw new BadRequestException(
+        'El descuento no puede superar el subtotal',
+      );
+    if (discount.gt(0)) {
+      const membership = await tx.organizationUser.findFirst({
+        where: { organizationId, userId: actorUserId, status: 'ACTIVE' },
+      });
+      const authorized =
+        membership &&
+        (await tx.rolePermission.findFirst({
+          where: {
+            organizationId,
+            roleId: membership.roleId,
+            permission: { key: 'sales.update' },
+          },
+        }));
+      if (!authorized)
+        throw new ForbiddenException(
+          'El descuento requiere autorización de un encargado con sales.update',
+        );
+    }
+    const total = subtotal.sub(discount);
+    if (subtotal.gt('9999999999.99'))
+      throw new BadRequestException(
+        'El pedido supera el importe máximo permitido',
+      );
+    return { terminal, warehouse, snapshots, subtotal, discount, total };
+  }
+
+  quote(organizationId: string, actorUserId: string, dto: QuoteOrderDto) {
+    return this.tenant.run(organizationId, async (tx) => {
+      const resolved = await this.resolveOrder(
+        tx,
+        organizationId,
+        actorUserId,
+        dto,
+      );
+      const required = new Map<
+        string,
+        { name: string; quantity: Prisma.Decimal }
+      >();
+      for (const line of resolved.snapshots) {
+        for (const component of line.components) {
+          const previous = required.get(component.productId);
+          required.set(component.productId, {
+            name: component.name,
+            quantity: (previous?.quantity ?? ZERO_MONEY).add(
+              money(component.quantity).mul(line.quantity),
+            ),
+          });
+        }
+      }
+      const rows = await tx.inventory.findMany({
+        where: {
+          organizationId,
+          warehouseId: dto.warehouseId,
+          productId: { in: [...required.keys()] },
+        },
+      });
+      const available = new Map(
+        rows.map((row) => [row.productId, row.quantity]),
+      );
+      const shortages = [...required].flatMap(([productId, demand]) => {
+        const stock = available.get(productId) ?? ZERO_MONEY;
+        return demand.quantity.gt(stock)
+          ? [
+              {
+                productId,
+                name: demand.name,
+                required: demand.quantity.toFixed(2),
+                available: stock.toFixed(2),
+                missing: demand.quantity.sub(stock).toFixed(2),
+              },
+            ]
+          : [];
+      });
+      return {
+        items: resolved.snapshots,
+        subtotal: resolved.subtotal.toFixed(2),
+        discount: resolved.discount.toFixed(2),
+        total: resolved.total.toFixed(2),
+        canFulfill: shortages.length === 0,
+        shortages,
+      };
+    });
+  }
+
   create(organizationId: string, actorUserId: string, dto: CreateOrderDto) {
     const requestHash = createHash('sha256')
       .update(
@@ -232,125 +431,8 @@ export class RestaurantService {
           );
         return existing;
       }
-      const terminal = await tx.pOSTerminal.findFirst({
-        where: { id: dto.posTerminalId, organizationId, active: true },
-      });
-      const warehouse = await tx.warehouse.findFirst({
-        where: { id: dto.warehouseId, organizationId },
-      });
-      if (!terminal || !warehouse || terminal.branchId !== warehouse.branchId)
-        throw new BadRequestException(
-          'El punto de venta y almacén deben pertenecer a la misma sucursal',
-        );
-      const ids = [...new Set(dto.items.map((i) => i.menuEntryId))].sort();
-      await tx.$queryRaw`SELECT id FROM menu_entries WHERE "organizationId" = ${organizationId} AND id IN (${Prisma.join(ids)}) ORDER BY id FOR SHARE`;
-      const entries = await tx.menuEntry.findMany({
-        where: { id: { in: ids }, organizationId, active: true },
-      });
-      if (entries.length !== ids.length)
-        throw new BadRequestException('Uno o más platos no están disponibles');
-      const byId = new Map(entries.map((entry) => [entry.id, entry]));
-      const products = await tx.product.findMany({
-        where: { organizationId, active: true },
-        select: { id: true, name: true },
-      });
-      const names = new Map(products.map((p) => [p.id, p.name]));
-      const snapshots = dto.items.map((line) => {
-        const entry = byId.get(line.menuEntryId)!;
-        const options = entry.options as unknown as MenuOptionDto[];
-        const selected = line.optionIds.map((id) => {
-          const found = options.find((option) => option.id === id);
-          if (!found)
-            throw new BadRequestException(
-              'Opción no disponible para este plato',
-            );
-          return found;
-        });
-        const replacements = selected.flatMap((o) =>
-          o.replacesProductId ? [o.replacesProductId] : [],
-        );
-        if (new Set(replacements).size !== replacements.length)
-          throw new BadRequestException(
-            'Elige una sola sustitución por componente',
-          );
-        const base = (entry.components as unknown as ComponentDto[]).filter(
-          (c) => !replacements.includes(c.productId),
-        );
-        const quantities = new Map<string, Prisma.Decimal>();
-        for (const component of [
-          ...base,
-          ...selected.flatMap((o) => o.components),
-        ])
-          quantities.set(
-            component.productId,
-            (quantities.get(component.productId) ?? ZERO_MONEY).add(
-              money(component.quantity),
-            ),
-          );
-        if (
-          !names.has(entry.productId) ||
-          [...quantities.keys()].some((id) => !names.has(id))
-        )
-          throw new BadRequestException(
-            'Un producto del plato está desactivado',
-          );
-        const unitPrice = selected.reduce(
-          (sum, o) => sum.add(money(o.price)),
-          money(entry.price),
-        );
-        return {
-          menuEntryId: entry.id,
-          productId: entry.productId,
-          name: entry.name,
-          category: entry.category,
-          station: entry.station,
-          quantity: line.quantity,
-          unitPrice: unitPrice.toFixed(2),
-          subtotal: unitPrice.mul(line.quantity).toFixed(2),
-          options: selected.map((o) => ({
-            id: o.id,
-            name: o.name,
-            price: money(o.price).toFixed(2),
-          })),
-          components: [...quantities].map(([productId, quantity]) => ({
-            productId,
-            name: names.get(productId)!,
-            quantity: quantity.toFixed(2),
-          })),
-        };
-      });
-      const subtotal = snapshots.reduce(
-        (sum, line) => sum.add(money(line.subtotal)),
-        ZERO_MONEY,
-      );
-      const discount = money(dto.discount ?? 0);
-      if (discount.gt(subtotal))
-        throw new BadRequestException(
-          'El descuento no puede superar el subtotal',
-        );
-      if (discount.gt(0)) {
-        const membership = await tx.organizationUser.findFirst({
-          where: { organizationId, userId: actorUserId, status: 'ACTIVE' },
-        });
-        const authorized =
-          membership &&
-          (await tx.rolePermission.findFirst({
-            where: {
-              organizationId,
-              roleId: membership.roleId,
-              permission: { key: 'sales.update' },
-            },
-          }));
-        if (!authorized)
-          throw new ForbiddenException(
-            'El descuento requiere autorización de un encargado con sales.update',
-          );
-      }
-      const total = subtotal.sub(discount);
-      if (subtotal.gt('9999999999.99'))
-        throw new BadRequestException(
-          'El pedido supera el importe máximo permitido',
-        );
+      const { terminal, warehouse, snapshots, subtotal, discount, total } =
+        await this.resolveOrder(tx, organizationId, actorUserId, dto);
       const sale = await tx.sale.create({
         data: {
           organizationId,

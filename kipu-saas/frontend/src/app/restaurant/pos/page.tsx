@@ -11,6 +11,8 @@ import {
   cents,
   control,
   primary,
+  menuTitle,
+  type OrderQuote,
   type MenuEntry,
   type RestaurantOrder,
 } from "@/lib/restaurant";
@@ -71,6 +73,10 @@ export default function RestaurantPOS() {
   const paymentAttempt = useRef<Payment[] | null>(null);
   const [paymentLocked, setPaymentLocked] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reviewed, setReviewed] = useState<{
+    signature: string;
+    result: OrderQuote;
+  } | null>(null);
 
   const fetchBranches = useCallback(() => api<Branch[]>("/branches"), []);
   const receiveBranches = useCallback((data: Branch[]) => {
@@ -129,7 +135,7 @@ export default function RestaurantPOS() {
   const filtered = entries.filter(
     (entry) =>
       (!category || entry.category === category) &&
-      entry.name.toLowerCase().includes(search.toLowerCase()),
+      menuTitle(entry).toLowerCase().includes(search.toLowerCase()),
   );
 
   function add(entry: MenuEntry, ids: string[]) {
@@ -148,7 +154,7 @@ export default function RestaurantPOS() {
             ...previous,
             {
               menuEntryId: entry.id,
-              name: entry.name,
+              name: menuTitle(entry),
               quantity: 1,
               optionIds: key,
               optionNames: options.map((o) => o.name),
@@ -205,8 +211,44 @@ export default function RestaurantPOS() {
     setNotes("");
     setDiscount("0");
     setError(null);
+    setReviewed(null);
     void menuLoad.reload();
   }
+  function quoteBody() {
+    return {
+      posTerminalId: terminalId,
+      warehouseId,
+      service,
+      customerName,
+      notes,
+      discount: Number(discount),
+      items: cart.map((line) => ({
+        menuEntryId: line.menuEntryId,
+        quantity: line.quantity,
+        optionIds: line.optionIds,
+      })),
+    };
+  }
+  const signature = JSON.stringify(quoteBody());
+  const currentQuote =
+    reviewed?.signature === signature ? reviewed.result : null;
+  const review = useSubmitGuard(async () => {
+    setError(null);
+    try {
+      const requested = quoteBody();
+      const result = await api<OrderQuote>("/restaurant/quote", {
+        method: "POST",
+        body: requested,
+      });
+      setReviewed({ signature: JSON.stringify(requested), result });
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "No se pudo revisar el pedido. Reintenta antes de guardarlo.",
+      );
+    }
+  });
   const create = useSubmitGuard(async () => {
     setError(null);
     try {
@@ -216,30 +258,32 @@ export default function RestaurantPOS() {
           const stored = sessionStorage.getItem(storageKey);
           if (stored) body = JSON.parse(stored) as CreateBody;
         } catch {
-          /* Corrupted local data does not prevent a fresh order. */
+          /* Server validation rejects damaged attempts safely. */
         }
-        if (!body && !cart.length)
-          throw new Error("No hay un pedido interrumpido en esta pestaña.");
-        body ??= {
-          posTerminalId: terminalId,
-          warehouseId,
-          requestKey: crypto.randomUUID(),
-          service,
-          customerName,
-          notes,
-          discount: Number(discount),
-          items: cart.map((line) => ({
-            menuEntryId: line.menuEntryId,
-            quantity: line.quantity,
-            optionIds: line.optionIds,
-          })),
-        };
-        attempt.current = body;
-        try {
-          sessionStorage.setItem(storageKey, JSON.stringify(body));
-        } catch {
-          /* Retry remains available in this tab. */
+      }
+      const recovering = Boolean(body);
+      if (!body && !cart.length)
+        throw new Error("No hay un pedido interrumpido en esta pestaña.");
+      body ??= { ...quoteBody(), requestKey: crypto.randomUUID() };
+      if (!recovering) {
+        const requested = quoteBody();
+        const result = await api<OrderQuote>("/restaurant/quote", {
+          method: "POST",
+          body: requested,
+        });
+        setReviewed({ signature: JSON.stringify(requested), result });
+        if (!result.canFulfill) {
+          setError(
+            "No alcanza el stock para este pedido. Ajusta las cantidades o las opciones.",
+          );
+          return;
         }
+      }
+      attempt.current = body;
+      try {
+        sessionStorage.setItem(storageKey, JSON.stringify(body));
+      } catch {
+        /* Retry remains available in this tab. */
       }
       setLocked(true);
       const saved = await api<RestaurantOrder>("/restaurant/orders", {
@@ -326,7 +370,11 @@ export default function RestaurantPOS() {
       );
     }
   });
-  const busy = create.submitting || checkout.submitting || cancel.submitting;
+  const busy =
+    review.submitting ||
+    create.submitting ||
+    checkout.submitting ||
+    cancel.submitting;
   return (
     <AppShell>
       <div className="mx-auto max-w-[1600px] p-4 md:p-8">
@@ -470,9 +518,12 @@ export default function RestaurantPOS() {
               {filtered.map((entry) => (
                 <button
                   key={entry.id}
-                  aria-label={`Agregar ${entry.name}`}
+                  aria-label={`Agregar ${menuTitle(entry)}`}
                   disabled={
-                    locked || busy || menuLoad.loading || entry.available === 0
+                    locked ||
+                    busy ||
+                    menuLoad.loading ||
+                    (entry.available === 0 && !entry.customizable)
                   }
                   onClick={() =>
                     entry.options.length
@@ -483,7 +534,9 @@ export default function RestaurantPOS() {
                 >
                   <div>
                     <p className="text-xs text-zinc-500">{entry.category}</p>
-                    <h2 className="mt-2 text-lg font-semibold">{entry.name}</h2>
+                    <h2 className="mt-2 text-lg font-semibold">
+                      {menuTitle(entry)}
+                    </h2>
                     <p className="mt-1 text-xs text-zinc-500">
                       {entry.station}
                       {entry.options.length ? " · Personalizable" : ""}
@@ -495,7 +548,9 @@ export default function RestaurantPOS() {
                     </span>
                     <span className="text-xs text-zinc-500">
                       {entry.available === 0
-                        ? "Agotado"
+                        ? entry.customizable
+                          ? "Revisar opciones"
+                          : "Agotado"
                         : entry.available === null
                           ? ""
                           : `${entry.available} disponibles`}
@@ -507,10 +562,10 @@ export default function RestaurantPOS() {
             {selected && (
               <section
                 role="dialog"
-                aria-label={`Personalizar ${selected.name}`}
+                aria-label={`Personalizar ${menuTitle(selected)}`}
                 className="space-y-3 rounded-2xl border-2 border-emerald-800 bg-white p-5"
               >
-                <h2 className="text-lg font-semibold">{selected.name}</h2>
+                <h2 className="text-lg font-semibold">{menuTitle(selected)}</h2>
                 {selected.options.map((option) => (
                   <label
                     key={option.id}
@@ -552,6 +607,7 @@ export default function RestaurantPOS() {
                 <div className="flex gap-3">
                   <button
                     className={primary}
+                    disabled={locked || busy}
                     onClick={() => add(selected, optionIds)}
                   >
                     Agregar al pedido
@@ -669,7 +725,7 @@ export default function RestaurantPOS() {
                           </p>
                           <div className="flex items-center gap-3">
                             <button
-                              disabled={locked}
+                              disabled={locked || busy}
                               aria-label={`Restar ${line.name}`}
                               className={control}
                               onClick={() =>
@@ -688,7 +744,7 @@ export default function RestaurantPOS() {
                             </button>
                             <span>{line.quantity}</span>
                             <button
-                              disabled={locked}
+                              disabled={locked || busy}
                               aria-label={`Sumar ${line.name}`}
                               className={control}
                               onClick={() =>
@@ -758,6 +814,44 @@ export default function RestaurantPOS() {
                     <span>Total</span>
                     <span>{bolivianos(totalCents / 100)}</span>
                   </div>
+                  {!order && !locked && cart.length > 0 && (
+                    <>
+                      <button
+                        className={`${control} w-full`}
+                        disabled={busy}
+                        onClick={review.onSubmit}
+                      >
+                        {review.submitting
+                          ? "Revisando…"
+                          : "Revisar disponibilidad y total"}
+                      </button>
+                      {currentQuote && (
+                        <div
+                          role="status"
+                          className={`rounded-xl p-3 text-sm ${currentQuote.canFulfill ? "bg-emerald-50 text-emerald-950" : "bg-amber-50 text-amber-950"}`}
+                        >
+                          <p className="font-semibold">
+                            Total revisado: {bolivianos(currentQuote.total)}
+                          </p>
+                          <p>
+                            {currentQuote.canFulfill
+                              ? "Hay disponibilidad para este pedido."
+                              : "Faltan componentes para completar el pedido."}
+                          </p>
+                          {currentQuote.shortages.map((shortage) => (
+                            <p key={shortage.productId}>
+                              {shortage.name}: requiere {shortage.required};
+                              disponible {shortage.available}.
+                            </p>
+                          ))}
+                          <p className="mt-2 text-xs">
+                            La revisión no reserva stock. Se comprueba
+                            nuevamente al cobrar.
+                          </p>
+                        </div>
+                      )}
+                    </>
+                  )}
                   {!order && (
                     <button
                       className={`${primary} w-full`}
