@@ -13,5 +13,9 @@
   correcciones, pendientes/bloqueos, avance general y siguiente paso. Incluir
   SHA y enlace al commit publicado, confirmación de push y estado de despliegue.
   Mantener el informe coherente con `RESTAURANT_ROADMAP.md`; no inventar porcentajes.
+- Terminar cada informe con dos decisiones explícitas: «Etapa completa: sí/no»
+  y «Podemos pasar a la siguiente etapa: sí/no», justificadas por los criterios
+  de cierre. Si falta validación obligatoria, indicar qué falta y no declarar
+  completa la etapa solo porque su implementación técnica esté terminada.
 - Mantener secretos, `.env`, dependencias, artefactos de compilación y datos
   locales fuera de Git. Git push no equivale a un despliegue a producción.

@@ -18,6 +18,10 @@ estado general y siguiente paso. Incluir los commits publicados con sus enlaces,
 confirmación del push y si hubo despliegue. El informe debe coincidir con la
 evidencia del roadmap, sin presentar un avance parcial como etapa terminada.
 
+El informe final debe responder explícitamente: **Etapa completa: sí/no** y
+**Podemos pasar a la siguiente etapa: sí/no**. Justificar ambas respuestas según
+los criterios de cierre y enumerar cualquier validación obligatoria pendiente.
+
 Para desplegar una entrega, seleccionar el SHA publicado, preparar las variables
 del entorno y seguir los pasos de esta guía. Revisar las migraciones y preparar
 un respaldo antes de aplicarlas sobre datos existentes. El push respalda la
