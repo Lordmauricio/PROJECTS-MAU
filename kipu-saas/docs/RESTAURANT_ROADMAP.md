@@ -118,12 +118,25 @@ dependencias de producción sin avisos en la comprobación de esta entrega.
 Las pruebas de campo de etapas anteriores continúan pendientes.
 
 
-## 6. Recetas, producción y stock
+## 6. Recetas, producción y stock — entrega técnica, piloto pendiente
 
-Ingredientes, conversiones, rendimientos, preparaciones intermedias y recetas
-versionadas. Definir reserva/consumo de stock y tratamiento de cancelaciones ya
-preparadas. Compras, conteos, lotes, vencimientos, mermas y consumo del personal.
-Comparar costo teórico y real; impedir consumo duplicado al reintentar.
+- [x] Ingredientes y conversiones explícitas a unidad base, sin redondeo oculto.
+- [x] Recetas versionadas, historial y preparaciones intermedias como productos.
+- [x] Producción con consumo real atómico al iniciar y rendimiento real al completar.
+- [x] Política sin reserva al planificar; cancelar no restaura materia prima usada.
+- [x] Recepciones con lote/fecha y clasificación de saldo anterior sin duplicarlo.
+- [x] FEFO, bloqueo de vencidos, transferencias y devoluciones con trazabilidad.
+- [x] Conteos con saldo esperado, mermas y consumo del personal auditados.
+- [x] Comparación de cantidades/costos de referencia teóricos y consumo real.
+- [x] Reintentos, concurrencia, permisos y RLS; recorrido completo en móvil.
+- [ ] Validar recetas, unidades, vida útil, rendimientos y conteos con el piloto.
+
+Informe: `INFORME_ETAPA_6.md`. Costos valorizan consumos con precios congelados
+al planificar; no se implementó valuación contable FIFO/promedio ni mano de obra.
+El usuario mantiene aplazada la prueba de campo; no se marca completa por terminar
+la implementación técnica. Las validaciones previas y el mantenimiento de
+herramientas de desarrollo de etapa 5 siguen visibles.
+
 
 ## 7. Caja y gestión
 
@@ -305,3 +318,19 @@ Next.js/Prisma/Nest/Nodemailer y dependencias transitivas; quedan 27 entradas
 bajas/moderadas de herramientas backend. Detalle en `AUDITORIA_ETAPA_5.md`.
 La aceptación presencial sigue aplazada. No se desplegó a producción. El próximo
 bloque técnico es etapa 6: recetas, rendimientos y stock avanzado.
+
+## Entrega técnica de etapa 6 — 5 de noviembre de 2026
+
+Recetas versionadas con conversiones explícitas, producción real y consumo único.
+Lotes/fechas en recepción y producción; FEFO, devoluciones y transferencias con
+trazabilidad; stock físico separado de utilizable. Clasificación del saldo previo,
+exigencia de lotes, conteos con saldo esperado, mermas y consumo del personal.
+Historial por lote y costos de referencia teóricos/frente a consumo real;
+valuación contable y costos indirectos no implementados.
+
+Validación: 378 pruebas backend en 37 suites, 22 nuevas y comprobación focalizada;
+ocho recorridos con servicios reales, 11 unitarias y 14 regresiones frontend;
+compilación, ESLint, Prisma e aislamiento. Capturas móviles revisadas. Migración
+aditiva aplicada solo en la base local de desarrollo. Sin despliegue productivo.
+Pendientes de campo y herramientas de desarrollo de etapa 5 siguen abiertos.
+El próximo bloque técnico es etapa 7: caja y gestión.

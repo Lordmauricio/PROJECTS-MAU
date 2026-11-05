@@ -262,6 +262,8 @@ model Branch {
 }
 
 model Warehouse {
+  lots StockLot[]
+  @@unique([id, organizationId])
   id             String @id @default(cuid())
   organizationId String
   branchId       String
@@ -406,6 +408,9 @@ model ProductUnit {
 }
 
 model Product {
+  requireLots Boolean @default(false)
+  lots StockLot[]
+  recipeOutputs RecipeVersion[]
   id             String           @id @default(cuid())
   organizationId String
   organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -439,6 +444,7 @@ model Product {
   purchaseItems      PurchaseItem[]
   invoiceItems       InvoiceItem[]
 
+  @@unique([id, organizationId])
   @@unique([organizationId, sku])
   @@unique([organizationId, barcode])
   @@index([organizationId])
@@ -472,6 +478,8 @@ enum InventoryMovementType {
 }
 
 model InventoryMovement {
+  allocations LotAllocation[]
+  @@unique([id, organizationId])
   id             String    @id @default(cuid())
   organizationId String
   warehouseId    String
@@ -819,6 +827,7 @@ model PurchaseItem {
 // directamente PurchaseItem.receivedQuantity sin dejar rastro de cuándo/
 // cómo se llegó a ese número.
 model PurchaseReceipt {
+  requestHash String?
   id             String   @id @default(cuid())
   organizationId String
   purchaseId     String
@@ -1496,4 +1505,118 @@ model DiningAccount {
   @@unique([organizationId, requestKey])
   @@index([organizationId, branchId, status])
   @@map("dining_accounts")
+}
+
+model StockLot {
+  id String @id @default(cuid())
+  organizationId String
+  warehouseId String
+  warehouse Warehouse @relation(fields:[warehouseId,organizationId], references:[id,organizationId], onDelete:Restrict)
+  productId String
+  product Product @relation(fields:[productId,organizationId], references:[id,organizationId], onDelete:Restrict)
+  code String
+  expiresOn DateTime? @db.Date
+  blocked Boolean @default(false)
+  quantity Decimal @default(0) @db.Decimal(12,2)
+  createdAt DateTime @default(now())
+  allocations LotAllocation[]
+  @@unique([id,organizationId])
+  @@unique([warehouseId,productId,code])
+  @@index([organizationId,warehouseId,productId])
+  @@map("stock_lots")
+}
+model LotAllocation {
+  id String @id @default(cuid())
+  organizationId String
+  movementId String
+  movement InventoryMovement @relation(fields:[movementId,organizationId],references:[id,organizationId],onDelete:Restrict)
+  lotId String?
+  lot StockLot? @relation(fields:[lotId,organizationId],references:[id,organizationId],onDelete:Restrict)
+  direction String
+  quantity Decimal @db.Decimal(12,2)
+  createdAt DateTime @default(now())
+  @@index([organizationId,movementId])
+  @@map("lot_allocations")
+}
+model StockOperation {
+  id String @id @default(cuid())
+  organizationId String
+  warehouseId String
+  productId String
+  kind String
+  requestKey String
+  requestHash String
+  snapshot Json
+  actorUserId String
+  createdAt DateTime @default(now())
+  @@unique([organizationId,requestKey])
+  @@index([organizationId,warehouseId,createdAt])
+  @@map("stock_operations")
+}
+model Recipe {
+  id String @id @default(cuid())
+  organizationId String
+  name String
+  active Boolean @default(true)
+  revision Int @default(1)
+  versions RecipeVersion[]
+  createdAt DateTime @default(now())
+  @@unique([id,organizationId])
+  @@index([organizationId])
+  @@map("recipes")
+}
+model RecipeVersion {
+  id String @id @default(cuid())
+  organizationId String
+  recipeId String
+  recipe Recipe @relation(fields:[recipeId,organizationId],references:[id,organizationId],onDelete:Restrict)
+  revision Int
+  name String
+  station String
+  outputProductId String
+  outputProduct Product @relation(fields:[outputProductId,organizationId],references:[id,organizationId],onDelete:Restrict)
+  outputName String
+  outputUnit String
+  yieldQuantity Decimal @db.Decimal(12,2)
+  ingredients Json
+  theoreticalCost Decimal @db.Decimal(12,2)
+  createdAt DateTime @default(now())
+  createdById String
+  runs RecipeRun[]
+  @@unique([id,organizationId])
+  @@unique([recipeId,revision])
+  @@map("recipe_versions")
+}
+model RecipeRun {
+  id String @id @default(cuid())
+  organizationId String
+  versionId String
+  recipeVersion RecipeVersion @relation(fields:[versionId,organizationId],references:[id,organizationId],onDelete:Restrict)
+  warehouseId String
+  branchId String
+  name String
+  station String
+  outputProductId String
+  outputName String
+  outputUnit String
+  plannedQuantity Decimal @db.Decimal(12,2)
+  expectedInputs Json
+  actualInputs Json?
+  theoreticalCost Decimal @db.Decimal(12,2)
+  actualCost Decimal? @db.Decimal(12,2)
+  producedQuantity Decimal? @db.Decimal(12,2)
+  costPerUnit Decimal? @db.Decimal(12,4)
+  status String @default("DRAFT")
+  version Int @default(0)
+  requestKey String
+  requestHash String
+  createdById String
+  createdAt DateTime @default(now())
+  startedAt DateTime?
+  readyAt DateTime?
+  cancelReason String?
+  actionHash String?
+  @@unique([organizationId,requestKey])
+  @@index([organizationId,branchId,status])
+  @@map("recipe_runs")
 }

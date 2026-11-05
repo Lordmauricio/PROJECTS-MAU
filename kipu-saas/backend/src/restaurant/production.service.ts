@@ -121,11 +121,30 @@ export class ProductionService {
       if (!batch) throw new NotFoundException('Tanda no encontrada');
       const output = money(dto.producedQuantity ?? batch.plannedQuantity);
       const reason = dto.reason?.trim();
+      if (dto.expiresOn && !dto.lotCode)
+        throw new BadRequestException('El vencimiento requiere lote');
       if (batch.status === dto.status && batch.version === dto.version + 1) {
         if (dto.status === 'READY' && !output.eq(batch.producedQuantity!))
           throw new ConflictException(
             'La tanda ya se completó con otra cantidad',
           );
+        if (dto.status === 'READY') {
+          const event = await tx.auditLog.findFirst({
+            where: { organizationId, entityId: id, action: 'production.ready' },
+            orderBy: { createdAt: 'desc' },
+          });
+          const meta = event?.metadata as {
+            lotCode?: string;
+            expiresOn?: string;
+          } | null;
+          if (
+            (meta?.lotCode ?? '') !== (dto.lotCode?.trim() ?? '') ||
+            (meta?.expiresOn ?? '') !== (dto.expiresOn ?? '')
+          )
+            throw new ConflictException(
+              'El reintento cambia el lote preparado',
+            );
+        }
         if (dto.status === 'CANCELLED' && reason !== batch.cancelReason)
           throw new ConflictException('La tanda ya se canceló con otro motivo');
         return batch;
@@ -163,6 +182,17 @@ export class ProductionService {
           type: 'IN',
           direction: 'INCREASE',
           quantity: output,
+          ...(dto.lotCode
+            ? {
+                lotInputs: [
+                  {
+                    code: dto.lotCode,
+                    expiresOn: dto.expiresOn,
+                    quantity: output.toFixed(2),
+                  },
+                ],
+              }
+            : {}),
           reason: 'Tanda completada',
           reference: batch.id,
           userId: actorUserId,
@@ -199,6 +229,9 @@ export class ProductionService {
             ? { producedQuantity: output.toFixed(2) }
             : {}),
           ...(reason ? { reason } : {}),
+          ...(dto.lotCode
+            ? { lotCode: dto.lotCode.trim(), expiresOn: dto.expiresOn ?? '' }
+            : {}),
           rawStockRestored: false,
         },
       );

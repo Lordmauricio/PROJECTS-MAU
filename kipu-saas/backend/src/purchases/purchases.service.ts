@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -286,6 +287,26 @@ export class PurchasesService {
     } = {
       payableOutcome: null,
     };
+    if (
+      new Set(dto.items.map((i) => i.purchaseItemId)).size !== dto.items.length
+    )
+      throw new BadRequestException('No repitas un ítem en la recepción');
+    if (dto.items.some((i) => i.expiresOn && !i.lotCode))
+      throw new BadRequestException('El vencimiento requiere código de lote');
+    const requestHash = createHash('sha256')
+      .update(
+        JSON.stringify(
+          [...dto.items]
+            .sort((a, b) => a.purchaseItemId.localeCompare(b.purchaseItemId))
+            .map((i) => [
+              i.purchaseItemId,
+              money(i.quantity).toFixed(2),
+              i.lotCode?.trim() ?? null,
+              i.expiresOn ?? null,
+            ]),
+        ),
+      )
+      .digest('hex');
     let receivedNow = false;
     const result = await this.runOrResolveReceiptConflict(
       organizationId,
@@ -304,6 +325,13 @@ export class PurchasesService {
               'Esta idempotencyKey ya fue usada en otra compra',
             );
           }
+          if (
+            existingReceipt.requestHash &&
+            existingReceipt.requestHash !== requestHash
+          )
+            throw new ConflictException(
+              'La clave de recepción cambió sus datos o lotes',
+            );
           // Replay idempotente: misma recepción reintentada, no se duplica.
           return this.loadFull(tx, organizationId, purchaseId);
         }
@@ -324,7 +352,13 @@ export class PurchasesService {
 
         // Validar TODO antes de aplicar nada: si un solo ítem pide recibir de
         // más, ninguna recepción de este request se aplica.
-        for (const line of dto.items) {
+        for (const line of [...dto.items].sort((a, b) =>
+          (
+            itemsById.get(a.purchaseItemId)?.productId ?? a.purchaseItemId
+          ).localeCompare(
+            itemsById.get(b.purchaseItemId)?.productId ?? b.purchaseItemId,
+          ),
+        )) {
           const item = itemsById.get(line.purchaseItemId);
           if (!item || item.purchaseId !== purchaseId) {
             throw new BadRequestException(
@@ -344,6 +378,7 @@ export class PurchasesService {
 
         const receipt = await tx.purchaseReceipt.create({
           data: {
+            requestHash,
             organizationId,
             purchaseId,
             idempotencyKey: dto.idempotencyKey,
@@ -352,7 +387,13 @@ export class PurchasesService {
           },
         });
 
-        for (const line of dto.items) {
+        for (const line of [...dto.items].sort((a, b) =>
+          (
+            itemsById.get(a.purchaseItemId)?.productId ?? a.purchaseItemId
+          ).localeCompare(
+            itemsById.get(b.purchaseItemId)?.productId ?? b.purchaseItemId,
+          ),
+        )) {
           const item = itemsById.get(line.purchaseItemId)!;
           const qty = money(line.quantity);
 
@@ -363,6 +404,17 @@ export class PurchasesService {
             type: 'IN',
             direction: 'INCREASE',
             quantity: qty,
+            ...(line.lotCode
+              ? {
+                  lotInputs: [
+                    {
+                      code: line.lotCode,
+                      expiresOn: line.expiresOn,
+                      quantity: qty.toFixed(2),
+                    },
+                  ],
+                }
+              : {}),
             reason: 'Recepción de compra',
             reference: purchaseId,
             userId: actorUserId,
@@ -477,6 +529,10 @@ export class PurchasesService {
     dto: ReturnPurchaseDto,
     actorUserId: string,
   ) {
+    if (
+      new Set(dto.items.map((i) => i.purchaseItemId)).size !== dto.items.length
+    )
+      throw new BadRequestException('No repitas un ítem en la devolución');
     const result = await this.runOrResolveReturnConflict(
       organizationId,
       purchaseId,
@@ -510,7 +566,13 @@ export class PurchasesService {
         });
         const itemsById = new Map(items.map((i) => [i.id, i]));
 
-        for (const line of dto.items) {
+        for (const line of [...dto.items].sort((a, b) =>
+          (
+            itemsById.get(a.purchaseItemId)?.productId ?? a.purchaseItemId
+          ).localeCompare(
+            itemsById.get(b.purchaseItemId)?.productId ?? b.purchaseItemId,
+          ),
+        )) {
           const item = itemsById.get(line.purchaseItemId);
           if (!item || item.purchaseId !== purchaseId) {
             throw new BadRequestException(
@@ -547,7 +609,13 @@ export class PurchasesService {
           money(locked.subtotal),
         );
         let returnedValue = ZERO_MONEY;
-        for (const line of dto.items) {
+        for (const line of [...dto.items].sort((a, b) =>
+          (
+            itemsById.get(a.purchaseItemId)?.productId ?? a.purchaseItemId
+          ).localeCompare(
+            itemsById.get(b.purchaseItemId)?.productId ?? b.purchaseItemId,
+          ),
+        )) {
           const item = itemsById.get(line.purchaseItemId)!;
           const qty = money(line.quantity);
           const perUnitNet = money(item.subtotal).div(money(item.quantity));
@@ -574,7 +642,13 @@ export class PurchasesService {
           },
         });
 
-        for (const line of dto.items) {
+        for (const line of [...dto.items].sort((a, b) =>
+          (
+            itemsById.get(a.purchaseItemId)?.productId ?? a.purchaseItemId
+          ).localeCompare(
+            itemsById.get(b.purchaseItemId)?.productId ?? b.purchaseItemId,
+          ),
+        )) {
           const item = itemsById.get(line.purchaseItemId)!;
           const qty = money(line.quantity);
 
@@ -585,6 +659,8 @@ export class PurchasesService {
             type: 'OUT',
             direction: 'DECREASE',
             quantity: qty,
+            lotId: line.lotId,
+            allowExpired: true,
             reason: 'Devolución a proveedor',
             reference: purchaseId,
             userId: actorUserId,

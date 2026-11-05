@@ -54,6 +54,8 @@ export default function ProductionPage() {
   const [branchId, setBranchId] = useState("");
   const [filter, setFilter] = useState("");
   const [form, setForm] = useState(blank);
+  const [lotCodes, setLotCodes] = useState<Record<string,string>>({});
+  const [expiry, setExpiry] = useState<Record<string,string>>({});
   const [actuals, setActuals] = useState<Record<string, string>>({});
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
@@ -134,6 +136,7 @@ export default function ProductionPage() {
             version: batch.version,
             ...(status === "READY"
               ? {
+                  ...(lotCodes[batch.id]?{lotCode:lotCodes[batch.id],...(expiry[batch.id]?{expiresOn:expiry[batch.id]}:{})}:{}),
                   producedQuantity: Number(
                     actuals[batch.id] ?? batch.plannedQuantity,
                   ),
@@ -425,6 +428,8 @@ export default function ProductionPage() {
                         }
                       />
                     </label>
+                    <label className="block text-sm">Lote preparado<input className={`${control} block w-full`} value={lotCodes[batch.id]??''} onChange={e=>setLotCodes(v=>({...v,[batch.id]:e.target.value}))}/></label>
+                    <label className="block text-sm">Vencimiento preparado<input type="date" className={`${control} block w-full`} value={expiry[batch.id]??''} onChange={e=>setExpiry(v=>({...v,[batch.id]:e.target.value}))}/></label>
                     <button
                       disabled={busy || loading}
                       className={primary}

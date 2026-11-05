@@ -1,3 +1,4 @@
+import { allocateLots, stockLock, type LotInput } from './lot-ledger';
 import {
   BadRequestException,
   ConflictException,
@@ -19,6 +20,9 @@ export type InventoryMovementType =
 export type MovementDirection = 'INCREASE' | 'DECREASE';
 
 export interface ApplyMovementParams {
+  lotId?: string;
+  lotInputs?: LotInput[];
+  allowExpired?: boolean;
   organizationId: string;
   warehouseId: string;
   productId: string;
@@ -65,6 +69,23 @@ export class InventoryService {
       );
     }
 
+    await stockLock(tx, params.organizationId, params.productId);
+    const balance = await tx.inventory.upsert({
+      where: {
+        warehouseId_productId: {
+          warehouseId: params.warehouseId,
+          productId: params.productId,
+        },
+      },
+      update: {},
+      create: {
+        organizationId: params.organizationId,
+        warehouseId: params.warehouseId,
+        productId: params.productId,
+        quantity: 0,
+      },
+    });
+    const allocations = await allocateLots(tx, params, balance.quantity);
     if (params.direction === 'DECREASE') {
       const result = await tx.inventory.updateMany({
         where: {
@@ -131,7 +152,16 @@ export class InventoryService {
       },
     });
 
-    return { movement, stockBefore, stockAfter };
+    await tx.lotAllocation.createMany({
+      data: allocations.map((a) => ({
+        organizationId: params.organizationId,
+        movementId: movement.id,
+        lotId: a.lotId,
+        direction: params.direction,
+        quantity: a.quantity,
+      })),
+    });
+    return { movement, stockBefore, stockAfter, allocations };
   }
 
   /**
@@ -300,12 +330,17 @@ export class InventoryService {
       warehouseId: string;
       type: string;
       quantity: Prisma.Decimal;
+      stockBefore: Prisma.Decimal;
+      stockAfter: Prisma.Decimal;
     }) => {
       if (
         existing.productId !== dto.productId ||
         existing.warehouseId !== dto.warehouseId ||
         existing.type !== dto.type ||
-        !existing.quantity.equals(money(dto.quantity))
+        !existing.quantity.equals(money(dto.quantity)) ||
+        (existing.stockAfter.gt(existing.stockBefore)
+          ? 'INCREASE'
+          : 'DECREASE') !== direction
       ) {
         throw new ConflictException(
           'Esta idempotencyKey ya fue usada con datos distintos',
@@ -451,8 +486,9 @@ export class InventoryService {
         });
 
         const reason = dto.reason ?? 'Transferencia entre almacenes';
-        await this.applyMovement(tx, {
+        const outgoing = await this.applyMovement(tx, {
           organizationId,
+          allowExpired: true,
           warehouseId: dto.fromWarehouseId,
           productId: dto.productId,
           type: 'TRANSFER',
@@ -465,6 +501,14 @@ export class InventoryService {
         await this.applyMovement(tx, {
           organizationId,
           warehouseId: dto.toWarehouseId,
+          lotInputs: outgoing.allocations
+            .filter((a) => a.lotId)
+            .map((a) => ({
+              code: a.code!,
+              expiresOn: a.expiresOn,
+              blocked: a.blocked,
+              quantity: a.quantity.toFixed(2),
+            })),
           productId: dto.productId,
           type: 'TRANSFER',
           direction: 'INCREASE',
@@ -524,6 +568,8 @@ export class InventoryService {
       warehouseId: string;
       type: string;
       quantity: Prisma.Decimal;
+      stockBefore: Prisma.Decimal;
+      stockAfter: Prisma.Decimal;
     }) => void,
   ): Promise<T> {
     try {

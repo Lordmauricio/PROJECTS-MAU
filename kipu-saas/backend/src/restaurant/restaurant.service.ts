@@ -1,3 +1,4 @@
+import { usableBalances } from '../inventory/lot-ledger';
 import {
   BadRequestException,
   ConflictException,
@@ -49,12 +50,10 @@ export class RestaurantService {
         orderBy: [{ category: 'asc' }, { name: 'asc' }],
       });
       const stocks = warehouseId
-        ? await tx.inventory.findMany({
-            where: { organizationId, warehouseId },
-          })
+        ? await usableBalances(tx, organizationId, warehouseId)
         : [];
       const quantities = new Map(
-        stocks.map((row) => [row.productId, row.quantity]),
+        stocks.map((row) => [row.productId, row.availableQuantity]),
       );
       const products = await tx.product.findMany({
         where: { organizationId, active: true },
@@ -362,15 +361,9 @@ export class RestaurantService {
           });
         }
       }
-      const rows = await tx.inventory.findMany({
-        where: {
-          organizationId,
-          warehouseId: dto.warehouseId,
-          productId: { in: [...required.keys()] },
-        },
-      });
+      const rows = await usableBalances(tx, organizationId, dto.warehouseId);
       const available = new Map(
-        rows.map((row) => [row.productId, row.quantity]),
+        rows.map((row) => [row.productId, row.availableQuantity]),
       );
       const shortages = [...required].flatMap(([productId, demand]) => {
         const stock = available.get(productId) ?? ZERO_MONEY;

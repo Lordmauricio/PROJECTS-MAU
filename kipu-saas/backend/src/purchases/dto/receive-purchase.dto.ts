@@ -11,6 +11,8 @@ import {
 } from 'class-validator';
 
 export class ReceivePurchaseItemDto {
+  @IsOptional() @IsString() lotCode?: string;
+  @IsOptional() @IsString() expiresOn?: string;
   @IsString()
   @MinLength(1)
   purchaseItemId!: string;

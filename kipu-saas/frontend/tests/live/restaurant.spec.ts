@@ -968,7 +968,7 @@ test("salón: adicionales, división, traslado, unión, cobro mixto y propina co
   await expect(cards).toHaveCount(2);
   for (let i = 0; i < 2; i++) {
     const cardLabel = await cards.first().getAttribute("aria-label");
-    const card = page.getByRole("article", {name: cardLabel!, exact: true});
+    const card = page.getByRole("article", { name: cardLabel!, exact: true });
     await expect(card.getByText(/Cuenta abierta/)).toBeVisible();
     await card
       .getByRole("button", { name: "Iniciar preparación", exact: true })
@@ -1055,6 +1055,261 @@ test("salón: adicionales, división, traslado, unión, cobro mixto y propina co
     Number(
       ((await (await cashResponse).json()) as { difference: string })
         .difference,
+    ),
+  ).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test("recetas y lotes: conversión, consumo real, rendimiento y stock apto desde móvil", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const { call, branch } = await register(page);
+  const warehouseId = branch.warehouses[0].id;
+  const unit = await call<{ id: string }>("/product-units", "POST", {
+    name: "Kilogramo",
+    symbol: "kg",
+  });
+  const raw = await call<{ id: string }>("/products", "POST", {
+    name: "Crudo receta",
+    price: 20,
+    cost: 10,
+    unitId: unit.id,
+  });
+  const salt = await call<{ id: string }>("/products", "POST", {
+    name: "Condimento receta",
+    price: 5,
+    cost: 2,
+  });
+  const output = await call<{ id: string }>("/products", "POST", {
+    name: "Preparado receta",
+    price: 25,
+    cost: 0,
+  });
+  await call("/inventory/movements", "POST", {
+    warehouseId,
+    productId: salt.id,
+    type: "IN",
+    quantity: 10,
+    idempotencyKey: randomUUID(),
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/inventory/control");
+  await page
+    .getByRole("combobox", { name: "Producto", exact: true })
+    .selectOption(raw.id);
+  await page.getByRole("button", { name: "Exigir lotes", exact: true }).click();
+  await expect(
+    page.getByText("Lote obligatorio en nuevas entradas.", { exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Código de lote", { exact: true }).fill("CRUDO-APTO");
+  await page
+    .getByLabel("Fecha de vencimiento", { exact: true })
+    .fill("2099-01-01");
+  await page.getByLabel("Cantidad de operación", { exact: true }).fill("5");
+  await page
+    .getByLabel("Motivo", { exact: true })
+    .fill("Entrada de prueba de receta");
+  await page
+    .getByRole("button", { name: "Registrar stock", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Crudo receta · CRUDO-APTO",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await call("/inventory/control", "POST", {
+    warehouseId,
+    productId: raw.id,
+    kind: "RECEIPT",
+    quantity: 2,
+    lotCode: "CRUDO-VENCIDO",
+    expiresOn: "2020-01-01",
+    reason: "Lote vencido de prueba",
+    requestKey: randomUUID(),
+  });
+  await call(`/inventory/control/products/${output.id}/tracking`, "POST", {
+    required: true,
+  });
+  await page.goto("/restaurant/recipes");
+  await page
+    .getByLabel("Nombre de receta", { exact: true })
+    .fill("Preparación piloto");
+  await page
+    .getByRole("combobox", { name: "Producto preparado", exact: true })
+    .selectOption(output.id);
+  await page.getByLabel("Rendimiento esperado", { exact: true }).fill("4");
+  await page
+    .getByRole("combobox", { name: "Ingrediente 1", exact: true })
+    .selectOption(raw.id);
+  await page.getByLabel("Cantidad de receta 1", { exact: true }).fill("1000");
+  await page.getByLabel("Unidad ingresada 1", { exact: true }).fill("g");
+  await page
+    .getByLabel("Factor a unidad base 1", { exact: true })
+    .fill("0.001");
+  await page
+    .getByRole("button", { name: "Agregar ingrediente", exact: true })
+    .click();
+  await page
+    .getByRole("combobox", { name: "Ingrediente 2", exact: true })
+    .selectOption(salt.id);
+  await page
+    .getByRole("button", { name: "Publicar versión", exact: true })
+    .click();
+  await expect(
+    page.getByText("Preparación piloto · versión vigente 1", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "Versión de receta", exact: true })
+    .selectOption({ label: "Preparación piloto · v1" });
+  await page
+    .getByLabel("Cantidad preparada prevista", { exact: true })
+    .fill("4");
+  await page
+    .getByRole("button", { name: "Planificar receta", exact: true })
+    .click();
+  const run = page
+    .getByRole("article")
+    .filter({
+      has: page.getByRole("heading", {
+        name: "Preparación piloto · v1",
+        exact: true,
+      }),
+    });
+  await expect(run).toBeVisible();
+  await run
+    .getByRole("spinbutton", { name: "Consumo Crudo receta", exact: true })
+    .fill("1.2");
+  await run
+    .getByRole("button", { name: "Iniciar receta", exact: true })
+    .click();
+  await expect(run.getByText(/Consumo real Bs 14.00/)).toBeVisible();
+  await run.getByLabel("Producción real", { exact: true }).fill("3.5");
+  await run
+    .getByLabel("Lote preparado", { exact: true })
+    .fill("PREPARADO-APTO");
+  await run
+    .getByLabel("Vencimiento preparado", { exact: true })
+    .fill("2099-01-01");
+  await run
+    .getByRole("button", { name: "Completar receta", exact: true })
+    .click();
+  await expect(
+    run.getByText("Costo por unidad producida: Bs 4.0000", { exact: true }),
+  ).toBeVisible();
+  await expect(run.getByText(/Rendimiento 87.5%/)).toBeVisible();
+  await page.screenshot({
+    path: "/tmp/kipu-stage6-recipes-mobile.png",
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  const m = await call<{ id: string }>("/restaurant/menu", "POST", {
+    productId: output.id,
+    name: "Plato receta",
+    station: "Cocina",
+    category: "Platos",
+    price: 25,
+    active: true,
+    components: [{ productId: output.id, quantity: 1 }],
+    options: [],
+  });
+  const menu = await call<{ id: string; available: number }[]>(
+    `/restaurant/menu?warehouseId=${warehouseId}`,
+  );
+  expect(menu.find((x) => x.id === m.id)!.available).toBe(3);
+  const cash = await call<{ id: string }>("/cash-registers", "POST", {
+    posTerminalId: branch.posTerminals[0].id,
+    openingAmount: 100,
+    idempotencyKey: randomUUID(),
+  });
+  const o = await call<{ id: string; saleId: string }>(
+    "/restaurant/orders",
+    "POST",
+    {
+      posTerminalId: branch.posTerminals[0].id,
+      warehouseId,
+      service: "TAKEAWAY",
+      requestKey: randomUUID(),
+      items: [{ menuEntryId: m.id, quantity: 1, optionIds: [] }],
+    },
+  );
+  await call(`/restaurant/orders/${o.id}/checkout`, "POST", {
+    payments: [{ method: "CASH", amount: 25, idempotencyKey: randomUUID() }],
+  });
+  let d = await call<{
+    stocks: {
+      productId: string;
+      quantity: string;
+      availableQuantity: string;
+    }[];
+    lots: { id: string; productId: string; code: string; quantity: string }[];
+  }>(`/inventory/control?warehouseId=${warehouseId}`);
+  expect(Number(d.stocks.find((s) => s.productId === raw.id)!.quantity)).toBe(
+    5.8,
+  );
+  expect(
+    Number(d.stocks.find((s) => s.productId === raw.id)!.availableQuantity),
+  ).toBe(3.8);
+  expect(
+    Number(d.stocks.find((s) => s.productId === output.id)!.quantity),
+  ).toBe(2.5);
+  await call(`/sales/${o.saleId}/return`, "POST", {
+    reason: "Sin preparar, devuelve al lote",
+  });
+  await page.goto("/inventory/control");
+  await page
+    .getByRole("combobox", { name: "Producto", exact: true })
+    .selectOption(raw.id);
+  await page
+    .getByRole("combobox", { name: "Tipo de operación", exact: true })
+    .selectOption("WASTE");
+  const bad = d.lots.find((l) => l.code === "CRUDO-VENCIDO")!;
+  await page
+    .getByRole("combobox", { name: "Lote", exact: true })
+    .selectOption(bad.id);
+  await page.getByLabel("Cantidad de operación", { exact: true }).fill("1");
+  await page.getByLabel("Motivo", { exact: true }).fill("Vencimiento");
+  await page
+    .getByRole("button", { name: "Registrar stock", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Merma · Crudo receta", exact: true }),
+  ).toBeVisible();
+  const lotCard=page.getByRole('article').filter({has:page.getByRole('heading',{name:'Crudo receta · CRUDO-VENCIDO',exact:true})});
+  await lotCard.getByRole('button',{name:'Ver historial',exact:true}).click();
+  await expect(lotCard.getByRole('heading',{name:'Movimientos del lote',exact:true})).toBeVisible();
+  await expect(lotCard.getByText(/WASTE: Vencimiento/)).toBeVisible();
+  await page.screenshot({
+    path: "/tmp/kipu-stage6-stock-mobile.png",
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  d = await call(`/inventory/control?warehouseId=${warehouseId}`);
+  expect(Number(d.stocks.find((s) => s.productId === raw.id)!.quantity)).toBe(
+    4.8,
+  );
+  expect(
+    Number(d.stocks.find((s) => s.productId === output.id)!.quantity),
+  ).toBe(3.5);
+  await page.goto(`/cash/${cash.id}`);
+  await page.getByPlaceholder("Efectivo contado").fill("100");
+  const closed = page.waitForResponse((r) =>
+    r.url().endsWith(`/cash-registers/${cash.id}/close`),
+  );
+  await page.getByRole("button", { name: "Cerrar caja", exact: true }).click();
+  expect(
+    Number(
+      ((await (await closed).json()) as { difference: string }).difference,
     ),
   ).toBe(0);
   expect(errors).toEqual([]);

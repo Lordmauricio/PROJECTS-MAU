@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { stockLock } from '../inventory/lot-ledger';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  BadRequestException,
+} from '@nestjs/common';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
@@ -58,6 +64,15 @@ export class ProductsService {
     actorUserId: string,
   ) {
     const product = await this.tenantPrisma.run(organizationId, async (tx) => {
+      if (
+        dto.unitId &&
+        !(await tx.productUnit.findFirst({
+          where: { id: dto.unitId, organizationId, active: true },
+        }))
+      )
+        throw new BadRequestException(
+          'Unidad base no válida para esta empresa',
+        );
       await this.subscriptions.assertWithinLimit(
         tx,
         organizationId,
@@ -82,10 +97,30 @@ export class ProductsService {
     actorUserId: string,
   ) {
     const updated = await this.tenantPrisma.run(organizationId, async (tx) => {
+      if (
+        dto.unitId &&
+        !(await tx.productUnit.findFirst({
+          where: { id: dto.unitId, organizationId, active: true },
+        }))
+      )
+        throw new BadRequestException(
+          'Unidad base no válida para esta empresa',
+        );
+      await stockLock(tx, organizationId, productId);
       const existing = await tx.product.findFirst({
         where: { id: productId, organizationId },
       });
       if (!existing) throw new NotFoundException('Producto no encontrado');
+      if (
+        dto.unitId !== undefined &&
+        dto.unitId !== existing.unitId &&
+        (await tx.inventory.count({
+          where: { organizationId, productId, quantity: { gt: 0 } },
+        }))
+      )
+        throw new ConflictException(
+          'No cambies la unidad base mientras exista stock',
+        );
       return tx.product.update({ where: { id: productId }, data: dto });
     });
     await this.audit.log({

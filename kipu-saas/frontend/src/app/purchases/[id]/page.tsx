@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { useRemoteLoad } from "@/lib/use-remote-load";
 import AppShell from "@/components/AppShell";
@@ -60,6 +60,9 @@ export default function PurchaseDetailPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const [lotCodes,setLotCodes]=useState<Record<string,string>>({});
+  const [expiries,setExpiries]=useState<Record<string,string>>({});
+  const receiveAttempt=useRef<{items:{purchaseItemId:string;quantity:number;lotCode?:string;expiresOn?:string}[];idempotencyKey:string}|null>(null);
   const [receiveQty, setReceiveQty] = useState<Record<string, string>>({});
   const [returnQty, setReturnQty] = useState<Record<string, string>>({});
   const [payAmount, setPayAmount] = useState("");
@@ -119,19 +122,21 @@ export default function PurchaseDetailPage() {
     try {
       const items = Object.entries(receiveQty)
         .filter(([, qty]) => Number(qty) > 0)
-        .map(([purchaseItemId, qty]) => ({ purchaseItemId, quantity: Number(qty) }));
+        .map(([purchaseItemId, qty]) => ({ purchaseItemId, quantity: Number(qty),...(lotCodes[purchaseItemId]?{lotCode:lotCodes[purchaseItemId],...(expiries[purchaseItemId]?{expiresOn:expiries[purchaseItemId]}:{})}:{}) }));
       if (items.length === 0) {
         setActionError("Ingresa alguna cantidad a recibir");
         return;
       }
       const updated = await api<Purchase>(`/purchases/${params.id}/receive`, {
         method: "POST",
-        body: { items, idempotencyKey: newIdempotencyKey() },
+        body: receiveAttempt.current ?? (receiveAttempt.current={ items, idempotencyKey: newIdempotencyKey() }),
       });
+      receiveAttempt.current=null;
       setPurchase(updated);
       setReceiveQty({});
     } catch (err) {
-      setActionError(err instanceof ApiError ? err.message : "No se pudo registrar la recepción");
+      if(err instanceof ApiError&&err.status<500)receiveAttempt.current=null;
+      setActionError(err instanceof ApiError ? err.message : "Recepción incierta: reintenta en esta pestaña para recuperar el mismo registro");
     } finally {
       setBusy(false);
     }
@@ -279,7 +284,7 @@ export default function PurchaseDetailPage() {
               const pending = Number(it.quantity) - Number(it.receivedQuantity);
               if (pending <= 0) return null;
               return (
-                <div key={it.id} className="flex justify-between items-center text-sm">
+                <div key={it.id} className="flex flex-wrap justify-between items-center gap-2 text-sm">
                   <span>
                     {it.product?.name ?? it.productId} <span className="text-zinc-400">(pendiente: {pending})</span>
                   </span>
@@ -292,6 +297,8 @@ export default function PurchaseDetailPage() {
                     onChange={(e) => setReceiveQty((prev) => ({ ...prev, [it.id]: e.target.value }))}
                     className="w-24 rounded border border-zinc-300 px-2 py-1"
                   />
+                  <label>Lote de recepción<input className="block w-36 max-w-full rounded border p-2" value={lotCodes[it.id]??''} onChange={e=>setLotCodes(v=>({...v,[it.id]:e.target.value}))}/></label>
+                  <label>Vence<input type="date" className="block max-w-full rounded border p-2" value={expiries[it.id]??''} onChange={e=>setExpiries(v=>({...v,[it.id]:e.target.value}))}/></label>
                 </div>
               );
             })}
@@ -308,7 +315,7 @@ export default function PurchaseDetailPage() {
               const returnable = Number(it.receivedQuantity) - Number(it.returnedQuantity);
               if (returnable <= 0) return null;
               return (
-                <div key={it.id} className="flex justify-between items-center text-sm">
+                <div key={it.id} className="flex flex-wrap justify-between items-center gap-2 text-sm">
                   <span>
                     {it.product?.name ?? it.productId} <span className="text-zinc-400">(disponible para devolver: {returnable})</span>
                   </span>

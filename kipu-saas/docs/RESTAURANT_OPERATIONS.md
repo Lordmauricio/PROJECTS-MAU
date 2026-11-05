@@ -254,3 +254,114 @@ si no puede registrarse el egreso, toda la devolución se revierte. Esto evita
 marcar el dinero como devuelto sin reflejarlo en el arqueo. Abrir/fondear la caja
 y reintentar conserva la devolución única. Las ventas comerciales anteriores
 conservan su política existente, documentada en `architecture.md`.
+
+## Recetas, rendimientos y stock (etapa 6)
+
+Pantallas: `/restaurant/recipes` y `/inventory/control`. Encargado e inventario
+usan `inventory.manage`; las consultas requieren `inventory.read`. Cajero y
+mesero no pueden publicar recetas, ingresar lotes, contar ni registrar mermas.
+
+### Unidades y versiones
+
+Definir primero la unidad base de cada producto: kg, g, litro, unidad, etc. No
+se cambia el símbolo de una unidad existente; crear otra. No se cambia la unidad
+base de un producto con existencia física. La receta guarda unidad ingresada,
+factor explícito, cantidad base y nombres históricos. Ejemplo: 1000 g × 0.001 =
+1 kg. El factor se define para ese ingrediente; el sistema no adivina densidad,
+peso de una pieza ni equivalencias entre dimensiones. El stock conserva precisión
+de 0.01 de la unidad base: una conversión con más decimales se rechaza, no se
+redondea silenciosamente. Para consumos de gramos pequeños, usar g como unidad base.
+
+Publicar crea una versión inmutable; editar requiere la revisión vigente y crea
+otra. Apertura/publicación y planificación tienen claves de reintento. Una nueva
+producción exige versión vigente; una ya planificada conserva su versión y sus
+cantidades aunque se publique otra. Ingredientes repetidos o producto resultado
+como ingrediente de sí mismo se rechazan. Las preparaciones intermedias son
+productos con su propia receta y se producen por separado; consumirlas después
+no vuelve a consumir su materia prima. No hay expansión recursiva automática.
+
+Planificar no reserva ni descuenta. Iniciar registra todos los consumos reales
+en unidad base (por defecto los teóricos), descuenta en una sola transacción y
+congela el resultado. Si falta un ingrediente, no descuenta ninguno. Finalizar
+registra producción real y, cuando corresponda, lote/vencimiento del preparado.
+Reintentar no repite consumo ni producción; cambiar los datos del reintento
+produce conflicto. Cancelar exige motivo; después del inicio no restaura materia
+prima. Una producción completada se corrige mediante operaciones de stock
+registradas, no reescribiendo la receta o la tanda.
+
+### Lotes, vencimientos y disponibilidad
+
+La recepción de compra permite código de lote y fecha por ítem. Repetir una
+recepción con otros datos o lotes devuelve conflicto. No repetir el mismo ítem
+dentro de una recepción/devolución: se rechaza para evitar saldos inconsistentes.
+La entrada manual de Lotes y control no genera compra ni obligación al proveedor.
+
+El saldo anterior al despliegue se conserva como existencia sin lote. Usar
+«Clasificar existencia sin lote» para asignarle código y fecha, sin aumentar el
+inventario. Después puede activarse «Exigir lotes», que requiere identificar
+el saldo de todos los almacenes. Desde entonces toda entrada debe declarar lote;
+no se convierten registros previos en lotes inventados. El vencimiento de un
+código existente no se modifica. Se permiten entradas físicas ya vencidas para
+registrar y retirar existencias reales; no se habilitan para consumo.
+
+Las salidas consumen primero el lote apto con vencimiento más próximo (FEFO),
+después los aptos sin fecha y, solo si el producto lo permite, el stock sin lote.
+La fecha es inclusiva hasta terminar ese día en America/La_Paz. Vencidos o
+bloqueados no se venden ni se usan en producción o consumo del personal.
+Menú y revisión previa muestran stock utilizable; las ventas vuelven a comprobarlo
+en la transacción de confirmación. El saldo físico puede ser mayor que el
+vendible. Los reportes comerciales anteriores siguen mostrando existencia física;
+para revisar aptitud usar Lotes y control.
+
+Las transferencias conservan códigos, bloqueo, fechas y cantidades, incluso para
+trasladar vencidos sin habilitarlos. Devoluciones de venta sin preparar restauran
+los lotes consumidos y conservan el vencimiento: una devolución posterior al
+vencimiento vuelve a stock físico, no a disponible. La preparación iniciada
+conserva la política de no reponer comida ya preparada. Una devolución histórica
+sin lote identificable, para un producto que ahora exige lotes, ingresa bloqueada
+como `DEVOLUCION-SIN-LOTE`; requiere revisión física y no se vende automáticamente.
+La devolución a proveedor admite `lotId` opcional por línea en API; si se omite,
+selecciona por vencimiento incluyendo vencidos. Confirmar físicamente qué lote se
+entrega al proveedor; la pantalla previa de devolución conserva selección automática.
+
+«Ver historial» consulta los últimos 100 movimientos del lote, con entradas,
+salidas, cantidad, motivo y referencia a venta, compra, traslado o producción.
+La clasificación inicial queda en el historial de control porque no mueve stock.
+No se fabricó trazabilidad de movimientos anteriores a esta entrega.
+
+### Conteos, mermas y personal
+
+Conteos con lotes se realizan por lote. En stock sin lotes puede contarse el total.
+Enviar la existencia observada junto con la cantidad contada; si otro movimiento
+cambió el saldo, se rechaza y exige volver a revisar. La diferencia se registra
+como ajuste, con signo correcto en el historial, motivo y actor. Cero diferencias
+también deja constancia del conteo. Merma retira stock incluso vencido/bloqueado;
+consumo de personal solo usa aptos. Ambos conservan kardex, costo de referencia
+y clave de reintento. No registran ventas ni movimientos de caja.
+
+### Costos y límites
+
+Se guardan costo de referencia de la versión y precios de ingredientes vigentes
+al planificar. El costo teórico escala cantidades de la receta; el costo del
+consumo real usa cantidades efectivamente descontadas por esos precios congelados.
+El rendimiento compara preparado real con previsto; costo unitario real divide
+el consumo valorizado entre la producción real (cuatro decimales). La interfaz
+muestra diferencia total y rendimiento. No es costeo contable FIFO/promedio,
+no incluye mano de obra/energía ni recalcula automáticamente el costo maestro del
+preparado o de una preparación intermedia. Mantener esos costos de referencia
+actualizados antes de planificar. Conciliación de márgenes/costos contables es
+trabajo posterior de gestión, no una capacidad fiscal de esta entrega.
+
+API: GET/POST `/restaurant/recipes`, PATCH `/restaurant/recipes/:id`,
+GET/POST `/restaurant/recipes/runs`, POST `/restaurant/recipes/runs/:id/status`;
+GET/POST `/inventory/control`, POST `/inventory/control/products/:id/tracking`,
+GET `/inventory/control/lots/:id/movements`. Operaciones nuevas usan claves de
+reintento y el historial se registra en la misma transacción. Bloqueos por producto
+y empresa serializan los movimientos también entre almacenes; los consumidores
+de varios productos adquieren sus bloqueos ordenados para evitar interbloqueos.
+
+Despliegue: migración `20261105050000_recipes_lot_inventory` con rol administrativo,
+backend y después frontend. Seis tablas nuevas con RLS forzado y claves compuestas
+por empresa. Se conservan inventario, compras y pedidos anteriores. Respaldar y
+aplicar en ventana de mantenimiento; la aplicación conserva `app_user`. No se
+validó aún en la pollería ni se habilitó operación offline o impresión física.

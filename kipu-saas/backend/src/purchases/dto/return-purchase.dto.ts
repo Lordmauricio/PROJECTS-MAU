@@ -11,6 +11,7 @@ import {
 } from 'class-validator';
 
 export class ReturnPurchaseItemDto {
+  @IsOptional() @IsString() lotId?: string;
   @IsString()
   @MinLength(1)
   purchaseItemId!: string;

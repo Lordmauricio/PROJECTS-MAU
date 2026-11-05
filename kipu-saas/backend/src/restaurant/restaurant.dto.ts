@@ -117,6 +117,8 @@ export class CreateBatchDto {
 }
 
 export class BatchActionDto {
+  @IsOptional() @IsString() @MaxLength(100) lotCode?: string;
+  @IsOptional() @IsString() expiresOn?: string;
   @IsInt() @Min(0) version!: number;
   @IsIn(['PREPARING', 'READY', 'CANCELLED']) status!:
     'PREPARING' | 'READY' | 'CANCELLED';

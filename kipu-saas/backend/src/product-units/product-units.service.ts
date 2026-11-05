@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import { TenantPrismaService } from '../prisma/tenant-prisma.service';
 import { AuditService } from '../audit/audit.service';
 import {
@@ -51,6 +55,10 @@ export class ProductUnitsService {
         where: { id, organizationId },
       });
       if (!existing) throw new NotFoundException('Unidad no encontrada');
+      if (dto.symbol !== undefined && dto.symbol !== existing.symbol)
+        throw new ConflictException(
+          'El símbolo identifica la unidad base y no se cambia; crea otra unidad',
+        );
       return tx.productUnit.update({ where: { id }, data: dto });
     });
     await this.audit.log({
